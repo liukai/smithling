@@ -106,3 +106,30 @@ async fn bad_items_are_reported_and_the_rest_accepted() {
         .collect();
     assert_eq!(reasons, vec!["invalid_field", "invalid_uuid"]);
 }
+
+#[tokio::test]
+async fn healthz_has_every_contract_field() {
+    let server = common::start().await;
+    let h: Value = reqwest::get(server.url("/healthz"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for k in [
+        "ok",
+        "wal_ok",
+        "flush_ok",
+        "memtable_bytes",
+        "frozen",
+        "unflushed_wal_bytes",
+        "segments",
+        "last_flush_at",
+        "corrupt_segments",
+    ] {
+        assert!(h.get(k).is_some(), "/healthz lacks {k}: {h}");
+    }
+    assert_eq!(h["ok"], true);
+    assert_eq!(h["frozen"], false);
+    assert_eq!(h["corrupt_segments"], json!([]));
+}

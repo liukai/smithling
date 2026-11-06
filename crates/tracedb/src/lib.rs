@@ -83,6 +83,10 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     icfg.storage = cfg.storage.clone();
     icfg.metastore = cfg.metastore.clone();
     icfg.limits = cfg.limits;
+    // Tests only: roll WAL files small so a flush has whole files to trim.
+    if let Some(b) = std::env::var("TRACEDB_TEST_WAL_ROLL").ok().and_then(|v| v.parse().ok()) {
+        icfg.wal_roll_bytes = b;
+    }
     let (ingest, stats) = Ingest::open(icfg)?;
     Ok((AppState::new(ingest).with_ui_dir(cfg.ui_dir.clone()), stats))
 }

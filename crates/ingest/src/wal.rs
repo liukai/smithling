@@ -190,12 +190,23 @@ pub fn trim(dir: &Path, flushed_seq: u64, keep_since: std::time::SystemTime) -> 
         if modified < keep_since {
             fs::remove_file(this)?;
             removed += 1;
+            crate::crash_point("during_trim");
         }
     }
     if removed > 0 {
         File::open(dir)?.sync_all()?;
     }
     Ok(removed)
+}
+
+/// The seq the oldest WAL file starts at (`None`: no WAL yet).
+pub fn first_seq(dir: &Path) -> io::Result<Option<u64>> {
+    if !dir.exists() {
+        return Ok(None);
+    }
+    Ok(wal_files(dir)?
+        .first()
+        .and_then(|p| p.file_stem()?.to_str()?.parse().ok()))
 }
 
 fn file_name(first_seq: u64) -> String {

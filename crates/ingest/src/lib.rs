@@ -7,6 +7,7 @@ pub mod dedup;
 pub mod flush;
 pub mod hub;
 pub mod memtable;
+mod recover;
 pub mod store;
 pub mod wal;
 mod writer;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::{Semaphore, broadcast, oneshot};
@@ -31,10 +32,8 @@ pub use flush::FlushHealth;
 pub use memtable::{Mem, Version};
 pub use store::{Change, Include, RootKey};
 
-use crate::dedup::Dedup;
 use crate::hub::Hub;
-use crate::store::RunStore;
-use crate::wal::{Wal, WalError};
+use crate::wal::WalError;
 
 pub const DEFAULT_QUEUE_EVENTS: usize = 10_000;
 pub const DEFAULT_MEMTABLE_BYTES: u64 = 128 * 1024 * 1024;
@@ -174,9 +173,21 @@ pub struct Health {
     pub frozen: bool,
     pub unflushed_wal_bytes: u64,
     pub segments: usize,
+    /// Run versions in data files.
+    pub segment_rows: u64,
     pub flushed_seq: u64,
     pub flushes: u64,
     pub last_flush_at: Option<Ts>,
+    /// Registered segments found missing or unreadable at start; their runs are not served.
+    pub corrupt_segments: Vec<String>,
+}
+
+/// Test hook: `TRACEDB_TEST_CRASH_AT=<point>` aborts the process at that point of a flush.
+pub(crate) fn crash_point(point: &str) {
+    if std::env::var("TRACEDB_TEST_CRASH_AT").is_ok_and(|p| p == point) {
+        eprintln!("crash point: {point}");
+        std::process::abort();
+    }
 }
 
 /// Shared counters between the writer and the flusher.
@@ -381,6 +392,7 @@ struct Inner {
     flush_health: Arc<Mutex<FlushHealth>>,
     counters: Arc<Counters>,
     storage: Arc<Storage>,
+    corrupt: Vec<String>,
 }
 
 impl Drop for Inner {
@@ -408,94 +420,18 @@ impl Ingest {
     /// Opens storage and the catalog, removes orphan files, rebuilds the multi-version set, replays the WAL
     /// past `flushed_seq` into the active memtable, then starts the writer and the flusher (design §4.6).
     pub fn open(cfg: IngestConfig) -> Result<(Ingest, OpenStats), OpenError> {
-        let started = Instant::now();
         let storage = Arc::new(Storage::open(&cfg)?);
-
-        let (store, meta) = (storage.store.clone(), storage.meta.clone());
-        let (flushed_seq, segments, field_stats, objects) = storage.block(async move {
-            Ok::<_, StorageError>((
-                meta.flushed_seq().await?,
-                meta.active_segments().await?,
-                meta.field_stats().await?,
-                store.list().await?,
-            ))
-        })?;
-
-        // Files written by a flush that crashed before its catalog commit were never registered.
-        let registered: HashSet<&str> = segments
-            .iter()
-            .flat_map(|s| [s.core_path.as_str(), s.payload_path.as_str()])
-            .collect();
-        let orphans: Vec<String> = objects
-            .into_iter()
-            .filter(|p| p.ends_with(".parquet") && !registered.contains(p.as_str()))
-            .collect();
-        let orphans_removed = orphans.len();
-        if !orphans.is_empty() {
-            let store = storage.store.clone();
-            storage.block(async move {
-                for o in orphans {
-                    tracing::warn!(file = %o, "removing an unregistered data file (left by a crash mid-flush)");
-                    store.delete(&o).await?;
-                }
-                Ok::<_, StorageError>(())
-            })?;
-        }
-
-        let mut mvset: HashSet<RunId> = HashSet::new();
-        for s in segments.iter().filter(|s| s.needs_merge_rows > 0) {
-            let (store, path) = (storage.store.clone(), s.core_path.clone());
-            let bytes = storage.block(async move { store.get(&path).await })?;
-            mvset.extend(tracedb_storage::segment::needs_merge_ids(bytes)?);
-        }
-
-        let mut active = RunStore::new();
-        let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
-        let now = Ts::now();
-        let (mut replay_rejected, mut skipped) = (0, 0);
-        // Runs with a version already flushed (still in the WAL for the dedup window): a later start for
-        // one of them is a second version too.
-        let mut flushed_ids: HashSet<RunId> = HashSet::new();
-        let (wal, stats) = Wal::open(&cfg.data_dir.join("wal"), cfg.wal_roll_bytes, |ev| {
-            if let Some(id) = ev.fields.id
-                && dedup.in_window(ev.received_at, now)
-            {
-                dedup.insert((id, ev.op, ev.body_hash), ev.received_at);
-            }
-            if ev.event_seq <= flushed_seq {
-                skipped += 1;
-                if let Some(id) = ev.fields.id {
-                    flushed_ids.insert(id);
-                }
-                return;
-            }
-            match active.apply(&ev) {
-                Ok(c) if c.created && (ev.op == Op::Patch || flushed_ids.contains(&c.header.run_id)) => {
-                    mvset.insert(c.header.run_id);
-                }
-                Ok(_) => {}
-                Err(_) => replay_rejected += 1,
-            }
-        })?;
-        let version = Version {
-            id: 0,
-            segments: segments.iter().cloned().map(Arc::new).collect(),
-            field_stats: field_stats.into_iter().map(Arc::new).collect(),
-            flushed_seq,
-        };
-        let open_stats = OpenStats {
-            replayed_events: stats.records - skipped,
-            skipped_flushed: skipped,
-            replay_rejected,
-            wal_files: stats.files,
-            truncated_bytes: stats.truncated_bytes,
-            runs: active.len(),
-            segments: segments.len(),
-            orphans_removed,
-            multi_version_runs: mvset.len(),
-            flushed_seq,
-            replay_ms: started.elapsed().as_millis() as u64,
-        };
+        let recover::Recovered {
+            wal,
+            wal_stats,
+            active,
+            dedup,
+            mvset,
+            version,
+            corrupt,
+            stats: open_stats,
+        } = recover::recover(&cfg, &storage)?;
+        let flushed_seq = version.flushed_seq;
 
         let mem = Arc::new(RwLock::new(Mem {
             active,
@@ -540,7 +476,7 @@ impl Ingest {
             limits: cfg.limits,
             flush_tx,
         };
-        let last_seq = stats.last_seq.max(flushed_seq);
+        let last_seq = wal_stats.last_seq.max(flushed_seq);
         let thread = std::thread::Builder::new()
             .name("tracedb-writer".into())
             .spawn(move || writer::run(rx, wal, dedup, last_seq, shared))
@@ -560,6 +496,7 @@ impl Ingest {
             flush_health,
             counters,
             storage,
+            corrupt,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
     }
@@ -642,7 +579,7 @@ impl Ingest {
         let fh = self.inner.flush_health.lock().unwrap().clone();
         let mem = self.inner.mem.read().unwrap();
         Health {
-            ok: error.is_none() && fh.error.is_none(),
+            ok: error.is_none() && fh.error.is_none() && self.inner.corrupt.is_empty(),
             wal_ok: error.is_none(),
             flush_ok: fh.error.is_none(),
             error,
@@ -652,9 +589,11 @@ impl Ingest {
             frozen: mem.frozen.is_some(),
             unflushed_wal_bytes: self.inner.counters.unflushed_wal.load(Ordering::Relaxed),
             segments: mem.version.segments.len(),
+            segment_rows: mem.version.segments.iter().map(|s| s.row_count).sum(),
             flushed_seq: mem.version.flushed_seq,
             flushes: fh.flushes,
             last_flush_at: fh.last_flush_at,
+            corrupt_segments: self.inner.corrupt.clone(),
         }
     }
 }

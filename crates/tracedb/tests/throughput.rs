@@ -1,29 +1,21 @@
-//! Sustained ingest (SC-07): at least 5,000 events/s for 60 s from 8 clients. Slow, so `#[ignore]`.
+//! Sustained ingest while flushes run (SC-07): at least 5,000 events/s for 60 s from 8 clients, p99 upload
+//! latency ≤ 1 s (a `429` retry counts toward its batch's latency). Slow, so `#[ignore]`.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore]
-async fn sustains_5000_events_per_second_for_60s() {
+async fn sustains_5000_events_per_second_while_flushing() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
-        .args([
-            "serve",
-            "--data",
-            dir.path().to_str().unwrap(),
-            "--port",
-            "0",
-            "--max-runs",
-            "100000000",
-            "--max-memory",
-            "16GB",
-        ])
+        .args(["serve", "--data", dir.path().to_str().unwrap(), "--port", "0"])
+        // Small enough that the 60 s run flushes many times.
+        .args(["--memtable", "16MB"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -38,14 +30,15 @@ async fn sustains_5000_events_per_second_for_60s() {
         .unwrap()
         .to_string();
 
-    let accepted = Arc::new(AtomicU64::new(0));
+    let latencies = Arc::new(Mutex::new(Vec::<Duration>::new()));
     let until = Instant::now() + Duration::from_secs(60);
     let clients: Vec<_> = (0..8u64)
         .map(|c| {
-            let (url, accepted) = (url.clone(), accepted.clone());
+            let (url, latencies) = (url.clone(), latencies.clone());
             tokio::spawn(async move {
                 let http = reqwest::Client::new();
                 let mut n = c * 1_000_000_000;
+                let mut mine = Vec::new();
                 while Instant::now() < until {
                     let post: Vec<_> = (0..100)
                         .map(|_| {
@@ -56,15 +49,19 @@ async fn sustains_5000_events_per_second_for_60s() {
                                    "start_time": "2026-11-05T02:00:00.000000", "inputs": {"q": "x".repeat(200)}})
                         })
                         .collect();
-                    let r = http
-                        .post(format!("{url}/runs/batch"))
-                        .json(&json!({"post": post}))
-                        .send()
-                        .await
-                        .unwrap();
-                    assert_eq!(r.status(), 202);
-                    accepted.fetch_add(100, Ordering::Relaxed);
+                    let body = json!({"post": post});
+                    let sent = Instant::now();
+                    loop {
+                        let r = http.post(format!("{url}/runs/batch")).json(&body).send().await.unwrap();
+                        match r.status().as_u16() {
+                            202 => break,
+                            429 => tokio::time::sleep(Duration::from_millis(50)).await,
+                            s => panic!("upload failed: {s}"),
+                        }
+                    }
+                    mine.push(sent.elapsed());
                 }
+                latencies.lock().unwrap().extend(mine);
             })
         })
         .collect();
@@ -72,9 +69,32 @@ async fn sustains_5000_events_per_second_for_60s() {
     for c in clients {
         c.await.unwrap();
     }
-    let rate = accepted.load(Ordering::Relaxed) as f64 / started.elapsed().as_secs_f64();
-    eprintln!("sustained {rate:.0} events/s over {:?}", started.elapsed());
+    let elapsed = started.elapsed();
+    let health: Value = reqwest::get(format!("{url}/healthz"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
+
+    let mut lat = Arc::try_unwrap(latencies).unwrap().into_inner().unwrap();
+    lat.sort();
+    let rate = (lat.len() * 100) as f64 / elapsed.as_secs_f64();
+    let p99 = lat[(lat.len() * 99 / 100).min(lat.len() - 1)];
+    eprintln!(
+        "sustained {rate:.0} events/s over {elapsed:?}; {} batches, p50 {:?}, p99 {p99:?}, max {:?}; {} flushes, {} segments",
+        lat.len(),
+        lat[lat.len() / 2],
+        lat[lat.len() - 1],
+        health["flushes"],
+        health["segments"]
+    );
+    assert!(
+        health["flushes"].as_u64().unwrap() >= 2,
+        "flushes ran during the test: {health}"
+    );
     assert!(rate >= 5000.0, "{rate:.0} events/s");
+    assert!(p99 <= Duration::from_secs(1), "p99 upload latency {p99:?}");
 }

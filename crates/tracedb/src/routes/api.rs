@@ -189,22 +189,35 @@ pub fn parse_status(s: &str) -> Option<&'static str> {
     ["running", "ok", "error"].into_iter().find(|v| *v == s)
 }
 
-/// M1's root list, answered as a query (`is_root`, optional status) so old clients keep working.
+/// M1's root list, answered as a query (`is_root`, optional status) so old clients keep working. Only roots
+/// whose start arrived are listed (M1 behaviour), as part of the filter so pages are never short.
 pub async fn roots(State(st): State<AppState>, Q(q): Q<RootsQs>) -> Response {
-    let filter = match q.status.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => match parse_status(s) {
-            Some(v) => Some(Expr::Cmp {
+    let listed = vec![
+        Expr::Cmp {
+            op: CmpOp::Neq,
+            path: FPath::Field(Field::StartTime),
+            value: Value::Null,
+        },
+        Expr::Cmp {
+            op: CmpOp::Neq,
+            path: FPath::Field(Field::Name),
+            value: Value::Null,
+        },
+    ];
+    let mut all = listed;
+    if let Some(s) = q.status.as_deref().filter(|s| !s.is_empty()) {
+        match parse_status(s) {
+            Some(v) => all.push(Expr::Cmp {
                 op: CmpOp::Eq,
                 path: FPath::Field(Field::Status),
                 value: Value::Str(v.into()),
             }),
             None => return error(StatusCode::BAD_REQUEST, "bad_status", format!("unknown status {s:?}")),
-        },
-        None => None,
-    };
+        }
+    }
     let spec = QuerySpec {
         project: q.project.filter(|p| !p.is_empty()),
-        filter,
+        filter: Some(Expr::And(all)),
         is_root: Some(true),
         limit: q.limit,
         cursor: q.cursor,
@@ -212,13 +225,7 @@ pub async fn roots(State(st): State<AppState>, Q(q): Q<RootsQs>) -> Response {
     };
     match st.query.query(&spec).await {
         Ok(page) => {
-            // Only roots whose start arrived are listed (M1 behaviour).
-            let runs: Vec<_> = page
-                .runs
-                .into_iter()
-                .filter(|r| r.header.start_time.is_some() && r.header.name.is_some())
-                .map(|r| r.header)
-                .collect();
+            let runs: Vec<_> = page.runs.into_iter().map(|r| r.header).collect();
             Json(json!({"runs": runs, "next_cursor": page.next_cursor})).into_response()
         }
         Err(e) => query_error(e),

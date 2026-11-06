@@ -6,6 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use tracedb_model::attrs::{Attrs, promote};
 use tracedb_model::{
     ChangeKind, Reason, Reject, RunEvent, RunHeader, RunId, RunState, RunView, Status, TraceId, TraceView, Ts, merge,
 };
@@ -53,6 +54,8 @@ pub struct Include {
 #[derive(Default)]
 pub struct RunStore {
     runs: HashMap<RunId, RunState>,
+    /// Promoted attributes per run, computed when an event is applied so reads never walk payload JSON.
+    attrs: HashMap<RunId, Attrs>,
     by_trace: HashMap<TraceId, Vec<RunId>>,
     roots: HashMap<String, BTreeSet<IndexKey>>,
     children: HashMap<RunId, u32>,
@@ -113,12 +116,26 @@ impl RunStore {
         self.oldest = Some(self.oldest.map_or(ev.received_at, |o| o.min(ev.received_at)));
 
         let header = Arc::new(RunHeader::from_state(&st, self.child_count(id)));
+        self.attrs.insert(id, promote(&st.run));
         self.runs.insert(id, st);
         Ok(Change { kind, header, created })
     }
 
     pub fn get(&self, id: &RunId) -> Option<&RunState> {
         self.runs.get(id)
+    }
+
+    pub fn attrs(&self, id: &RunId) -> Option<&Attrs> {
+        self.attrs.get(id)
+    }
+
+    /// Runs per project (every run, not only roots).
+    pub fn run_counts(&self) -> HashMap<String, usize> {
+        let mut out: HashMap<String, usize> = HashMap::new();
+        for st in self.runs.values().filter(|s| s.project_set) {
+            *out.entry(st.run.project.clone()).or_default() += 1;
+        }
+        out
     }
 
     pub fn contains(&self, id: &RunId) -> bool {

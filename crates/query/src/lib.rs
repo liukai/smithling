@@ -77,13 +77,16 @@ impl QuerySpec {
     pub fn hash(&self) -> u64 {
         let p = |e: &Option<Expr>| e.as_ref().map(tracedb_model::filter::print);
         let s = format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}",
             self.project,
             self.time.from,
             self.time.to,
             p(&self.filter),
             p(&self.trace_filter),
             p(&self.tree_filter),
+            self.traces
+                .as_ref()
+                .map(|t| t.iter().collect::<std::collections::BTreeSet<_>>()),
             self.is_root,
             self.order,
             self.ascending
@@ -180,6 +183,10 @@ impl Query {
             to: q.time.to.map(|t| t.resolve(now).0),
             trace_id: None,
             run_id: None,
+            traces: q
+                .traces
+                .as_ref()
+                .map(|t| std::sync::Arc::new(t.iter().copied().collect())),
         }
     }
 
@@ -233,24 +240,16 @@ impl Query {
             None => None,
         };
         let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-        let scope = self.scope(q, now);
+        let mut scope = self.scope(q, now);
+        // Later pages only need runs at or before the cursor (ties are settled below).
+        if let (Some(a), OrderBy::StartTime) = (after, q.order) {
+            if q.ascending {
+                scope.from = Some(scope.from.map_or(a.value, |f| f.max(a.value)));
+            } else {
+                scope.to = Some(scope.to.map_or(a.value, |t| t.min(a.value)));
+            }
+        }
         let (mut scan_stats, mut eval_stats) = (ScanStats::default(), EvalStats::default());
-
-        // Trace-level conditions first: the set of traces whose root / any run matches.
-        let root_traces = match &q.trace_filter {
-            Some(f) => Some(
-                self.trace_ids(&scope, f, Some(true), now, &mut scan_stats, &mut eval_stats)
-                    .await?,
-            ),
-            None => None,
-        };
-        let tree_traces = match &q.tree_filter {
-            Some(f) => Some(
-                self.trace_ids(&scope, f, None, now, &mut scan_stats, &mut eval_stats)
-                    .await?,
-            ),
-            None => None,
-        };
 
         let mut runs = self
             .matching(
@@ -262,12 +261,32 @@ impl Query {
                 &mut eval_stats,
             )
             .await?;
-        runs.retain(|m| {
-            let t = m.state.run.trace_id;
-            root_traces.as_ref().is_none_or(|s| s.contains(&t))
-                && tree_traces.as_ref().is_none_or(|s| s.contains(&t))
-                && q.traces.as_ref().is_none_or(|s| s.contains(&t))
-        });
+        if let Some(only) = &q.traces {
+            runs.retain(|m| only.contains(&m.state.run.trace_id));
+        }
+
+        // Trace-level conditions, evaluated over the candidates' whole traces (no time bound: a root may have
+        // started before the window, a step after it).
+        if q.trace_filter.is_some() || q.tree_filter.is_some() {
+            let candidates: std::collections::BTreeSet<TraceId> = runs.iter().map(|m| m.state.run.trace_id).collect();
+            let tscope = Scope {
+                project: scope.project.clone(),
+                traces: Some(std::sync::Arc::new(candidates)),
+                ..Scope::default()
+            };
+            if let Some(f) = &q.trace_filter {
+                let ok = self
+                    .trace_ids(&tscope, f, Some(true), now, &mut scan_stats, &mut eval_stats)
+                    .await?;
+                runs.retain(|m| ok.contains(&m.state.run.trace_id));
+            }
+            if let Some(f) = &q.tree_filter {
+                let ok = self
+                    .trace_ids(&tscope, f, None, now, &mut scan_stats, &mut eval_stats)
+                    .await?;
+                runs.retain(|m| ok.contains(&m.state.run.trace_id));
+            }
+        }
         let matched = runs.len();
 
         let mut keyed: Vec<(Key, Merged)> = runs.into_iter().map(|m| (order_key(&m, q.order), m)).collect();
@@ -342,14 +361,8 @@ impl Query {
         stats: &mut ScanStats,
         eval_stats: &mut EvalStats,
     ) -> Result<HashSet<TraceId>, QueryError> {
-        // Steps of a trace start after its root, so the trace-level scan widens the time window to the
-        // future: a child that started after the window still counts for a root inside it.
-        let s = Scope {
-            to: None,
-            ..scope.clone()
-        };
         Ok(self
-            .matching(&s, Some(f), is_root, now, stats, eval_stats)
+            .matching(scope, Some(f), is_root, now, stats, eval_stats)
             .await?
             .into_iter()
             .map(|m| m.state.run.trace_id)
@@ -421,16 +434,19 @@ impl Query {
         }))
     }
 
-    /// Projects and their number of listed root runs (memtables + files).
+    /// Projects and how many runs each holds (memtables + files). Counted from the catalog without reading
+    /// data, so a run whose versions sit in several files counts once per file (D-019).
     pub async fn projects(&self) -> Result<Vec<ProjectInfo>, QueryError> {
-        let scope = Scope::default();
-        let (mut s, mut e) = (ScanStats::default(), EvalStats::default());
-        let roots = self
-            .matching(&scope, None, Some(true), Ts::now(), &mut s, &mut e)
-            .await?;
+        let mem = self.ingest.mem();
+        let mem = mem.read().unwrap();
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for m in roots.iter().filter(|m| m.state.is_listed_root()) {
-            *counts.entry(m.state.run.project.clone()).or_default() += 1;
+        for s in mem.version.segments.iter().filter(|s| !s.project.is_empty()) {
+            *counts.entry(s.project.clone()).or_default() += s.row_count as usize;
+        }
+        for store in std::iter::once(&mem.active).chain(mem.frozen.as_deref()) {
+            for (p, n) in store.run_counts() {
+                *counts.entry(p).or_default() += n;
+            }
         }
         Ok(counts
             .into_iter()

@@ -102,18 +102,6 @@ async fn late_updates_after_a_flush_are_marked_multi_version() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orphan_files_are_removed_on_start() {
-    let dir = tempfile::tempdir().unwrap();
-    drop(Ingest::open(small(dir.path())).unwrap());
-    let orphan = dir.path().join("data/p-00000000/2026-11-06/seg-X.core.parquet");
-    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
-    std::fs::write(&orphan, b"half written").unwrap();
-    let (_, stats) = Ingest::open(small(dir.path())).unwrap();
-    assert_eq!(stats.orphans_removed, 1);
-    assert!(!orphan.exists());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_big_unflushed_log_after_restart_flushes_instead_of_staying_busy() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = |d: &Path| {

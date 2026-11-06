@@ -108,7 +108,7 @@ fn scenario(rng: &mut Rng) -> Vec<Incoming> {
         late.swap(i, j);
     }
     let mut again = Vec::new();
-    for (_, f) in late.iter().take(3) {
+    for (i, (_, f)) in late.iter().take(4).enumerate() {
         let mut g = RunFields {
             id: f.id,
             trace_id: f.trace_id,
@@ -116,7 +116,15 @@ fn scenario(rng: &mut Rng) -> Vec<Incoming> {
             ..Default::default()
         };
         g.tags = Some(vec!["retried".into()]);
-        again.push((Op::Patch, g));
+        if i % 2 == 0 {
+            // A second *start* for a run whose first one may already be in a file (D-016's blind spot).
+            g.name = Some("restarted".into());
+            g.run_type = Some("tool".into());
+            g.start_time = Ts::parse("2026-11-05T02:00:00Z");
+            again.push((Op::Post, g));
+        } else {
+            again.push((Op::Patch, g));
+        }
     }
     posts
         .into_iter()
@@ -150,6 +158,7 @@ fn naive(events: &[Incoming]) -> HashMap<RunId, RunState> {
 }
 
 struct Case {
+    from: Option<&'static str>,
     filter: Option<&'static str>,
     tree: Option<&'static str>,
     trace: Option<&'static str>,
@@ -158,77 +167,91 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
-    Case {
-        filter: Some(r#"eq(status, "error")"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: None,
-    },
-    Case {
-        filter: Some(r#"eq(status, "ok")"#),
-        tree: Some(r#"eq(status, "error")"#),
-        trace: None,
-        root: Some(true),
-        project: None,
-    },
-    Case {
-        filter: Some(r#"and(has(tags, "batch=x"), eq(status, "running"))"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: Some("a"),
-    },
-    Case {
-        filter: Some(r#"eq(outputs.status_code, 429)"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: None,
-    },
-    Case {
-        filter: Some(r#"or(neq(error, null), has(tags, "retried"))"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: None,
-    },
-    Case {
-        filter: Some(r#"not(eq(name, "llm"))"#),
-        tree: None,
-        trace: None,
-        root: Some(false),
-        project: None,
-    },
-    Case {
-        filter: Some(r#"and(eq(metadata.v, "v1"), gt(latency, 60))"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: None,
-    },
-    Case {
-        filter: Some(r#"eq(name, "fetch_url")"#),
-        tree: None,
-        trace: Some(r#"eq(status, "error")"#),
-        root: None,
-        project: None,
-    },
-    Case {
-        filter: None,
-        tree: None,
-        trace: None,
-        root: Some(true),
-        project: Some("b"),
-    },
-    Case {
-        filter: Some(r#"eq(end_time, null)"#),
-        tree: None,
-        trace: None,
-        root: None,
-        project: None,
-    },
+    c(None, Some(r#"eq(status, "error")"#), None, None, None, None),
+    c(
+        None,
+        Some(r#"eq(status, "ok")"#),
+        Some(r#"eq(status, "error")"#),
+        None,
+        Some(true),
+        None,
+    ),
+    c(
+        None,
+        Some(r#"and(has(tags, "batch=x"), eq(status, "running"))"#),
+        None,
+        None,
+        None,
+        Some("a"),
+    ),
+    c(None, Some(r#"eq(outputs.status_code, 429)"#), None, None, None, None),
+    c(
+        None,
+        Some(r#"or(neq(error, null), has(tags, "retried"))"#),
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(None, Some(r#"not(eq(name, "llm"))"#), None, None, Some(false), None),
+    c(
+        None,
+        Some(r#"and(eq(metadata.v, "v1"), gt(latency, 60))"#),
+        None,
+        None,
+        None,
+        None,
+    ),
+    c(
+        None,
+        Some(r#"eq(name, "fetch_url")"#),
+        None,
+        Some(r#"eq(status, "error")"#),
+        None,
+        None,
+    ),
+    c(None, None, None, None, Some(true), Some("b")),
+    c(None, Some(r#"eq(end_time, null)"#), None, None, None, None),
+    // Late updates carry no project: nothing may ever show up under "default".
+    c(None, None, None, None, None, Some("default")),
+    // Time windows: trace-level conditions look at the whole trace, inside the window or not.
+    c(
+        Some("2026-11-05T02:20:00Z"),
+        Some(r#"eq(status, "ok")"#),
+        Some(r#"eq(status, "error")"#),
+        None,
+        Some(true),
+        None,
+    ),
+    c(
+        Some("2026-11-05T02:20:00Z"),
+        Some(r#"eq(name, "fetch_url")"#),
+        None,
+        Some(r#"has(tags, "batch=x")"#),
+        Some(false),
+        None,
+    ),
+    c(Some("2026-11-05T02:20:00Z"), None, None, None, None, Some("a")),
+    c(None, Some(r#"has(tags, "retried")"#), None, None, None, None),
 ];
+
+const fn c(
+    from: Option<&'static str>,
+    filter: Option<&'static str>,
+    tree: Option<&'static str>,
+    trace: Option<&'static str>,
+    root: Option<bool>,
+    project: Option<&'static str>,
+) -> Case {
+    Case {
+        from,
+        filter,
+        tree,
+        trace,
+        root,
+        project,
+    }
+}
 
 fn expected(runs: &HashMap<RunId, RunState>, c: &Case) -> BTreeSet<RunId> {
     let now = Ts::now();
@@ -253,7 +276,9 @@ fn expected(runs: &HashMap<RunId, RunState>, c: &Case) -> BTreeSet<RunId> {
             .map(|s| s.run.trace_id)
             .collect()
     });
+    let from = c.from.map(|f| Ts::parse(f).unwrap().0);
     runs.values()
+        .filter(|s| from.is_none_or(|f| tracedb_storage::segment::start_key(&s.run.dotted_order) >= f))
         .filter(|s| c.project.is_none_or(|p| s.run.project == p))
         .filter(|s| c.root.is_none_or(|r| s.run.is_root == r))
         .filter(|s| c.filter.is_none_or(|f| m(s, f)))
@@ -323,6 +348,10 @@ async fn queries_match_the_naive_answer_whatever_was_flushed() {
         merged += q.query(&QuerySpec::default()).await.unwrap().stats.rows_merged;
         for (i, c) in CASES.iter().enumerate() {
             let spec = QuerySpec {
+                time: tracedb_query::TimeRange {
+                    from: c.from.map(|f| tracedb_model::filter::TimeAt::parse(f).unwrap()),
+                    to: None,
+                },
                 project: c.project.map(str::to_string),
                 filter: c.filter.map(|f| parse_filter(f).unwrap()),
                 tree_filter: c.tree.map(|f| parse_filter(f).unwrap()),

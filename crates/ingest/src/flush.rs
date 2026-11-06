@@ -19,7 +19,7 @@ use tracedb_storage::{FieldStat, SegmentMeta, StorageError};
 
 use crate::memtable::Mem;
 use crate::store::RunStore;
-use crate::{Counters, Storage, wal};
+use crate::{Counters, Storage, crash_point, wal};
 
 pub(crate) struct FlushJob {
     pub frozen: Arc<RunStore>,
@@ -46,14 +46,6 @@ pub struct FlushHealth {
     pub error: Option<String>,
     pub last_flush_at: Option<Ts>,
     pub flushes: u64,
-}
-
-/// Test hook: `TRACEDB_TEST_CRASH_AT=<point>` aborts the process at that point of a flush.
-fn crash_point(point: &str) {
-    if std::env::var("TRACEDB_TEST_CRASH_AT").is_ok_and(|p| p == point) {
-        eprintln!("crash point: {point}");
-        std::process::abort();
-    }
 }
 
 impl Flusher {
@@ -105,7 +97,11 @@ impl Flusher {
                 };
                 let needs_merge = st.created_by_patch() || mvset.contains(&st.run.run_id);
                 by_project.entry(project).or_default().push(Row {
-                    attrs: promote(&st.run),
+                    attrs: job
+                        .frozen
+                        .attrs(&st.run.run_id)
+                        .cloned()
+                        .unwrap_or_else(|| promote(&st.run)),
                     state: st.clone(),
                     needs_merge,
                 });
@@ -126,25 +122,29 @@ impl Flusher {
         let (m2, s2) = (metas.clone(), stats.clone());
         let max_seq = job.max_seq;
         self.storage.block(async move {
-            let result = async {
+            let put = async {
                 for w in &written {
                     store.put_new(&w.meta.core_path, w.core.clone()).await?;
+                    crash_point("during_put");
                     store.put_new(&w.meta.payload_path, w.payload.clone()).await?;
                 }
-                crash_point("after_put");
-                meta.commit_flush(&m2, &s2, max_seq).await?;
-                crash_point("after_commit");
                 Ok::<_, StorageError>(())
             }
             .await;
-            if result.is_err() {
-                // Best effort: a failed attempt's files were never registered.
+            if let Err(e) = put {
+                // Best effort: these files were never registered.
                 for w in &written {
                     let _ = store.delete(&w.meta.core_path).await;
                     let _ = store.delete(&w.meta.payload_path).await;
                 }
+                return Err(e);
             }
-            result
+            crash_point("after_put");
+            // A failed commit may still have landed (e.g. a lost reply), so its files are kept; if it didn't,
+            // they are orphans, deleted on the next start.
+            meta.commit_flush(&m2, &s2, max_seq).await?;
+            crash_point("after_commit");
+            Ok(())
         })?;
         self.publish(metas, stats, job.max_seq);
         self.counters.flushed_seq.store(job.max_seq, Ordering::Relaxed);

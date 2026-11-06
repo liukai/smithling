@@ -1,8 +1,11 @@
 //! Crash safety against the real binary (SC-04). Slow, so `#[ignore]`; CI runs it with `--ignored`.
 //!
-//! Each round: start `tracedb serve`, upload from several clients (starts, then updates), kill -9
-//! at a random moment, restart, re-send every batch that never got an answer (as an SDK retry would),
-//! then check every confirmed item is present, merged, and stored exactly once.
+//! Each round: start `tracedb serve` with a tiny memtable (so data is flushed to files all the time), upload
+//! from several clients (starts, then updates), kill -9 at a random moment, restart, re-send every batch
+//! that never got an answer (as an SDK retry would), then check every confirmed item is present, merged,
+//! and stored exactly once. Five rounds kill at a random moment of the upload; the other five make the server
+//! abort itself at a chosen point of a flush (SC-05): between the two file puts, between the puts and the
+//! catalog commit, after the commit before the WAL trim, in the middle of the trim, and after it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -29,13 +32,26 @@ fn end_item(n: u64) -> Value {
            "end_time": "2026-11-05T02:05:00.000000", "outputs": {"n": n}})
 }
 
-fn spawn(data: &std::path::Path) -> (Child, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
-        .args(["serve", "--data", data.to_str().unwrap(), "--port", "0"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+fn spawn(data: &std::path::Path, crash_at: Option<&str>) -> (Child, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));
+    // Small WAL files and a short dedup window, so flushes have whole files to trim; retries are re-sent
+    // right after the restart, well inside the window.
+    cmd.args([
+        "serve",
+        "--data",
+        data.to_str().unwrap(),
+        "--port",
+        "0",
+        "--memtable",
+        "256KB",
+    ])
+    .args(["--dedup-window", "20s"])
+    .env("TRACEDB_TEST_WAL_ROLL", "65536");
+    match crash_at {
+        Some(p) => cmd.env("TRACEDB_TEST_CRASH_AT", p),
+        None => cmd.env_remove("TRACEDB_TEST_CRASH_AT"),
+    };
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -124,22 +140,52 @@ async fn all_runs(url: &str) -> HashMap<String, Value> {
 #[ignore]
 async fn kill_9_loses_nothing_confirmed() {
     for round in 0..10u64 {
+        let crash_at = match round {
+            5 => Some("during_put"),
+            6 => Some("after_put"),
+            7 => Some("after_commit"),
+            8 => Some("during_trim"),
+            9 => Some("after_trim"),
+            _ => None,
+        };
         let dir = tempfile::tempdir().unwrap();
-        let (mut child, url) = spawn(dir.path());
+        let (mut child, url) = spawn(dir.path(), crash_at);
         let log = Arc::new(Mutex::new(Log::default()));
         let clients: Vec<_> = (0..4u64)
             .map(|c| tokio::spawn(client(url.clone(), c * 1_000_000 + 1, log.clone())))
             .collect();
 
         let wait = random_ms(round);
-        tokio::time::sleep(Duration::from_millis(wait)).await;
-        child.kill().unwrap();
-        child.wait().unwrap();
+        if crash_at.is_some() {
+            // The server aborts itself at the crash point of a flush (`during_trim`: once a WAL file is older
+            // than the dedup window).
+            let deadline = std::time::Instant::now() + Duration::from_secs(120);
+            let status = loop {
+                if let Some(s) = child.try_wait().unwrap() {
+                    break s;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "round {round}: crash point never reached"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                status.signal(),
+                Some(6),
+                "round {round}: died other than by the crash point: {status}"
+            );
+        } else {
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
         for c in clients {
             c.await.unwrap();
         }
 
-        let (mut child, url) = spawn(dir.path());
+        let (mut child, url) = spawn(dir.path(), None);
         let log = Arc::try_unwrap(log).ok().unwrap().into_inner().unwrap();
         let http = reqwest::Client::new();
         for body in &log.unanswered {
@@ -155,6 +201,13 @@ async fn kill_9_loses_nothing_confirmed() {
         }
 
         let runs = all_runs(&url).await;
+        let health: Value = reqwest::get(format!("{url}/healthz"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let segments = health["segments"].as_u64().unwrap_or(0);
         for n in &log.confirmed_start {
             let r = runs
                 .get(&uid(*n))
@@ -163,21 +216,34 @@ async fn kill_9_loses_nothing_confirmed() {
                 assert_eq!(r["status"], "ok", "round {round}: confirmed end of {n} not merged");
             }
         }
+        let mut ok = 0;
         for r in runs.values() {
             let expected = if r["status"] == "ok" { 2 } else { 1 };
+            ok += (expected - 1) as u64;
             assert_eq!(
                 r["event_count"], expected,
                 "round {round}: {} stored more than once",
                 r["run_id"]
             );
         }
+        // Reads merge versions, so also count them: a run has at most a start and an end version; more means
+        // recovery stored flushed events again.
+        let versions = health["runs"].as_u64().unwrap() + health["segment_rows"].as_u64().unwrap();
+        assert!(
+            versions <= runs.len() as u64 + ok,
+            "round {round}: {versions} stored versions for {} runs ({ok} ended)",
+            runs.len()
+        );
         eprintln!(
-            "round {round}: killed at {wait} ms; {} starts + {} ends confirmed, {} batches re-sent; all present",
+            "round {round}: {}; {} starts + {} ends confirmed, {} batches re-sent, {} segments; all present",
+            crash_at.map_or(format!("killed at {wait} ms"), |p| format!("crashed {p}")),
             log.confirmed_start.len(),
             log.confirmed_end.len(),
-            log.unanswered.len()
+            log.unanswered.len(),
+            segments
         );
         child.kill().unwrap();
         child.wait().unwrap();
     }
+    eprintln!("10/10 rounds: 0 missing, 0 duplicated");
 }
