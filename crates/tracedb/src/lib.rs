@@ -10,12 +10,21 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use tracedb_ingest::{Budget, Health, Ingest, IngestConfig, OpenStats};
+use tracedb_query::Query;
 
 pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
     pub ingest: Ingest,
+    pub query: Query,
+}
+
+impl AppState {
+    pub fn new(ingest: Ingest) -> AppState {
+        let query = Query::new(ingest.snapshot());
+        AppState { ingest, query }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +45,11 @@ pub fn app(state: AppState) -> Router {
         .route("/feedback", post(ing::feedback))
         .route("/v1/events", post(ing::native_events))
         .route("/healthz", get(healthz))
+        .route("/api/roots", get(routes::api::roots))
+        .route("/api/projects", get(routes::api::projects))
+        .route("/api/traces/{trace_id}", get(routes::api::trace))
+        .route("/api/runs/{run_id}", get(routes::api::run))
+        .route("/api/tail", get(routes::tail::tail))
         .fallback(routes::ui::static_or_index)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
@@ -50,7 +64,7 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     let mut icfg = IngestConfig::new(&cfg.data_dir);
     icfg.budget = cfg.budget;
     let (ingest, stats) = Ingest::open(icfg)?;
-    Ok((AppState { ingest }, stats))
+    Ok((AppState::new(ingest), stats))
 }
 
 pub async fn serve(
