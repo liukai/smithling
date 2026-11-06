@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::run::{JsonMap, RunState, Status, Warning};
+use crate::run::{JsonMap, RunState, Status, Warning, present};
 
 const THREAD_KEYS: [&str; 3] = ["thread_id", "session_id", "conversation_id"];
 
@@ -53,4 +53,7 @@ pub fn derive(st: &mut RunState) {
     });
 
     st.has_start = r.start_time.is_some() && r.name.is_some();
+    if st.present & present::CONFLICT != 0 {
+        r.warnings.push(Warning::IdentityConflict);
+    }
 }

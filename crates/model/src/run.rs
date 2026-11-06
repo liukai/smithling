@@ -101,6 +101,9 @@ pub enum Status {
 #[serde(rename_all = "snake_case")]
 pub enum Warning {
     NegativeLatency,
+    /// A later version disagreed on trace id, `dotted_order`, project or address; the first version's
+    /// identity is kept (design §8, question 1).
+    IdentityConflict,
 }
 
 /// One step: the merge of all its events. Derived fields are recomputed after every merge.
@@ -170,6 +173,31 @@ pub struct RunState {
     pub has_start: bool,
     /// Whether `project` came from an event (it is immutable once set) or is still the default.
     pub project_set: bool,
+    /// Which fields some event set (`present::*`). Parquet can't tell absent from empty, and the merge rule
+    /// needs to ("absent never overwrites"), so versions carry this bitmask.
+    pub present: u32,
+}
+
+/// Bits of [`RunState::present`].
+pub mod present {
+    pub const PROJECT: u32 = 1 << 0;
+    pub const ADDRESS: u32 = 1 << 1;
+    pub const NAME: u32 = 1 << 2;
+    pub const RUN_TYPE: u32 = 1 << 3;
+    pub const START: u32 = 1 << 4;
+    pub const END: u32 = 1 << 5;
+    pub const ERROR: u32 = 1 << 6;
+    pub const TAGS: u32 = 1 << 7;
+    pub const METADATA: u32 = 1 << 8;
+    pub const EXTRA: u32 = 1 << 9;
+    pub const INPUTS: u32 = 1 << 10;
+    pub const OUTPUTS: u32 = 1 << 11;
+    pub const EVENTS: u32 = 1 << 12;
+    pub const DROPPED: u32 = 1 << 13;
+    /// The version was started by an update, not a start: the run's start lives elsewhere.
+    pub const CREATED_BY_PATCH: u32 = 1 << 29;
+    /// Versions disagreed on an identity field.
+    pub const CONFLICT: u32 = 1 << 30;
 }
 
 impl RunState {
@@ -179,5 +207,54 @@ impl RunState {
 
     pub fn is_listed_root(&self) -> bool {
         self.run.is_root && self.has_start
+    }
+
+    pub fn created_by_patch(&self) -> bool {
+        self.present & present::CREATED_BY_PATCH != 0
+    }
+
+    /// The fields this version set, as if they arrived in one event.
+    pub fn to_fields(&self) -> RunFields {
+        let r = &self.run;
+        let has = |bit: u32| self.present & bit != 0;
+        let opt = |bit: u32, v: Option<String>| if has(bit) { v } else { None };
+        RunFields {
+            id: Some(r.run_id),
+            trace_id: Some(r.trace_id),
+            parent_run_id: r.parent_run_id,
+            dotted_order: Some(r.dotted_order.clone()),
+            project: has(present::PROJECT).then(|| r.project.clone()),
+            address: opt(present::ADDRESS, r.address.clone()),
+            name: opt(present::NAME, r.name.clone()),
+            run_type: has(present::RUN_TYPE).then(|| {
+                r.run_type_raw
+                    .clone()
+                    .unwrap_or_else(|| run_type_str(r.run_type).into())
+            }),
+            start_time: if has(present::START) { r.start_time } else { None },
+            end_time: if has(present::END) { r.end_time } else { None },
+            error: opt(present::ERROR, r.error.clone()),
+            tags: has(present::TAGS).then(|| r.tags.clone()),
+            metadata: has(present::METADATA).then(|| r.metadata.clone()),
+            extra: has(present::EXTRA).then(|| r.extra.clone()),
+            inputs: if has(present::INPUTS) { r.inputs.clone() } else { None },
+            outputs: if has(present::OUTPUTS) { r.outputs.clone() } else { None },
+            events: if has(present::EVENTS) { r.events.clone() } else { None },
+            dropped: has(present::DROPPED).then(|| r.dropped.clone()),
+        }
+    }
+}
+
+pub fn run_type_str(t: RunType) -> &'static str {
+    match t {
+        RunType::Llm => "llm",
+        RunType::Chain => "chain",
+        RunType::Tool => "tool",
+        RunType::Retriever => "retriever",
+        RunType::Embedding => "embedding",
+        RunType::Prompt => "prompt",
+        RunType::Parser => "parser",
+        RunType::Agent => "agent",
+        RunType::Other => "other",
     }
 }

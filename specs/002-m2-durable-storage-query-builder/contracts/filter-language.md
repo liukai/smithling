@@ -67,9 +67,11 @@ Every error names the slot, a byte range and what was expected:
 | Input | Error |
 |---|---|
 | `eq(staus, "error")` | `3..8 unknown field "staus" (did you mean "status"?)` |
-| `and(eq(status, "error")` | `24..24 expected ")"` |
-| `gt(name, 5)` | `3..7 "name" is a string; gt() needs a number, time or string value of the same type` |
-| `eq(status, "failed")` | `12..20 status is one of "running", "ok", "error"` |
+| `and(eq(status, "error")` | `23..23 expected ")"` |
+| `gt(name, 5)` | `3..7 "name" is a string; gt() needs a "string" value` |
+| `eq(status, "failed")` | `11..19 status is one of "running", "ok", "error"` |
+
+The full list of cases (shared by the Rust and UI tests) is `tests/fixtures/filter-golden.json`.
 
 ## Scenario queries (asserted by `tracedb demo`)
 

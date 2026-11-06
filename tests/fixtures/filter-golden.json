@@ -1,0 +1,32 @@
+{
+  "_comment": "Shared by crates/model/tests/filter.rs and ui/src/query/parse.test.ts. ok = canonical text; error = byte range + message.",
+  "cases": [
+    {"input": "and(eq(run_type, \"chain\"), gt(latency, 10), gt(total_tokens, 5000))", "ok": "and(eq(run_type, \"chain\"), gt(latency, 10), gt(total_tokens, 5000))", "source": "SDK 0.14.17 list_runs docstring"},
+    {"input": "eq(name, \"extractor\")", "ok": "eq(name, \"extractor\")", "source": "SDK docstring"},
+    {"input": "and(or(has(tags, \"experimental\"), has(tags, \"beta\")), gt(latency, 2))", "ok": "and(or(has(tags, \"experimental\"), has(tags, \"beta\")), gt(latency, 2))", "source": "SDK docstring"},
+    {"input": "and(eq(feedback_key, \"user_score\"), eq(feedback_score, 1))", "error": {"start": 7, "end": 19, "message": "feedback is supported from M4"}, "source": "SDK docstring"},
+    {"input": "and(gt(start_time, \"2023-07-15T12:34:56Z\"), or(neq(error, null), and(eq(feedback_key, \"Correctness\"), eq(feedback_score, 0.0))))", "error": {"start": 72, "end": 84, "message": "feedback is supported from M4"}, "source": "SDK docstring"},
+    {"input": "and(gt(start_time, \"2023-07-15T12:34:56Z\"), neq(error, null))", "ok": "and(gt(start_time, \"2023-07-15T12:34:56Z\"), neq(error, null))"},
+    {"input": "and(has(tags,\"batch=2026-11-05-a\"),eq(status,\"error\"))", "ok": "and(has(tags, \"batch=2026-11-05-a\"), eq(status, \"error\"))", "source": "scenario: what failed"},
+    {"input": "and(has(tags, \"batch=2026-11-05-a\"), eq(status, \"ok\"))", "ok": "and(has(tags, \"batch=2026-11-05-a\"), eq(status, \"ok\"))", "source": "scenario: quiet failures (filter)"},
+    {"input": "eq(status, \"error\")", "ok": "eq(status, \"error\")", "source": "scenario: quiet failures (tree_filter)"},
+    {"input": "and(eq(metadata.prompt_version, \"v7\"), eq(outputs.status_code, 429))", "ok": "and(eq(metadata.prompt_version, \"v7\"), eq(outputs.status_code, 429))", "source": "scenario: which ones exactly"},
+    {"input": "in(name, [\"fetch_url\", \"web_search\"])", "ok": "in(name, [\"fetch_url\", \"web_search\"])"},
+    {"input": "not(eq(name, \"plan\"))", "ok": "not(eq(name, \"plan\"))"},
+    {"input": "gt(start_time, \"-12h\")", "ok": "gt(start_time, \"-12h\")"},
+    {"input": "gte(outputs.status_code, 400.5)", "ok": "gte(outputs.status_code, 400.5)"},
+    {"input": "eq(metadata.flag, true)", "ok": "eq(metadata.flag, true)"},
+    {"input": "eq(staus, \"error\")", "error": {"start": 3, "end": 8, "message": "unknown field \"staus\" (did you mean \"status\"?)"}},
+    {"input": "and(eq(status, \"error\")", "error": {"start": 23, "end": 23, "message": "expected \")\""}},
+    {"input": "gt(name, 5)", "error": {"start": 3, "end": 7, "message": "\"name\" is a string; gt() needs a \"string\" value"}},
+    {"input": "eq(status, \"failed\")", "error": {"start": 11, "end": 19, "message": "status is one of \"running\", \"ok\", \"error\""}},
+    {"input": "gt(status, \"ok\")", "error": {"start": 3, "end": 9, "message": "status can only be compared with eq, neq or in, not gt()"}},
+    {"input": "eq(tags, \"x\")", "error": {"start": 3, "end": 7, "message": "tags is a list; use has(tags, …)"}},
+    {"input": "gt(start_time, \"yesterday\")", "error": {"start": 15, "end": 26, "message": "start_time needs an ISO-8601 time or a relative time like \"-12h\""}},
+    {"input": "gt(latency, null)", "error": {"start": 12, "end": 16, "message": "null can only be used with eq or neq, not gt()"}},
+    {"input": "search(\"rate limit\")", "error": {"start": 0, "end": 6, "message": "search() is supported from M3"}},
+    {"input": "eq(foo.bar, 1)", "error": {"start": 3, "end": 10, "message": "unknown field \"foo.bar\"; JSON paths start with metadata., inputs. or outputs."}},
+    {"input": "eq(name, \"x\") extra", "error": {"start": 14, "end": 19, "message": "expected end of filter"}},
+    {"input": "", "error": {"start": 0, "end": 0, "message": "expected a function such as eq( or and("}}
+  ]
+}

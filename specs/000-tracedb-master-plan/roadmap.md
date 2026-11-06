@@ -34,6 +34,9 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06: **Milestones numbered from 1**: M0–M4 renamed M1–M5 everywhere (docs, code comments, messages, phase folder `001-m1-…`, branch). Commit messages before this keep the old labels.
 - 2026-11-06: **Every phase ends with a code starter guide** (`starter-guide.md` in the phase folder): reading order, one run traced through the code with line-level links. Planning includes a pre-code version (Appendix A of the plan) with pseudo-flows.
 - 2026-11-06: **Diagrams read top to bottom**: prefer vertical (`flowchart TB`) charts with short labels and few nodes per chart; no wide horizontal chains.
+- 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
+- 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
+- 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
 
 **STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
 M1 is **built** on branch `001-m1-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph

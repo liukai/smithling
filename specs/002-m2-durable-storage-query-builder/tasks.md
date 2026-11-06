@@ -49,18 +49,18 @@ fixtures in `tests/fixtures/`; CI in `.github/workflows/ci.yml` and `ci/cloud.ym
 
 ### Tests for the foundation (write first; they should fail)
 
-- [ ] T004 [P] Filter golden tests `crates/model/tests/filter.rs`: every example in `contracts/filter-language.md` (SDK docstring examples, the three scenario queries, the four error rows with exact byte ranges and messages)
-- [ ] T005 [P] Filter property test `crates/model/tests/filter_roundtrip.rs`: random ASTs → `print` → `parse` gives the same AST; `print` is canonical (printing twice is identical)
-- [ ] T006 [P] `merge_versions` property test `crates/model/tests/merge_versions.rs`: for random event sequences split at random points into versions, merging the versions by `last_seq` equals applying all events in order with M1 `merge` (incl. `tags: []`/`metadata: {}` set via the `present` bitmask)
+- [X] T004 [P] Filter golden tests `crates/model/tests/filter.rs`: every example in `contracts/filter-language.md` (SDK docstring examples, the three scenario queries, the four error rows with exact byte ranges and messages)
+- [X] T005 [P] Filter property test `crates/model/tests/filter_roundtrip.rs`: random ASTs → `print` → `parse` gives the same AST; `print` is canonical (printing twice is identical)
+- [X] T006 [P] `merge_versions` property test `crates/model/tests/merge_versions.rs`: for random event sequences split at random points into versions, merging the versions by `last_seq` equals applying all events in order with M1 `merge` (incl. `tags: []`/`metadata: {}` set via the `present` bitmask)
 - [ ] T007 [P] Storage trait tests `crates/storage/tests/traits.rs`, generic over implementations: object put/get/range-read/list/delete; a put to an existing name fails (write-once); metastore migrations, flush transaction atomicity (insert segments + field_stats + `flushed_seq` all or nothing), `active_segments`, `flushed_seq`
 
 ### Implementation
 
-- [ ] T008 [P] Filter AST in `crates/model/src/filter/ast.rs` per data-model §9: `Expr = And | Or | Not | Cmp{op: eq|neq|gt|gte|lt|lte, path, value} | Has{path, value} | In{path, values}`; `Path` = built-in field or `metadata.<dotted>` / `inputs.<dotted>` / `outputs.<dotted>`; `Value` = string | number | bool | null | time
-- [ ] T009 Filter parser in `crates/model/src/filter/parse.rs`: hand-written recursive descent for the grammar in `contracts/filter-language.md`; errors are `{start, end, expected}` byte ranges; unknown fields suggest the closest built-in (edit distance ≤ 2); `latency` in seconds; relative times `"-12h"`, `"-30m"`, `"-7d"`; `status` values limited to `"running" | "ok" | "error"`; `feedback_key`/`feedback_score` → `unsupported: feedback is supported from M4`; `search(…)` → `unsupported: search() is supported from M3`
-- [ ] T010 Canonical printer in `crates/model/src/filter/print.rs` (`print(&Expr) -> String`), and `crates/model/src/filter/mod.rs` exporting `parse_filter`, `print`, `Expr`
-- [ ] T011 [P] `merge_versions(older: &RunVersion, newer: &RunVersion) -> RunVersion` in `crates/model/src/merge.rs`: per field, the newer present value wins (by `last_seq`); identity fields keep the **first** version's value and add `Warning::IdentityConflict` on mismatch (design §8 q1); recompute derived fields with `derive`
-- [ ] T012 [P] `RunVersion` type in `crates/model/src/version.rs` with every column of data-model §2, incl. `start_key` ("from the run's own `dotted_order` segment; **never null**"), `present: u32` bitmask, `needs_merge`, `first_seq`/`last_seq`; `start_key` derived via `DottedOrder` (own segment timestamp)
+- [X] T008 [P] Filter AST in `crates/model/src/filter/ast.rs` per data-model §9: `Expr = And | Or | Not | Cmp{op: eq|neq|gt|gte|lt|lte, path, value} | Has{path, value} | In{path, values}`; `Path` = built-in field or `metadata.<dotted>` / `inputs.<dotted>` / `outputs.<dotted>`; `Value` = string | number | bool | null | time
+- [X] T009 Filter parser in `crates/model/src/filter/parse.rs`: hand-written recursive descent for the grammar in `contracts/filter-language.md`; errors are `{start, end, expected}` byte ranges; unknown fields suggest the closest built-in (edit distance ≤ 2); `latency` in seconds; relative times `"-12h"`, `"-30m"`, `"-7d"`; `status` values limited to `"running" | "ok" | "error"`; `feedback_key`/`feedback_score` → `unsupported: feedback is supported from M4`; `search(…)` → `unsupported: search() is supported from M3`
+- [X] T010 Canonical printer in `crates/model/src/filter/print.rs` (`print(&Expr) -> String`), and `crates/model/src/filter/mod.rs` exporting `parse_filter`, `print`, `Expr`
+- [X] T011 [P] `merge_versions(older: &RunVersion, newer: &RunVersion) -> RunVersion` in `crates/model/src/merge.rs`: per field, the newer present value wins (by `last_seq`); identity fields keep the **first** version's value and add `Warning::IdentityConflict` on mismatch (design §8 q1); recompute derived fields with `derive`
+- [X] T012 [P] *(done as a `present` bitmask + `to_fields()` on `RunState` in `crates/model/src/run.rs`: a version is a `RunState`, so no separate type)* `RunVersion` type in `crates/model/src/version.rs` with every column of data-model §2, incl. `start_key` ("from the run's own `dotted_order` segment; **never null**"), `present: u32` bitmask, `needs_merge`, `first_seq`/`last_seq`; `start_key` derived via `DottedOrder` (own segment timestamp)
 - [ ] T013 [P] `ObjectStore` trait + local impl in `crates/storage/src/object.rs` over `object_store::local::LocalFileSystem`; S3 impl over `object_store::aws::AmazonS3` (endpoint, bucket, prefix from `--storage s3://bucket/prefix` + `AWS_*` env); write-once (`PutMode::Create`)
 - [ ] T014 [P] `Metastore` trait in `crates/storage/src/metastore.rs` with SQLite and Postgres impls via `sqlx`; migrations in `crates/storage/migrations/0001_init.sql` creating exactly the `state`, `segments`, `field_stats` tables and the `segments_scope` index of data-model §5 (SQL that runs on both; `BLOB` vs `BYTEA` via `sqlx` type mapping)
 - [ ] T015 [P] `Cache` trait + moka LRU impl in `crates/storage/src/cache.rs` (keys: file footer, bloom filter, row group; weight by bytes; default 256 MB)
@@ -229,11 +229,11 @@ done right after Phase 2 (plan PR 2).
 
 **Independent test**: each acceptance scenario of spec Story 7.
 
-- [ ] T071 [P] [US7] Writer test `crates/ingest/tests/writer.rs`: an identity conflict is rejected; the identical retry is rejected again with the same reason; it never gets a seq, WAL record or dedup key (M2-FR-23)
-- [ ] T072 [US7] Identity check before WAL append in `crates/ingest/src/writer.rs`: check against the active, then frozen state with `model::check_identity`; rejected items are not numbered, logged or added to dedup
-- [ ] T073 [P] [US7] `--ui-dir PATH` / `TRACEDB_UI_DIR` in `crates/tracedb/src/routes/ui.rs`: serve files from that folder instead of the embedded copy (same index fallback); test in `crates/tracedb/tests/ui_dir.rs` (M2-FR-24)
-- [ ] T074 [US7] `crates/tracedb/build.rs`: stop running npm; embed `ui/dist` if present, else a one-page placeholder ("UI not built — run `npm run build` in ui/") (M2-FR-25)
-- [ ] T075 [US7] CI in `.github/workflows/ci.yml`: a `ui` job (npm ci, test, build, upload `ui/dist` artifact); Rust jobs download it; one Rust job runs on an image without Node; the release/clean-container job always embeds the built UI
+- [X] T071 [P] [US7] Writer test `crates/ingest/tests/writer.rs`: an identity conflict is rejected; the identical retry is rejected again with the same reason; it never gets a seq, WAL record or dedup key (M2-FR-23)
+- [X] T072 [US7] Identity check before WAL append in `crates/ingest/src/writer.rs`: check against the active, then frozen state with `model::check_identity`; rejected items are not numbered, logged or added to dedup
+- [X] T073 [P] [US7] `--ui-dir PATH` / `TRACEDB_UI_DIR` in `crates/tracedb/src/routes/ui.rs`: serve files from that folder instead of the embedded copy (same index fallback); test in `crates/tracedb/tests/ui_dir.rs` (M2-FR-24)
+- [X] T074 [US7] `crates/tracedb/build.rs`: stop running npm; embed `ui/dist` if present, else a one-page placeholder ("UI not built — run `npm run build` in ui/") (M2-FR-25)
+- [X] T075 [US7] CI in `.github/workflows/ci.yml`: a `ui` job (npm ci, test, build, upload `ui/dist` artifact); Rust jobs download it; one Rust job runs on an image without Node; the release/clean-container job always embeds the built UI
 
 **Checkpoint**: `cargo build` without Node; `serve --ui-dir ui/dist` serves an edited UI; retry rejection is stable.
 
