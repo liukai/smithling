@@ -13,7 +13,7 @@ pub mod wal;
 mod writer;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread::JoinHandle;
@@ -142,6 +142,10 @@ pub enum OpenError {
     Storage(#[from] StorageError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
+    #[error("data folder {0} is in use by another tracedb process")]
+    Locked(PathBuf),
+    #[error("could not lock the data folder: {0}")]
+    Lock(std::io::Error),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -393,6 +397,8 @@ struct Inner {
     counters: Arc<Counters>,
     storage: Arc<Storage>,
     corrupt: Vec<String>,
+    /// Held for the life of the process: a second process on the same folder would delete our files as orphans.
+    _lock: std::fs::File,
 }
 
 impl Drop for Inner {
@@ -411,6 +417,21 @@ impl Drop for Inner {
     }
 }
 
+fn lock_data_dir(dir: &Path) -> Result<std::fs::File, OpenError> {
+    std::fs::create_dir_all(dir).map_err(OpenError::Lock)?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("LOCK"))
+        .map_err(OpenError::Lock)?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(OpenError::Locked(dir.to_path_buf())),
+        Err(std::fs::TryLockError::Error(e)) => Err(OpenError::Lock(e)),
+    }
+}
+
 #[derive(Clone)]
 pub struct Ingest {
     inner: Arc<Inner>,
@@ -420,6 +441,7 @@ impl Ingest {
     /// Opens storage and the catalog, removes orphan files, rebuilds the multi-version set, replays the WAL
     /// past `flushed_seq` into the active memtable, then starts the writer and the flusher (design §4.6).
     pub fn open(cfg: IngestConfig) -> Result<(Ingest, OpenStats), OpenError> {
+        let lock = lock_data_dir(&cfg.data_dir)?;
         let storage = Arc::new(Storage::open(&cfg)?);
         let recover::Recovered {
             wal,
@@ -497,6 +519,7 @@ impl Ingest {
             counters,
             storage,
             corrupt,
+            _lock: lock,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
     }

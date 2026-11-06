@@ -176,7 +176,7 @@ async fn an_m1_data_folder_opens_with_no_manual_step() {
         let (ingest, _) = Ingest::open(c).unwrap();
         upload(&ingest, 1, 50).await;
     }
-    for f in ["meta.sqlite", "meta.sqlite-wal", "meta.sqlite-shm"] {
+    for f in ["meta.sqlite", "meta.sqlite-wal", "meta.sqlite-shm", "LOCK"] {
         let _ = std::fs::remove_file(dir.path().join(f));
     }
     std::fs::remove_dir_all(dir.path().join("data")).unwrap();
@@ -208,7 +208,7 @@ async fn files_the_wal_no_longer_covers_are_never_deleted_as_orphans() {
     let before = files(dir.path());
     assert!(before > 0);
     // The catalog is lost (or `--metastore` points elsewhere), and the trimmed WAL can't rebuild the files.
-    for f in ["meta.sqlite", "meta.sqlite-wal", "meta.sqlite-shm"] {
+    for f in ["meta.sqlite", "meta.sqlite-wal", "meta.sqlite-shm", "LOCK"] {
         let _ = std::fs::remove_file(dir.path().join(f));
     }
     let err = Ingest::open(small_wal(dir.path())).err().expect("refuses to start");
@@ -226,4 +226,14 @@ fn walk(p: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_process_on_the_same_folder_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = Ingest::open(cfg(dir.path(), 0)).unwrap();
+    let err = Ingest::open(cfg(dir.path(), 0)).err().expect("second open must fail");
+    assert!(matches!(err, tracedb_ingest::OpenError::Locked(_)), "{err}");
+    drop(first);
+    Ingest::open(cfg(dir.path(), 0)).expect("free again once the first is gone");
 }
