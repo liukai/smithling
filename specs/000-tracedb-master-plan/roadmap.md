@@ -32,19 +32,21 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05 (standing approval): **proceed through M0 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
 - 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted.
 
-**STATE as of 2026-11-05** (verified by `git log`): `master` = `adddbb7`: master plan, M0 docs, and M0 PR1 (workspace, CI,
-UI scaffold, `model` crate, 19 tests). M0 is 16/65 tasks. First LangSmith/SmithDB reconciliation round applied to the docs,
-uncommitted for review.
+**STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
+M0 is **built** on branch `001-m0-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
+agent (SDK 0.14.17) traces in live; contract fixtures for SDK 0.14.17 and 0.8.18; crash harness 10/10; restart at 500k
+runs 0.83 s; 74k events/s sustained. **Not yet verified**: the UI by eye (headless Chrome can't run in this sandbox;
+screens covered by component tests), and the no-outbound + clean-container checks (CI-only; no remote CI yet).
 
-**Blocked on**: nothing.
+**Blocked on**: nothing. Waiting on the user to look at the UI in a browser.
 
-**NEXT**: 1) Review and commit the reconciliation doc round. 2) Agree the reconciliation tasks for M0 and add them to tasks.md. 3) Continue M0 (UI preview or PR2).
+**NEXT**: 1) User opens http://localhost:7070 after `tracedb seed` and the example agent, and reviews the screens. 2) Push to a remote so CI runs the no-outbound and container checks; then mark M0 ✅. 3) Write the M1 spec (`specs/002-…`), folding in R-2 and R-7–R-10.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
-| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | in progress (PR1 of 7 done) | — | not run |
+| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M1 Durable storage + query builder | — | not started | — | — |
 | M2 Core demo | — | not started | — | — |
 | M3 Follow-through | — | not started | — | — |
@@ -193,8 +195,8 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 | Requirement | Phase | Done |
 |---|---|---|
-| FR-001 | M0 (JSON), M2 (multipart) | |
-| FR-002–007 | M0 | |
+| FR-001 | M0 (JSON), M2 (multipart) | JSON path verified (contract fixtures) |
+| FR-002–007 | M0 | built, verified locally |
 | FR-008–010, 012, 013 | M1 | |
 | FR-011, 014, 015 | M2 | |
 | FR-016, 017, 020 | M3 | |
@@ -202,7 +204,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 | FR-022–027 | M0 → M2 (grows each phase) | |
 | FR-029–031 | M1 (builder, Samples, Table) → M2 (charts, compare) | |
 | FR-032 | M3 | |
-| QR-001–003 | M0 | |
+| QR-001–003 | M0 | QR-003 verified (crash 10/10); QR-001/002 CI-only |
 | QR-004–006, 008 | M2 | |
 | QR-007 | M1 | |
 
@@ -237,3 +239,4 @@ Not adopted: compaction I/O rate limit, payload-file GC (BlobDB-style), checkpoi
 ## History
 
 - 2026-11-05: product spec, primer, design notes, constitution v1.0.0, plan + Phase 1 artifacts written; the original SPEC.md and REQUIREMENTS.md were folded in and deleted.
+- 2026-11-05: M0 implemented (PR1–PR7). Found by recording real SDK traffic: `/info` must send every `batch_ingest_config` key (the SDK reads them without defaults), and an invalid `LANGSMITH_AGENT_ENVIRONMENT` makes the SDK skip tracing silently.

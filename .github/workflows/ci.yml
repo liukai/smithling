@@ -30,4 +30,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: crash and restart tests (slow)
-        run: cargo test --release -p tracedb --test crash --test restart -- --ignored
+        run: cargo test --release -p tracedb --test crash --test restart --test throughput -- --ignored
+      - name: no outbound connections
+        run: sudo apt-get install -y strace && cargo build --release -p tracedb && scripts/no-outbound.sh target/release/tracedb
+      - name: runs in a clean container (no Node, Rust or database)
+        run: |
+          docker run -d --name tdb --network host -v "$PWD/target/release/tracedb:/usr/local/bin/tracedb:ro" ubuntu:24.04 tracedb serve --data /tmp/d --port 7171
+          for i in $(seq 50); do curl -sf localhost:7171/healthz && break; sleep 0.2; done
+          curl -sf localhost:7171/healthz
+          docker rm -f tdb

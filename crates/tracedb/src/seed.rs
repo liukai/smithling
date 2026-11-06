@@ -32,7 +32,8 @@ impl Rng {
         (self.next_u64() as f64 / u64::MAX as f64) < p
     }
     fn uuid(&mut self) -> Uuid {
-        uuid::Builder::from_random_bytes(((self.next_u64() as u128) << 64 | self.next_u64() as u128).to_le_bytes()).into_uuid()
+        uuid::Builder::from_random_bytes(((self.next_u64() as u128) << 64 | self.next_u64() as u128).to_le_bytes())
+            .into_uuid()
     }
     fn pick<'a>(&mut self, xs: &'a [&'a str]) -> &'a str {
         xs[self.range(0, xs.len() as u64 - 1) as usize]

@@ -174,14 +174,14 @@ upload; 10 rounds.
 
 ## Phase 7: Polish and cross-cutting
 
-- [ ] T058 [P] No-outbound check `scripts/no-outbound.sh`: run `tracedb serve` + `tracedb seed --traces 20 --no-delay` + contract replay under `strace -f -e trace=connect`; fail on any non-loopback address; add to CI (SC-05)
-- [ ] T059 [P] Throughput test `crates/tracedb/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
-- [ ] T060 [P] Clean-container check in CI: build the release binary, run it in a minimal container without Node, `curl /healthz` (QR-002)
-- [ ] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.14.17`
-- [ ] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M0 limits (memory budget, no filters)
-- [ ] T063 Update the spec's restart target to 30 s in `specs/001-m0-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
-- [ ] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m0-see-agent-trace-live/quickstart.md` under "Last verified"
-- [ ] T065 Update the master roadmap row for M0 in `specs/000-tracedb-master-plan/roadmap.md` (status, tasks done, exit check)
+- [X] T058 [P] No-outbound check `scripts/no-outbound.sh`: run `tracedb serve` + `tracedb seed --traces 20 --no-delay` + contract replay under `strace -f -e trace=connect`; fail on any non-loopback address; add to CI (SC-05)
+- [X] T059 [P] Throughput test `crates/tracedb/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
+- [X] T060 [P] Clean-container check in CI: build the release binary, run it in a minimal container without Node, `curl /healthz` (QR-002)
+- [X] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.14.17`
+- [X] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M0 limits (memory budget, no filters)
+- [X] T063 Update the spec's restart target to 30 s in `specs/001-m0-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
+- [X] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m0-see-agent-trace-live/quickstart.md` under "Last verified"
+- [X] T065 Update the master roadmap row for M0 in `specs/000-tracedb-master-plan/roadmap.md` (status, tasks done, exit check)
 
 ---
 

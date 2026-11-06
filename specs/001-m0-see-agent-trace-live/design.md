@@ -335,6 +335,8 @@ and `batch_ingest_config.use_multipart_endpoint = false`, so the SDK sends JSON 
 
 ## 11. Open design questions (for your review)
 
+*Answered 2026-11-05 with the proposals (user approval to proceed): 1 JSON, 2 2 GB / 500k runs, 3 build script, 4 30 s.*
+
 1. **WAL encoding**: JSON (debuggable, ~2× bigger) vs binary. *Proposed: JSON in M0.*
 2. **Memory budget default**: 2 GB / 500k runs. *Proposed as is; configurable with `--max-memory`.*
 3. **UI build**: the Node build runs from `cargo build` through a build script (one command), or is prebuilt and

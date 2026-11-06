@@ -120,7 +120,7 @@ with every confirmed upload, over 10 rounds.
 
 1. **Given** uploads in progress, **When** tracedb is killed abruptly and restarted, **Then** every confirmed item is present and merged correctly.
 2. **Given** an upload that was not confirmed before the kill, **When** the SDK retries it after restart, **Then** it is stored once.
-3. **Given** a restart, **When** tracedb comes back, **Then** it is ready to accept uploads and show data within 10 s for the M0 capacity limit.
+3. **Given** a restart, **When** tracedb comes back, **Then** it is ready to accept uploads and show data within 30 s at the M0 capacity limit (decided 2026-11-05, design §11.4; measured 0.83 s at 500k runs).
 
 ---
 
