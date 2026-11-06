@@ -166,7 +166,9 @@ SDK ──POST /runs/batch──▶ HTTP: parse → map LangSmith fields → Vec
 HTTP ◀── 202 {accepted, rejected[]} ─────┘
 ```
 
-- **Group commit**: many requests share one fsync. This is how one writer reaches ≥ 5k events/s in M0, and later 20k.
+- **Group commit**: many requests share one fsync. The writer (a dedicated thread) takes everything that queued up while
+  the previous fsync ran (up to 1 MB), appends it, and fsyncs once, so there is no fixed wait. This is how one writer
+  reaches ≥ 5k events/s in M0, and later 20k.
 - **Confirm after fsync, apply before confirm**: if the confirmation reached the client, the event is both durable and
   visible. That makes "visible within 1 s" true by construction.
 

@@ -163,7 +163,7 @@ Each rejected item is returned as `{id, reason, detail}`. All other items in the
 
 **WAL** (`./.tracedb/wal/`)
 - **Files**: `<first_seq>.wal`, rolled at 64 MB. Each file starts with an 8-byte header: magic `TDBW` + version `u32 = 1`.
-- **Record**: `[u32 length][u32 crc32 of the rest][u64 event_seq][u64 received_at_us][u8 op][u8 source][JSON fields]`.
+- **Record** (little-endian): `[u32 length of the rest][u32 crc32 of the rest][u64 event_seq][u64 received_at_us][u8 op][u8 source][u64 body_hash][JSON fields]`. `body_hash` lets the duplicate window be rebuilt on replay.
 - **Replay**: read files in order; stop at the first record with a bad length or checksum, and truncate from there
   (that record was never confirmed).
 
