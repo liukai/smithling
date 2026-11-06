@@ -26,6 +26,9 @@ pub struct RunFields {
     pub dotted_order: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// SDK 0.14+ agent address (`lrn:agents/<id>/environments/<env>`), kept as sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Raw value; normalized into `RunType` on merge.
@@ -111,6 +114,7 @@ pub struct Run {
     pub is_root: bool,
 
     pub project: String,
+    pub address: Option<String>,
     pub tags: Vec<String>,
     pub metadata: JsonMap,
     pub extra: JsonMap,

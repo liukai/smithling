@@ -14,6 +14,7 @@ pub const MAX_TAGS: usize = 100;
 pub const MAX_TAG_CHARS: usize = 256;
 pub const MAX_NAME_CHARS: usize = 512;
 pub const MAX_PROJECT_CHARS: usize = 128;
+pub const MAX_ADDRESS_CHARS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +97,11 @@ fn check_limits(f: &RunFields) -> Result<(), Reject> {
         && project.chars().count() > MAX_PROJECT_CHARS
     {
         return Err(too_large(format!("project over {MAX_PROJECT_CHARS} chars")));
+    }
+    if let Some(address) = &f.address
+        && address.chars().count() > MAX_ADDRESS_CHARS
+    {
+        return Err(too_large(format!("address over {MAX_ADDRESS_CHARS} chars")));
     }
     if let Some(tags) = &f.tags {
         if tags.len() > MAX_TAGS {

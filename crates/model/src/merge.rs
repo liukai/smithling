@@ -20,7 +20,7 @@ pub enum ChangeKind {
 /// Applies one validated event to the run's slot (empty if the run is new).
 ///
 /// Present fields replace old values; absent fields leave them. Identity fields are immutable: a
-/// different `trace_id`, `dotted_order`, `parent_run_id` or explicit `project` is `identity_conflict`
+/// different `trace_id`, `dotted_order`, `parent_run_id`, `address` or explicit `project` is `identity_conflict`
 /// and leaves the run unchanged.
 pub fn merge(slot: &mut Option<RunState>, ev: &RunEvent) -> Result<ChangeKind, Reject> {
     let kind = match slot {
@@ -64,6 +64,7 @@ fn new_state(ev: &RunEvent) -> Result<RunState, Reject> {
         depth: order.depth(),
         is_root: parent_run_id.is_none(),
         project: DEFAULT_PROJECT.to_string(),
+        address: None,
         tags: Vec::new(),
         metadata: Map::new(),
         extra: Map::new(),
@@ -114,6 +115,11 @@ fn check_identity(st: &RunState, ev: &RunEvent) -> Result<(), Reject> {
     if f.parent_run_id.is_some() && f.parent_run_id != r.parent_run_id {
         return Err(conflict("parent_run_id"));
     }
+    if let (Some(old), Some(new)) = (&r.address, &f.address)
+        && old != new
+    {
+        return Err(conflict("address"));
+    }
     if st.project_set && f.project.as_deref().is_some_and(|p| p != r.project) {
         return Err(conflict("project"));
     }
@@ -128,6 +134,11 @@ fn apply(st: &mut RunState, ev: &RunEvent) {
     {
         r.project = p.clone();
         st.project_set = true;
+    }
+    if let Some(a) = &f.address
+        && r.address.is_none()
+    {
+        r.address = Some(a.clone());
     }
     if let Some(v) = &f.name {
         r.name = Some(v.clone());

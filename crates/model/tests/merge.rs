@@ -150,6 +150,45 @@ fn identity_conflicts_are_rejected_and_leave_the_run_unchanged() {
 }
 
 #[test]
+fn address_is_kept_and_immutable() {
+    let lrn = "lrn:agents/research-bot/environments/dev";
+    let mut start = post_fields(child_ids(), "fetch_url");
+    start.address = Some(lrn.into());
+    let mut slot = None;
+    merge(&mut slot, &event(Op::Post, 1, start)).unwrap();
+    assert_eq!(slot.as_ref().unwrap().run.address.as_deref(), Some(lrn));
+    assert_eq!(
+        RunHeader::from_state(slot.as_ref().unwrap(), 0).address.as_deref(),
+        Some(lrn)
+    );
+
+    let mut same = child_ids();
+    same.address = Some(lrn.into());
+    merge(&mut slot, &event(Op::Patch, 2, same)).expect("same address is fine");
+
+    let mut other = child_ids();
+    other.address = Some("lrn:agents/other/environments/prod".into());
+    let before = slot.clone();
+    assert_eq!(
+        merge(&mut slot, &event(Op::Patch, 3, other)).unwrap_err().reason,
+        Reason::IdentityConflict
+    );
+    assert_eq!(slot, before);
+}
+
+#[test]
+fn address_can_arrive_on_a_later_event() {
+    let mut slot = Some(apply_all(&[fetch_url_post()]).unwrap());
+    let mut late = child_ids();
+    late.address = Some("lrn:agents/a/environments/dev".into());
+    merge(&mut slot, &event(Op::Patch, 2000, late)).unwrap();
+    assert_eq!(
+        slot.unwrap().run.address.as_deref(),
+        Some("lrn:agents/a/environments/dev")
+    );
+}
+
+#[test]
 fn status_transitions() {
     let mut slot = None;
     merge(&mut slot, &fetch_url_post()).unwrap();

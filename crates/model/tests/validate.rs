@@ -130,6 +130,8 @@ fn size_limits() {
     check(with(&|f| f.name = Some(big(513))), false, "name 513 chars");
     check(with(&|f| f.project = Some(big(128))), true, "project 128 chars");
     check(with(&|f| f.project = Some(big(129))), false, "project 129 chars");
+    check(with(&|f| f.address = Some(big(512))), true, "address 512 chars");
+    check(with(&|f| f.address = Some(big(513))), false, "address 513 chars");
     check(with(&|f| f.tags = Some(vec!["t".into(); 100])), true, "100 tags");
     check(with(&|f| f.tags = Some(vec!["t".into(); 101])), false, "101 tags");
     check(with(&|f| f.tags = Some(vec![big(256)])), true, "tag 256 chars");
