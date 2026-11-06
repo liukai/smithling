@@ -39,23 +39,25 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
 - 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
 - 2026-11-06: **Keep 000 in step with reality**: after every phase checkpoint, update the roadmap (STATE, NEXT, progress), the [decision log](decisions.md) for any change of direction, and the master plan/design notes where the design moved. The decision log records every change of an earlier decision.
+- 2026-11-06: **After M2 is built, spec M3 the same way as 002** (spec → plan → tasks via speckit, Appendix A starter guide); M3 docs stay uncommitted until the user approves them.
 
-**STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
-M1 is **built** on branch `001-m1-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
-agent (SDK 0.14.17) traces in live; contract fixtures for SDK 0.14.17 and 0.8.18; crash harness 10/10; restart at 500k
-runs 0.83 s; 74k events/s sustained. **Not yet verified**: the UI by eye (headless Chrome can't run in this sandbox;
-screens covered by component tests), and the no-outbound + clean-container checks (CI-only; no remote CI yet).
+**STATE as of 2026-11-06** (verified by `git log`, `cargo test --workspace` 97/97, clippy `-D warnings`, and the slow crash/restart/throughput tests run locally):
+M1 is **built** (see M1 spec; UI-by-eye and CI-only checks still open). M2 is **in progress** on branch
+`002-m2-durable-storage-query-builder`: plan units 1–7 committed (49/83 tasks). Unit 6 checkpoint: crash harness 10/10
+with kills during upload and at five flush points (0 missing, 0 duplicated); restart at 2M runs ready in 1.6 s;
+54k events/s while flushing, p99 106 ms. The data folder is locked against a second process.
 
-**Blocked on**: nothing. Waiting on the user to look at the UI in a browser.
+**Blocked on**: nothing.
 
-**NEXT**: 1) User reviews the M2 plan (`specs/002-m2-durable-storage-query-builder/`: spec, design §8 open questions, plan, Appendix A starter guide). 2) `/speckit-tasks` for M2. 3) Still open from M1: user reviews the UI in a browser; push to a remote so CI runs the no-outbound and container checks, then mark M1 ✅.
+**NEXT**: 1) M2 unit 8: tree filters, field catalog endpoints, `tracedb query`. 2) Units 9–12 (live views, UI panel,
+`tracedb demo` + cloud CI + bench, code starter guide). 3) Spec M3 the same way as 002.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
-| M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | spec + plan drafted, in review | — | — |
+| M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | in progress: units 1–7 of 12 committed | 49/83 | unit 6 checkpoint passed locally |
 | M3 Core demo | — | not started | — | — |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
