@@ -128,14 +128,14 @@ loads; opening a step shows its full payload.
 
 ### Tests for User Story 2
 - [X] T043 [P] [US2] API test `crates/tracedb/tests/trace.rs`: `/api/traces/{id}` returns headers only, sorted by `dotted_order`, with `run_count` and `has_running`; `/api/runs/{id}?include=inputs,outputs,events` returns only the requested payloads; orphan children appear in their trace
-- [ ] T044 [P] [US2] E2E timing test `crates/tracedb/tests/e2e_trace_open.rs`: a 250-step trace with 40 KB payloads returns from `/api/traces/{id}` in < 200 ms on CI hardware (UI render budget brings the total under SC-03's 1 s)
+- [X] T044 [P] [US2] E2E timing test `crates/tracedb/tests/e2e_trace_open.rs`: a 250-step trace with 40 KB payloads returns from `/api/traces/{id}` in < 200 ms on CI hardware (UI render budget brings the total under SC-03's 1 s)
 
 ### Implementation for User Story 2
 - [X] T045 [P] [US2] Implement trace and run reads in `crates/query/src/trace.rs` and `crates/query/src/run.rs`; add routes `GET /api/traces/{trace_id}` and `GET /api/runs/{run_id}` to `crates/tracedb/src/routes/api.rs`
-- [ ] T046 [P] [US2] UI tree model in `ui/src/treeModel.ts`: build the parent/child structure from headers sorted by `dotted_order`; collapse/expand state; flattened visible rows shared by the tree and the waterfall
-- [ ] T047 [US2] UI trace view in `ui/src/TraceView.tsx`, `ui/src/Tree.tsx`, `ui/src/Waterfall.tsx`: virtualized rows (@tanstack/react-virtual); bars positioned by start/end relative to the root; running steps drawn open-ended; live updates via `?trace=` subscription
-- [ ] T048 [P] [US2] UI JSON viewer in `ui/src/JsonView.tsx`: collapsible objects/arrays, wrapped long strings; payloads over 2 MB first render as collapsed raw text
-- [ ] T049 [US2] UI step panel in `ui/src/StepPanel.tsx`: fetches `include=inputs,outputs,events` on selection; shows error, timing, tokens, model, tags, metadata, and `dropped` sizes; selection stored in the URL as `?run=`
+- [X] T046 [P] [US2] UI tree model in `ui/src/treeModel.ts`: build the parent/child structure from headers sorted by `dotted_order`; collapse/expand state; flattened visible rows shared by the tree and the waterfall
+- [X] T047 [US2] UI trace view in `ui/src/TraceView.tsx`, `ui/src/Tree.tsx`, `ui/src/Waterfall.tsx`: virtualized rows (@tanstack/react-virtual); bars positioned by start/end relative to the root; running steps drawn open-ended; live updates via `?trace=` subscription
+- [X] T048 [P] [US2] UI JSON viewer in `ui/src/JsonView.tsx`: collapsible objects/arrays, wrapped long strings; payloads over 2 MB first render as collapsed raw text
+- [X] T049 [US2] UI step panel in `ui/src/StepPanel.tsx`: fetches `include=inputs,outputs,events` on selection; shows error, timing, tokens, model, tags, metadata, and `dropped` sizes; selection stored in the URL as `?run=`
 
 **Checkpoint (demo)**: open a seeded or real 250-step trace, collapse branches, click `fetch_url`, read its 40 KB response; share the URL.
 
