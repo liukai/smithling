@@ -112,6 +112,7 @@ async fn trace_conditions_over_many_candidates_read_only_those_traces() {
             is_root: Some(true),
             tree_filter: Some(parse_filter(r#"eq(status, "error")"#).unwrap()),
             limit: Some(10),
+            count: true,
             ..QuerySpec::default()
         })
         .await

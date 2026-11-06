@@ -1,7 +1,8 @@
 //! Collecting merged runs for a scope: memtables ∪ files, with the single-version fast path (design §4.3).
 //!
 //! 1. Pin: under the memtable lock take the file set (`Version`), the frozen memtable, and copies (without
-//!    payloads) of the memtable runs in scope, with their promoted attributes (cached at apply time).
+//!    payloads) of the memtable runs in scope, with their promoted attributes (cached at apply time). One pin
+//!    can serve several narrower scopes (start-time windows).
 //! 2. Scan the files in scope with the pushed-down filter, plus every `needs_merge` row.
 //! 3. Any run that has (or may have) more than one version is fetched whole — every version from every file
 //!    in the time scope, whatever its project (a late update may not know its project) — and merged with
@@ -23,7 +24,7 @@ use crate::QueryError;
 use crate::pushdown::id_lit;
 
 /// Ids per `IN (…)` list; longer lists are split into several scans.
-const IN_CHUNK: usize = 2_000;
+pub const IN_CHUNK: usize = 2_000;
 
 /// Which runs a scan covers.
 #[derive(Clone, Debug, Default)]
@@ -36,9 +37,24 @@ pub struct Scope {
     pub run_id: Option<RunId>,
     /// Only these traces (trace-level conditions, live views).
     pub traces: Option<Arc<BTreeSet<TraceId>>>,
+    /// Only runs whose merged start key is in this range, with their versions read from the whole scope (a
+    /// conflicting later `dotted_order` can put a version in another window).
+    pub window: Option<(i64, i64)>,
 }
 
 impl Scope {
+    fn narrowed(&self) -> Scope {
+        let Some((a, b)) = self.window else {
+            return self.clone();
+        };
+        Scope {
+            from: Some(self.from.map_or(a, |f| f.max(a))),
+            to: Some(self.to.map_or(b, |t| t.min(b))),
+            window: None,
+            ..self.clone()
+        }
+    }
+
     fn matches_key(&self, key: i64) -> bool {
         self.from.is_none_or(|f| key >= f) && self.to.is_none_or(|t| key <= t)
     }
@@ -56,7 +72,7 @@ impl Scope {
         one && set
     }
 
-    fn file_in_scope(&self, s: &SegmentMeta) -> bool {
+    pub fn file_in_scope(&self, s: &SegmentMeta) -> bool {
         // Versions with an unknown project live under project "" and may belong to any project.
         let project_ok = match &self.project {
             Some(p) => s.project == *p || s.project.is_empty(),
@@ -70,8 +86,8 @@ impl Scope {
         self.time_ok(s) && self.traces_ok(s)
     }
 
-    fn row_in_scope(&self, st: &RunState) -> bool {
-        self.matches_key(start_key(&st.run.dotted_order))
+    fn row_in_scope(&self, key: i64, st: &RunState) -> bool {
+        self.matches_key(key)
             && self.trace_id.is_none_or(|t| st.run.trace_id == t)
             && self.run_id.is_none_or(|r| st.run.run_id == r)
             && self.traces.as_ref().is_none_or(|ts| ts.contains(&st.run.trace_id))
@@ -115,43 +131,87 @@ pub struct ScanStats {
     pub files_scanned: usize,
     pub rows_read: usize,
     pub rows_merged: usize,
+    scanned: HashSet<String>,
 }
 
-struct Fresh {
-    version: Arc<Version>,
-    /// (state without payload, promoted attributes)
-    rows: Vec<(RunState, Attrs)>,
+/// The file set and the memtable runs in a scope, taken together under the memtable lock.
+pub struct Pinned {
+    pub version: Arc<Version>,
+    /// (start key, state without payload, promoted attributes), by start key.
+    rows: Vec<(i64, RunState, Attrs)>,
 }
 
-fn fresh(ingest: &Ingest, scope: &Scope) -> Fresh {
+impl Pinned {
+    /// Start keys of the pinned memtable runs, ascending.
+    pub fn keys(&self) -> Vec<i64> {
+        self.rows.iter().map(|r| r.0).collect()
+    }
+
+    fn rows_in(&self, scope: &Scope) -> impl Iterator<Item = (RunState, Attrs)> {
+        let start = scope.from.map_or(0, |f| self.rows.partition_point(|r| r.0 < f));
+        let end = scope
+            .to
+            .map_or(self.rows.len(), |t| self.rows.partition_point(|r| r.0 <= t));
+        self.rows[start..end.max(start)]
+            .iter()
+            .filter(|(k, st, _)| scope.row_in_scope(*k, st))
+            .map(|(_, st, a)| (st.clone(), a.clone()))
+    }
+}
+
+pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
     let mem = ingest.mem();
     let mem = mem.read().unwrap();
     let mut rows = Vec::new();
+    fn keyed(st: &RunState) -> (i64, &RunState) {
+        (start_key(&st.run.dotted_order), st)
+    }
     let mut collect = |store: &tracedb_ingest::store::RunStore| {
-        let take = |st: &RunState| {
+        let take = |(k, st): (i64, &RunState)| {
             let attrs = store.attrs(&st.run.run_id).cloned().unwrap_or_else(|| promote(&st.run));
-            (st.without_payload(), attrs)
+            (k, st.without_payload(), attrs)
         };
         if let Some(id) = scope.run_id {
-            rows.extend(store.get(&id).filter(|st| scope.row_in_scope(st)).map(take));
+            rows.extend(
+                store
+                    .get(&id)
+                    .map(keyed)
+                    .filter(|(k, st)| scope.row_in_scope(*k, st))
+                    .map(take),
+            );
         } else if let Some(t) = scope.trace_id {
-            rows.extend(store.trace_run_ids(&t).iter().filter_map(|id| store.get(id)).map(take));
+            rows.extend(
+                store
+                    .trace_run_ids(&t)
+                    .iter()
+                    .filter_map(|id| store.get(id))
+                    .map(keyed)
+                    .map(take),
+            );
         } else if let Some(ts) = scope.traces.as_ref().filter(|ts| ts.len() < store.len()) {
             let ids = ts.iter().flat_map(|t| store.trace_run_ids(t));
             rows.extend(
                 ids.filter_map(|id| store.get(id))
-                    .filter(|st| scope.row_in_scope(st))
+                    .map(keyed)
+                    .filter(|(k, st)| scope.row_in_scope(*k, st))
                     .map(take),
             );
         } else {
-            rows.extend(store.states().filter(|st| scope.row_in_scope(st)).map(take));
+            rows.extend(
+                store
+                    .states()
+                    .map(keyed)
+                    .filter(|(k, st)| scope.row_in_scope(*k, st))
+                    .map(take),
+            );
         }
     };
     collect(&mem.active);
     if let Some(f) = &mem.frozen {
         collect(f);
     }
-    Fresh {
+    rows.sort_by_key(|r| r.0);
+    Pinned {
         version: mem.version.clone(),
         rows,
     }
@@ -208,6 +268,18 @@ pub async fn collect(
     pushed: Option<DfExpr>,
     stats: &mut ScanStats,
 ) -> Result<Vec<Merged>, QueryError> {
+    collect_pinned(ctx, ingest, &pin(ingest, scope), scope, pushed, stats).await
+}
+
+/// [`collect`] over a pin taken for `scope` or a wider one.
+pub async fn collect_pinned(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    pinned: &Pinned,
+    scope: &Scope,
+    pushed: Option<DfExpr>,
+    stats: &mut ScanStats,
+) -> Result<Vec<Merged>, QueryError> {
     // A run belongs to one trace, so trace chunks can be collected separately; each keeps its `IN (…)` list.
     if let Some(ts) = scope.traces.as_ref().filter(|ts| ts.len() > IN_CHUNK) {
         let ids: Vec<TraceId> = ts.iter().copied().collect();
@@ -217,18 +289,20 @@ pub async fn collect(
                 traces: Some(Arc::new(chunk.iter().copied().collect())),
                 ..scope.clone()
             };
-            out.extend(Box::pin(collect(ctx, ingest, &part, pushed.clone(), stats)).await?);
+            out.extend(Box::pin(collect_pinned(ctx, ingest, pinned, &part, pushed.clone(), stats)).await?);
         }
         return Ok(out);
     }
-    let fresh = fresh(ingest, scope);
-    let all: Vec<&SegmentMeta> = fresh.version.segments.iter().map(|s| &**s).collect();
-    let files: Vec<&SegmentMeta> = all.iter().copied().filter(|s| scope.file_in_scope(s)).collect();
-    stats.files_total += all.len();
-    stats.files_scanned += files.len();
+    let inner = scope.narrowed();
+    let mut fresh: Vec<(RunState, Attrs)> = pinned.rows_in(&inner).collect();
+    let all: Vec<&SegmentMeta> = pinned.version.segments.iter().map(|s| &**s).collect();
+    let files: Vec<&SegmentMeta> = all.iter().copied().filter(|s| inner.file_in_scope(s)).collect();
+    stats.files_total = stats.files_total.max(all.len());
+    stats.scanned.extend(files.iter().map(|s| s.id.clone()));
+    stats.files_scanned = stats.scanned.len();
 
     let row_filter = pushed.map(|p| p.or(col("needs_merge").eq(lit(true))));
-    let filter = match (scope.df_filter(), row_filter) {
+    let filter = match (inner.df_filter(), row_filter) {
         (Some(a), Some(b)) => Some(a.and(b)),
         (a, b) => a.or(b),
     };
@@ -241,7 +315,7 @@ pub async fn collect(
         let mv = mvset.read().unwrap();
         rows.iter()
             .map(|r| (&r.state, r.needs_merge))
-            .chain(fresh.rows.iter().map(|(s, _)| (s, false)))
+            .chain(fresh.iter().map(|(s, _)| (s, false)))
             .filter(|(st, needs)| *needs || st.created_by_patch() || mv.contains(&st.run.run_id))
             .map(|(st, _)| st.run.run_id)
             .collect()
@@ -257,16 +331,18 @@ pub async fn collect(
         let ids: Vec<RunId> = multi_ids.iter().copied().collect();
         extra = versions_of(ctx, ingest, &vfiles, &ids, scope).await?;
         stats.rows_read += extra.len();
+        if scope.window.is_some() {
+            fresh.extend(
+                pinned
+                    .rows_in(scope)
+                    .filter(|(st, _)| multi_ids.contains(&st.run.run_id)),
+            );
+        }
     }
 
     let mut groups: HashMap<RunId, Vec<(RunState, Attrs)>> = HashMap::new();
     let mut seen: HashSet<(RunId, u64)> = HashSet::new();
-    for (st, attrs) in rows
-        .into_iter()
-        .chain(extra)
-        .map(|r| (r.state, r.attrs))
-        .chain(fresh.rows)
-    {
+    for (st, attrs) in rows.into_iter().chain(extra).map(|r| (r.state, r.attrs)).chain(fresh) {
         if seen.insert((st.run.run_id, st.first_seq)) {
             groups.entry(st.run.run_id).or_default().push((st, attrs));
         }
@@ -281,6 +357,7 @@ pub async fn collect(
             }
             merge_group(versions, multi)
         })
+        .filter(|m| inner.matches_key(start_key(&m.state.run.dotted_order)))
         .collect())
 }
 

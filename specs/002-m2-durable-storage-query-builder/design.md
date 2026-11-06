@@ -228,6 +228,16 @@ query(Q):
   Every version has it, even a late update with no `start_time`, so time pruning never drops a late version.
 - **Tree filters** are semi-joins on `trace_id` (master research R10). `tree_filter` matches *other* runs in the trace,
   as the SDK documents it; M2 includes the run itself too, which matches the spec's "any run in the same trace".
+- **Stopping early** ([D-021](../000-tracedb-master-plan/decisions.md#d-021)). By start time, the steps above run
+  per `start_key` window in page order (sized from file key bounds, row counts and memtable keys; about 20k rows
+  first, ×4 each next), and trace conditions per 2,000 candidates in page order; reading stops once limit + 1 runs
+  match. Windows are disjoint in `start_key`; a run is listed in the window of its merged start key, with its
+  versions read from the whole time range (a late version with a conflicting `dotted_order` has another key), as
+  are later pages after a cursor. `stats.matched` and warnings then cover the runs read (`complete: false`);
+  `count: true` reads everything.
+- **Attribute pushdown.** `eq(path, "text")` on a promoted path is pushed as a text match on the `attrs` JSON
+  (`"path":"text"`, or the path holding another type, so mixed-type warnings stay for the rows read); a superset,
+  never negated.
 
 ### 4.4 Trace and single-run lookups
 

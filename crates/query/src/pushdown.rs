@@ -3,7 +3,8 @@
 //! The rule that keeps results exact: a pushed-down expression may keep rows the filter rejects, but it must
 //! never drop a row the filter accepts. The final decision is always [`tracedb_model::filter::eval`] on the
 //! merged run. So every leaf here either matches [`eval`]'s semantics exactly on single-version rows
-//! (absent values never match, types never mix) or is left out (`None` = "can't push, keep everything").
+//! (absent values never match, types never mix), keeps a known superset (`exact: false`, never negated), or
+//! is left out (`None` = "can't push, keep everything").
 //!
 //! [`eval`]: tracedb_model::filter::eval
 
@@ -12,6 +13,7 @@ use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::cast;
 use datafusion::scalar::ScalarValue;
 use tracedb_model::Ts;
+use tracedb_model::attrs::promotable_path;
 use tracedb_model::filter::{CmpOp, Expr, Field, Path, Value};
 
 /// A pushed-down expression and whether it is exact (equal to `eval`, not just a superset).
@@ -89,8 +91,7 @@ fn exact(expr: DfExpr) -> Option<Pushed> {
 
 fn leaf(o: CmpOp, path: &Path, value: &Value, now: Ts) -> Option<Pushed> {
     let Path::Field(f) = path else {
-        // JSON paths live in the `attrs` JSON column; they're decided after the scan.
-        return None;
+        return attr(o, path, value);
     };
     // Fields whose stored column can differ from what `eval` sees for an absent value are not pushed:
     // project (absent = "default"), run_type (absent = "other"), error ("" counts as absent).
@@ -134,6 +135,35 @@ fn leaf(o: CmpOp, path: &Path, value: &Value, now: Ts) -> Option<Pushed> {
         }
         _ => None,
     }
+}
+
+/// `eq` on a promoted string, as a text search of the `attrs` JSON column (`"path":"value"`); a superset.
+/// Rows where the path holds a value of another type pass too, so `eval` still reports mixed types.
+fn attr(o: CmpOp, path: &Path, value: &Value) -> Option<Pushed> {
+    let (CmpOp::Eq, Value::Str(v)) = (o, value) else {
+        return None;
+    };
+    let p = path.text();
+    if !promotable_path(&p) {
+        return None;
+    }
+    let key = format!("{}:", serde_json::to_string(&p).ok()?);
+    let has = |text: &str| {
+        let escaped: String = text
+            .chars()
+            .flat_map(|c| match c {
+                '%' | '_' | '\\' => vec!['\\', c],
+                c => vec![c],
+            })
+            .collect();
+        col("attrs").like(lit(format!("%{escaped}%")))
+    };
+    let hit = has(&format!("{key}{}", serde_json::to_string(v).ok()?));
+    let other_type = has(&key).and(!has(&format!("{key}\"")));
+    Some(Pushed {
+        expr: hit.or(other_type),
+        exact: false,
+    })
 }
 
 pub fn id_lit(id: uuid::Uuid) -> DfExpr {

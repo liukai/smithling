@@ -223,7 +223,7 @@ impl Api {
 fn roots(filter: &str, tree_filter: Option<&str>) -> Value {
     json!({
         "project": PROJECT, "time": {"last": "12h"}, "is_root": true,
-        "filter": filter, "tree_filter": tree_filter, "limit": 200,
+        "filter": filter, "tree_filter": tree_filter, "limit": 200, "count": true,
     })
 }
 
@@ -291,7 +291,7 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
     }
     for (v, want) in [("v6", scenario::PROMPT_V6), ("v7", scenario::PROMPT_V7)] {
         let filter = format!(r#"eq(metadata.prompt_version, "{v}")"#);
-        let body = json!({"project": PROJECT, "time": {"last": "12h"}, "filter": filter, "limit": 1});
+        let body = json!({"project": PROJECT, "time": {"last": "12h"}, "filter": filter, "limit": 1, "count": true});
         let (r, ms) = api.query(body).await?;
         ms3 += ms;
         if matched(&r) != want as u64 {
@@ -301,7 +301,7 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
 
     let (limited, ms4) = api
         .query(json!({
-            "project": PROJECT, "time": {"last": "12h"}, "limit": 200,
+            "project": PROJECT, "time": {"last": "12h"}, "limit": 200, "count": true,
             "filter": r#"and(eq(metadata.prompt_version, "v7"), eq(outputs.status_code, 429))"#,
         }))
         .await?;

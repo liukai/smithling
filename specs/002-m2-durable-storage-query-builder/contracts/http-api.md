@@ -29,9 +29,14 @@ Request (data-model §9; every field optional):
   "order": {"by": "start_time", "dir": "desc"},
   "limit": 50,
   "cursor": null,
-  "columns": ["status", "name", "latency", "total_tokens", "metadata.prompt_version"]
+  "columns": ["status", "name", "latency", "total_tokens", "metadata.prompt_version"],
+  "count": false
 }
 ```
+
+By start time the server reads newest-first (oldest-first for `asc`) and stops once the page is full, so
+`stats.matched` counts only the runs read and `stats.complete` is `false`; `"count": true` reads everything and
+makes `matched` the total ([D-021](../../000-tracedb-master-plan/decisions.md#d-021)).
 
 Response `200`:
 
@@ -42,7 +47,8 @@ Response `200`:
             "columns": {"metadata.prompt_version": "v7"}}],
   "next_cursor": "eyJ…",
   "warnings": [{"kind": "mixed_types", "path": "outputs.status_code", "counts": {"number": 4120, "string": 3}}],
-  "stats": {"files_scanned": 4, "files_pruned": 61, "rows_merged": 812, "ms": 74}
+  "stats": {"files_total": 65, "files_scanned": 4, "rows_read": 3120, "rows_merged": 812, "matched": 51,
+            "complete": false, "ms": 74}
 }
 ```
 

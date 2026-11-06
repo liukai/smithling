@@ -339,7 +339,8 @@ pub async fn load(url: &str, s: &Scenario) -> Result<Loaded, SeedError> {
         .await
         .map_err(|e| SeedError::Unreachable(url.into(), e))?;
     let start_flushes = start["flushes"].as_u64().unwrap_or(0);
-    let probe = json!({"project": PROJECT, "filter": format!(r#"has(tags, "{BATCH_TAG}")"#), "limit": 1});
+    let probe =
+        json!({"project": PROJECT, "filter": format!(r#"has(tags, "{BATCH_TAG}")"#), "limit": 1, "count": true});
     let existing = http
         .post(format!("{url}/api/query"))
         .json(&probe)

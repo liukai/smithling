@@ -78,7 +78,8 @@ pub async fn run(a: &QueryArgs, out: &mut impl Write, err: &mut impl Write) -> u
     let printed = if a.json {
         runs.iter().try_for_each(|r| writeln!(out, "{r}"))
     } else {
-        table(runs, v["stats"]["matched"].as_u64().unwrap_or(runs.len() as u64), out)
+        let matched = v["stats"]["matched"].as_u64().unwrap_or(runs.len() as u64);
+        table(runs, matched, v["stats"]["complete"].as_bool().unwrap_or(true), out)
     };
     match printed {
         Ok(()) => 0,
@@ -112,7 +113,7 @@ fn report_error(a: &QueryArgs, e: &Value, err: &mut impl Write) -> std::io::Resu
     Ok(())
 }
 
-fn table(runs: &[Value], matched: u64, out: &mut impl Write) -> std::io::Result<()> {
+fn table(runs: &[Value], matched: u64, complete: bool, out: &mut impl Write) -> std::io::Result<()> {
     let cell = |r: &Value, k: &str| r[k].as_str().unwrap_or("-").to_string();
     let rows: Vec<[String; 6]> = runs
         .iter()
@@ -150,7 +151,9 @@ fn table(runs: &[Value], matched: u64, out: &mut impl Write) -> std::io::Result<
         writeln!(out, "{}", line(r.each_ref().map(String::as_str)))?;
     }
     let noun = if matched == 1 { "run" } else { "runs" };
-    if matched > rows.len() as u64 {
+    if !complete {
+        writeln!(out, "showing {} runs; more match (--limit up to 200)", rows.len())
+    } else if matched > rows.len() as u64 {
         writeln!(out, "showing {} of {matched} {noun} (--limit up to 200)", rows.len())
     } else {
         writeln!(out, "{matched} {noun}")

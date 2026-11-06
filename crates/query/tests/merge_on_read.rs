@@ -303,17 +303,25 @@ async fn send_all(ingest: &Ingest, events: &[Incoming]) {
     }
 }
 
+/// Every page, checked to be in order: start time (descending unless `ascending`), then run id.
 async fn all_pages(q: &Query, mut spec: QuerySpec) -> Vec<RunId> {
     spec.limit = Some(7);
     let mut out = Vec::new();
+    let mut keys = Vec::new();
     loop {
         let page = q.query(&spec).await.unwrap();
         out.extend(page.runs.iter().map(|r| r.header.run_id));
+        keys.extend(page.runs.iter().map(|r| {
+            let k = tracedb_storage::segment::start_key(&r.header.dotted_order);
+            (if spec.ascending { k } else { -k }, r.header.run_id)
+        }));
         match page.next_cursor {
             Some(c) => spec.cursor = Some(c),
-            None => return out,
+            None => break,
         }
     }
+    assert!(keys.is_sorted(), "pages out of order");
+    out
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -341,6 +349,8 @@ async fn queries_match_the_naive_answer_whatever_was_flushed() {
             }
         }
         let q = Query::new(ingest.clone());
+        // Start-time windows of about one row: every page crosses many windows.
+        let tiny = Query::new(ingest.clone()).with_first_window(1);
         let segments = ingest.health().segments;
         if segments > 0 {
             with_files += 1;
@@ -359,10 +369,33 @@ async fn queries_match_the_naive_answer_whatever_was_flushed() {
                 is_root: c.root,
                 ..QuerySpec::default()
             };
-            let got = all_pages(&q, spec).await;
-            let unique: BTreeSet<RunId> = got.iter().copied().collect();
-            assert_eq!(unique.len(), got.len(), "seed {seed} case {i}: a run appeared twice");
-            assert_eq!(unique, expected(&runs, c), "seed {seed} case {i} ({segments} segments)");
+            let want = expected(&runs, c);
+            for (label, q) in [("", &q), (" tiny windows", &tiny)] {
+                for ascending in [false, true] {
+                    let spec = QuerySpec {
+                        ascending,
+                        ..spec.clone()
+                    };
+                    let got = all_pages(q, spec).await;
+                    let unique: BTreeSet<RunId> = got.iter().copied().collect();
+                    assert_eq!(
+                        unique.len(),
+                        got.len(),
+                        "seed {seed} case {i}{label}: a run appeared twice"
+                    );
+                    assert_eq!(unique, want, "seed {seed} case {i}{label} ({segments} segments)");
+                }
+            }
+            let counted = q
+                .query(&QuerySpec {
+                    count: true,
+                    limit: Some(1),
+                    ..spec
+                })
+                .await
+                .unwrap();
+            assert_eq!(counted.stats.matched, want.len(), "seed {seed} case {i}: count");
+            assert!(counted.stats.complete);
         }
         // Trace views and single runs agree with the naive state too.
         for st in runs.values().take(5) {

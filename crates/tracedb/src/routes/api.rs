@@ -28,6 +28,8 @@ pub struct QueryBody {
     pub limit: Option<usize>,
     pub cursor: Option<String>,
     pub columns: Vec<String>,
+    /// Count every match (`stats.matched`), not only the runs read for the page.
+    pub count: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -137,6 +139,7 @@ impl QueryBody {
             cursor: self.cursor.clone(),
             columns,
             traces: None,
+            count: self.count,
         })
     }
 }
