@@ -112,3 +112,34 @@ async fn orphan_files_are_removed_on_start() {
     assert_eq!(stats.orphans_removed, 1);
     assert!(!orphan.exists());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_big_unflushed_log_after_restart_flushes_instead_of_staying_busy() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = |d: &Path| {
+        let mut c = IngestConfig::new(d);
+        c.limits = Limits {
+            // Memory never fills; only the log limit can trigger a flush.
+            memtable_bytes: u64::MAX / 4,
+            max_unflushed_wal: 64 * 1024,
+            dedup_window_us: 0,
+            ..Limits::default()
+        };
+        c
+    };
+    {
+        let (ingest, _) = Ingest::open(cfg(dir.path())).unwrap();
+        upload(&ingest, 1, 100).await;
+    }
+    let (ingest, stats) = Ingest::open(cfg(dir.path())).unwrap();
+    assert!(stats.runs > 0 || stats.segments > 0);
+    // New uploads are accepted (after at most a short "busy" while the replayed log is flushed).
+    let started = Instant::now();
+    upload(&ingest, 1000, 20).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "took {:?}",
+        started.elapsed()
+    );
+    wait_for(|| ingest.health().unflushed_wal_bytes < 64 * 1024).await;
+}

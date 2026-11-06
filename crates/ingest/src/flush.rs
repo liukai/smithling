@@ -25,8 +25,6 @@ pub(crate) struct FlushJob {
     pub frozen: Arc<RunStore>,
     /// Every event in `frozen` has `seq ≤ max_seq`.
     pub max_seq: u64,
-    /// WAL bytes written for this memtable (subtracted from the unflushed total once flushed).
-    pub wal_bytes: u64,
 }
 
 pub(crate) struct Flusher {
@@ -39,6 +37,8 @@ pub(crate) struct Flusher {
     pub dedup_window: Duration,
     /// Tests only: slow every flush down (to exercise write slowdown).
     pub test_delay: Option<Duration>,
+    /// Set when ingest shuts down: stop retrying a failing flush (the WAL still has the data).
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,15 +61,29 @@ impl Flusher {
         while let Ok(job) = rx.recv() {
             let mut backoff = Duration::from_millis(200);
             loop {
-                match self.flush(&job) {
-                    Ok(()) => break,
-                    Err(e) => {
-                        tracing::error!(error = %e, retry_in_ms = backoff.as_millis() as u64, "flush failed; the frozen memtable is kept");
-                        self.flush_health.lock().unwrap().error = Some(e.to_string());
-                        std::thread::sleep(backoff);
-                        backoff = (backoff * 2).min(Duration::from_secs(30));
-                    }
+                // A panic in one attempt (a bug, or a storage task dying) must not stop flushing for good.
+                let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush(&job)));
+                let err = match attempt {
+                    Ok(Ok(())) => break,
+                    Ok(Err(e)) => e.to_string(),
+                    Err(p) => format!(
+                        "flush panicked: {}",
+                        p.downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    ),
+                };
+                tracing::error!(error = %err, retry_in_ms = backoff.as_millis() as u64, "flush failed; the frozen memtable is kept");
+                self.flush_health.lock().unwrap().error = Some(err);
+                if self.stop.load(Ordering::Relaxed) {
+                    return;
                 }
+                std::thread::sleep(backoff);
+                if self.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
     }
@@ -112,20 +126,27 @@ impl Flusher {
         let (m2, s2) = (metas.clone(), stats.clone());
         let max_seq = job.max_seq;
         self.storage.block(async move {
-            for w in &written {
-                store.put_new(&w.meta.core_path, w.core.clone()).await?;
-                store.put_new(&w.meta.payload_path, w.payload.clone()).await?;
+            let result = async {
+                for w in &written {
+                    store.put_new(&w.meta.core_path, w.core.clone()).await?;
+                    store.put_new(&w.meta.payload_path, w.payload.clone()).await?;
+                }
+                crash_point("after_put");
+                meta.commit_flush(&m2, &s2, max_seq).await?;
+                crash_point("after_commit");
+                Ok::<_, StorageError>(())
             }
-            crash_point("after_put");
-            meta.commit_flush(&m2, &s2, max_seq).await?;
-            crash_point("after_commit");
-            Ok::<_, StorageError>(())
+            .await;
+            if result.is_err() {
+                // Best effort: a failed attempt's files were never registered.
+                for w in &written {
+                    let _ = store.delete(&w.meta.core_path).await;
+                    let _ = store.delete(&w.meta.payload_path).await;
+                }
+            }
+            result
         })?;
         self.publish(metas, stats, job.max_seq);
-        self.counters.unflushed_wal.fetch_sub(
-            job.wal_bytes.min(self.counters.unflushed_wal.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
         self.counters.flushed_seq.store(job.max_seq, Ordering::Relaxed);
         let keep_since = SystemTime::now() - self.dedup_window;
         match wal::trim(&self.wal_dir, job.max_seq, keep_since) {
@@ -134,6 +155,10 @@ impl Flusher {
             Err(e) => tracing::warn!(error = %e, "wal trim failed; will retry after the next flush"),
         }
         crash_point("after_trim");
+        // Recount from the files rather than keeping a running total: exact after restarts and trims.
+        if let Ok(b) = wal::unflushed_bytes(&self.wal_dir, job.max_seq) {
+            self.counters.unflushed_wal.store(b, Ordering::Relaxed);
+        }
         let mut h = self.flush_health.lock().unwrap();
         h.error = None;
         h.last_flush_at = Some(Ts::now());

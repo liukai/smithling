@@ -350,3 +350,21 @@ fn byte_source(b: u8) -> Option<Source> {
         _ => None,
     }
 }
+
+/// Bytes in WAL files that may hold events after `flushed_seq` (every file whose successor starts after
+/// `flushed_seq + 1`, i.e. the files a restart would have to replay).
+pub fn unflushed_bytes(dir: &Path, flushed_seq: u64) -> io::Result<u64> {
+    let files = wal_files(dir)?;
+    let first = |p: &Path| -> Option<u64> { p.file_stem()?.to_str()?.parse().ok() };
+    let mut total = 0;
+    for (i, f) in files.iter().enumerate() {
+        let all_flushed = files
+            .get(i + 1)
+            .and_then(|n| first(n))
+            .is_some_and(|next| next <= flushed_seq + 1);
+        if !all_flushed {
+            total += fs::metadata(f)?.len().saturating_sub(FILE_HEADER_LEN);
+        }
+    }
+    Ok(total)
+}

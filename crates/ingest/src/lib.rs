@@ -370,6 +370,8 @@ impl Snapshot for MemReader {
 struct Inner {
     tx: Mutex<Option<mpsc::Sender<writer::Request>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    flusher: Mutex<Option<JoinHandle<()>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
     permits: Arc<Semaphore>,
     queue_events: usize,
     mem: Arc<RwLock<Mem>>,
@@ -383,10 +385,15 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        // Stop the writer and wait for it; the flusher ends on its own once the writer is gone. Anything not
-        // yet flushed stays in the WAL and is replayed on the next start.
+        // Stop the writer and wait for it, then let the flusher finish (or abandon a failing) flush and wait
+        // for it too, so a reopen in the same process never races an old flush. Anything not yet flushed
+        // stays in the WAL and is replayed on the next start.
         self.tx.lock().unwrap().take();
         if let Some(t) = self.thread.lock().unwrap().take() {
+            let _ = t.join();
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.flusher.lock().unwrap().take() {
             let _ = t.join();
         }
     }
@@ -445,7 +452,10 @@ impl Ingest {
         let mut active = RunStore::new();
         let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
         let now = Ts::now();
-        let (mut replay_rejected, mut skipped, mut unflushed) = (0, 0, 0u64);
+        let (mut replay_rejected, mut skipped) = (0, 0);
+        // Runs with a version already flushed (still in the WAL for the dedup window): a later start for
+        // one of them is a second version too.
+        let mut flushed_ids: HashSet<RunId> = HashSet::new();
         let (wal, stats) = Wal::open(&cfg.data_dir.join("wal"), cfg.wal_roll_bytes, |ev| {
             if let Some(id) = ev.fields.id
                 && dedup.in_window(ev.received_at, now)
@@ -454,11 +464,13 @@ impl Ingest {
             }
             if ev.event_seq <= flushed_seq {
                 skipped += 1;
+                if let Some(id) = ev.fields.id {
+                    flushed_ids.insert(id);
+                }
                 return;
             }
-            unflushed += json_size(&ev.fields) + 34;
             match active.apply(&ev) {
-                Ok(c) if c.created && ev.op == Op::Patch => {
+                Ok(c) if c.created && (ev.op == Op::Patch || flushed_ids.contains(&c.header.run_id)) => {
                     mvset.insert(c.header.run_id);
                 }
                 Ok(_) => {}
@@ -491,6 +503,7 @@ impl Ingest {
             version: Arc::new(version),
         }));
         let mvset = Arc::new(RwLock::new(mvset));
+        let unflushed = wal::unflushed_bytes(&cfg.data_dir.join("wal"), flushed_seq).unwrap_or(0);
         let counters = Arc::new(Counters {
             unflushed_wal: AtomicU64::new(unflushed),
             flushed_seq: AtomicU64::new(flushed_seq),
@@ -500,6 +513,7 @@ impl Ingest {
         let health = Arc::new(Mutex::new(None));
 
         let (flush_tx, flush_rx) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flusher = flush::Flusher {
             mem: mem.clone(),
             mvset: mvset.clone(),
@@ -509,8 +523,9 @@ impl Ingest {
             wal_dir: cfg.data_dir.join("wal"),
             dedup_window: Duration::from_micros(cfg.limits.dedup_window_us.max(0) as u64),
             test_delay: cfg.test_flush_delay,
+            stop: stop.clone(),
         };
-        std::thread::Builder::new()
+        let flusher_thread = std::thread::Builder::new()
             .name("tracedb-flusher".into())
             .spawn(move || flusher.run(flush_rx))
             .map_err(OpenError::Thread)?;
@@ -534,6 +549,8 @@ impl Ingest {
         let inner = Inner {
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
+            flusher: Mutex::new(Some(flusher_thread)),
+            stop,
             permits: Arc::new(Semaphore::new(cfg.queue_events)),
             queue_events: cfg.queue_events,
             mem,

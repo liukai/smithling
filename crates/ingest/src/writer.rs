@@ -45,14 +45,13 @@ pub(crate) struct Shared {
 }
 
 pub(crate) fn run(rx: Receiver<Request>, mut wal: Wal, mut dedup: Dedup, mut seq: u64, sh: Shared) {
-    let mut since_freeze = 0u64;
     loop {
         let first = match rx.recv_timeout(TICK) {
             Ok(r) => Some(r),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        maybe_freeze(&mut wal, seq, &mut since_freeze, &sh);
+        maybe_freeze(&mut wal, seq, &sh);
         let Some(first) = first else { continue };
         let mut group = vec![first];
         let mut bytes = group[0].bytes;
@@ -74,9 +73,8 @@ pub(crate) fn run(rx: Receiver<Request>, mut wal: Wal, mut dedup: Dedup, mut seq
         let before = wal.appended_bytes();
         commit(group, &mut wal, &mut dedup, &mut seq, &sh);
         let added = wal.appended_bytes() - before;
-        since_freeze += added;
         sh.counters.unflushed_wal.fetch_add(added, Ordering::Relaxed);
-        maybe_freeze(&mut wal, seq, &mut since_freeze, &sh);
+        maybe_freeze(&mut wal, seq, &sh);
     }
 }
 
@@ -87,8 +85,9 @@ fn overloaded(sh: &Shared) -> bool {
         || sh.counters.unflushed_wal.load(Ordering::Relaxed) >= sh.limits.max_unflushed_wal
 }
 
-/// Freezes the active memtable when it is full or old, if no flush is in progress (at most one frozen).
-fn maybe_freeze(wal: &mut Wal, seq: u64, since_freeze: &mut u64, sh: &Shared) {
+/// Freezes the active memtable when it is full or old, or when the unflushed WAL passes half its limit
+/// (many updates to few runs grow the log much faster than memory), if no flush is in progress.
+fn maybe_freeze(wal: &mut Wal, seq: u64, sh: &Shared) {
     let now = Ts::now();
     {
         let mem = sh.mem.read().unwrap();
@@ -97,7 +96,8 @@ fn maybe_freeze(wal: &mut Wal, seq: u64, since_freeze: &mut u64, sh: &Shared) {
             .active
             .oldest()
             .is_some_and(|o| now.0 - o.0 >= sh.limits.flush_age_us);
-        if mem.frozen.is_some() || mem.active.is_empty() || !(full || old) {
+        let log = sh.counters.unflushed_wal.load(Ordering::Relaxed) >= sh.limits.max_unflushed_wal / 2;
+        if mem.frozen.is_some() || mem.active.is_empty() || !(full || old || log) {
             return;
         }
     }
@@ -113,11 +113,7 @@ fn maybe_freeze(wal: &mut Wal, seq: u64, since_freeze: &mut u64, sh: &Shared) {
         mem.frozen = Some(frozen.clone());
         frozen
     };
-    let job = FlushJob {
-        frozen,
-        max_seq: seq,
-        wal_bytes: std::mem::take(since_freeze),
-    };
+    let job = FlushJob { frozen, max_seq: seq };
     if sh.flush_tx.send(job).is_err() {
         tracing::error!("flusher is gone; data stays in the WAL until restart");
     }
@@ -219,10 +215,12 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
     }
 
     let mut changes = Vec::new();
-    let mut multi = Vec::new();
     {
         let mut mem = sh.mem.write().unwrap();
         let mem = &mut *mem;
+        // Updated while the memtable lock is held, so no reader sees a new version before its run is
+        // marked as multi-version.
+        let mut mvset = sh.mvset.write().unwrap();
         for out in &mut outcomes {
             let Ok(result) = &mut out.result else { continue };
             for ev in &out.events {
@@ -234,7 +232,7 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
                         if change.created
                             && (ev.op == Op::Patch || mem.frozen.as_ref().is_some_and(|f| f.contains(&id)))
                         {
-                            multi.push(id);
+                            mvset.insert(id);
                         }
                         result.accepted += 1;
                         changes.push(change);
@@ -247,9 +245,6 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
                 }
             }
         }
-    }
-    if !multi.is_empty() {
-        sh.mvset.write().unwrap().extend(multi);
     }
     for out in &outcomes {
         for k in &out.keys {
