@@ -1,6 +1,6 @@
-import { RunsList } from "./RunsList";
-import { TraceView } from "./TraceView";
 import { navigate, useLocation } from "./route";
+import { TraceView } from "./TraceView";
+import { RunsPage } from "./views/Runs";
 
 export function App() {
   const url = useLocation();
@@ -16,7 +16,7 @@ export function App() {
         {trace ? (
           <TraceView traceId={trace} selected={q.get("run") ?? undefined} />
         ) : (
-          <RunsList project={q.get("project") ?? undefined} status={q.get("status") ?? undefined} />
+          <RunsPage search={url.search} />
         )}
       </main>
     </>

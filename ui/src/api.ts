@@ -40,11 +40,6 @@ export interface RunView extends RunHeader {
   events?: unknown[];
 }
 
-export interface RootsPage {
-  runs: RunHeader[];
-  next_cursor: string | null;
-}
-
 export interface TraceView {
   root: RunHeader | null;
   runs: RunHeader[];
@@ -57,31 +52,49 @@ export interface ProjectInfo {
   runs: number;
 }
 
-async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path);
+export interface QueryRun extends RunHeader {
+  columns?: Record<string, unknown>;
+}
+
+export type QueryWarning =
+  | { kind: "mixed_types"; path: string; counts: Record<string, number> }
+  | { kind: "not_indexed"; path: string; runs: number }
+  | { kind: "identity_conflict"; run_id: string };
+
+export interface QueryPage {
+  runs: QueryRun[];
+  next_cursor: string | null;
+  warnings: QueryWarning[];
+}
+
+/** An error response; `bad_filter` carries the slot and UTF-8 byte range it points at. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public code?: string,
+    public slot?: string,
+    public start?: number,
+    public end?: number,
+  ) {
+    super(message);
+  }
+}
+
+async function json<T>(r: Response): Promise<T> {
   if (!r.ok) {
-    const body = await r.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `${r.status} ${r.statusText}`);
+    const e = (await r.json().catch(() => null))?.error;
+    throw new ApiError(e?.message ?? `${r.status} ${r.statusText}`, e?.code, e?.slot, e?.start, e?.end);
   }
   return r.json();
 }
 
-export function getRoots(p: { project?: string; status?: string; cursor?: string; limit?: number }): Promise<RootsPage> {
-  const q = new URLSearchParams();
-  if (p.project) q.set("project", p.project);
-  if (p.status) q.set("status", p.status);
-  if (p.cursor) q.set("cursor", p.cursor);
-  q.set("limit", String(p.limit ?? 50));
-  return get(`/api/roots?${q}`);
-}
+const get = <T>(path: string) => fetch(path).then((r) => json<T>(r));
+
+export const postQuery = (body: object) =>
+  fetch("/api/query", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then((r) => json<QueryPage>(r));
 
 export const getProjects = () => get<ProjectInfo[]>("/api/projects");
 export const getTrace = (id: string) => get<TraceView>(`/api/traces/${id}`);
 export const getRun = (id: string) => get<RunView>(`/api/runs/${id}?include=inputs,outputs,events`);
 
-/** Root list order: newest start first, then run id. */
-export function rootOrder(a: RunHeader, b: RunHeader): number {
-  const ta = a.start_time ?? "", tb = b.start_time ?? "";
-  if (ta !== tb) return ta < tb ? 1 : -1;
-  return a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0;
-}

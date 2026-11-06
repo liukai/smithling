@@ -30,15 +30,17 @@ export function header(n: number, over: Partial<RunHeader> = {}): RunHeader {
   };
 }
 
-/** Routes fetch calls to handlers by path prefix. */
-export function mockFetch(routes: Record<string, (url: URL) => unknown>) {
+/** Routes fetch calls to handlers by path prefix; a handler may return a `Response` as is. */
+export function mockFetch(routes: Record<string, (url: URL, body: any) => unknown>) {
   const calls: string[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, "http://localhost");
     calls.push(url.pathname + url.search);
     const key = Object.keys(routes).find((k) => url.pathname.startsWith(k));
     if (!key) return new Response(JSON.stringify({ error: { message: "not found" } }), { status: 404 });
-    return new Response(JSON.stringify(routes[key](url)), { status: 200, headers: { "content-type": "application/json" } });
+    const out = routes[key](url, init?.body ? JSON.parse(String(init.body)) : undefined);
+    if (out instanceof Response) return out;
+    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
   }));
   return calls;
 }
