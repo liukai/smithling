@@ -1,8 +1,10 @@
 //! The `tracedb` server: HTTP routes over the ingest and query services, plus the embedded UI.
 
 pub mod cli_query;
+pub mod demo;
 pub mod langsmith_map;
 pub mod routes;
+pub mod scenario;
 pub mod seed;
 
 use std::net::SocketAddr;
@@ -13,6 +15,27 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use tracedb_ingest::{Health, Ingest, IngestConfig, Limits, OpenStats};
 use tracedb_query::Query;
+
+/// `512MB`, `2GB` → bytes (for `--memtable`).
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    tracedb_ingest::budget::parse_bytes(s).ok_or_else(|| format!("invalid size {s:?}; use e.g. 512MB or 2GB"))
+}
+
+/// Where data goes, for the startup log: passwords in URLs and every `AWS_*` value hidden.
+pub fn storage_summary(cfg: &ServeConfig, env: impl IntoIterator<Item = (String, String)>) -> String {
+    let show = |v: &Option<String>| v.as_deref().map_or("default".to_string(), tracedb_storage::redact);
+    let mut aws: Vec<String> = env
+        .into_iter()
+        .filter(|(k, _)| k.starts_with("AWS_"))
+        .map(|(k, _)| format!("{k}=***"))
+        .collect();
+    aws.sort();
+    let mut s = format!("storage={} metastore={}", show(&cfg.storage), show(&cfg.metastore));
+    if !aws.is_empty() {
+        s.push_str(&format!(" aws={}", aws.join(",")));
+    }
+    s
+}
 
 pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
@@ -99,6 +122,7 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let data_dir = cfg.data_dir.clone();
+    tracing::info!(data = %data_dir.display(), "opening: {}", storage_summary(&cfg, std::env::vars()));
     let (state, stats) = {
         let cfg = cfg.clone();
         tokio::task::spawn_blocking(move || open(&cfg)).await??

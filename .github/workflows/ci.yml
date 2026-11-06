@@ -58,6 +58,8 @@ jobs:
       - run: cargo test --workspace
       - name: crash, restart and throughput tests (slow)
         run: cargo test --release -p tracedb --test crash --test restart --test throughput -- --ignored
+      - name: demo checks (local storage)
+        run: cargo run --release -p tracedb -- demo --seed 7
       - name: no outbound connections
         run: sudo apt-get install -y strace && cargo build --release -p tracedb && scripts/no-outbound.sh target/release/tracedb
       - name: runs in a clean container (no Node, Rust or database)

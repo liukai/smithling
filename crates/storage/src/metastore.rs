@@ -248,16 +248,27 @@ pub fn redact(s: &str) -> String {
     while let Some(i) = rest.find("://") {
         let (head, tail) = rest.split_at(i + 3);
         out.push_str(head);
-        let end = tail.find(|c: char| c == '/' || c.is_whitespace()).unwrap_or(tail.len());
-        match tail[..end].rfind('@') {
+        let token = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let slash = tail[..token].find('/').unwrap_or(token);
+        let query = tail[..token].find(['?', '#']).unwrap_or(token);
+        // A password may contain `/` (AWS secrets do): then the userinfo runs to the last `@` before a query.
+        let at = tail[..query]
+            .rfind('@')
+            .filter(|&at| at < slash || tail[..at].contains(':'));
+        let end = match at {
             Some(at) => {
                 let user = tail[..at].split(':').next().unwrap_or("");
+                let end = tail[at..token].find('/').map_or(token, |j| at + j);
                 out.push_str(user);
                 out.push_str(":***");
                 out.push_str(&tail[at..end]);
+                end
             }
-            None => out.push_str(&tail[..end]),
-        }
+            None => {
+                out.push_str(&tail[..slash]);
+                slash
+            }
+        };
         rest = &tail[end..];
     }
     out.push_str(rest);

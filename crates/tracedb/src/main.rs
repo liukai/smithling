@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tracedb::{ServeConfig, serve};
+use tracedb::{ServeConfig, parse_size, serve};
 use tracedb_ingest::Limits;
-use tracedb_ingest::budget::parse_bytes;
 
 #[derive(Parser)]
 #[command(name = "tracedb", version, about = "Local trace store and viewer for AI agents")]
@@ -63,6 +62,8 @@ enum Cmd {
     },
     /// Run a query against a running tracedb and print a table (or JSON lines).
     Query(tracedb::cli_query::QueryArgs),
+    /// Load the overnight-eval scenario and run the M2 checks; prints a pass/fail table.
+    Demo(tracedb::demo::DemoArgs),
 }
 
 /// `10m`, `30s`, `2h` → microseconds.
@@ -78,10 +79,6 @@ fn parse_duration_us(s: &str) -> Result<i64, String> {
         _ => return Err(format!("invalid duration {s:?}; use e.g. 30s, 10m or 2h")),
     };
     Ok(n * us)
-}
-
-fn parse_size(s: &str) -> Result<u64, String> {
-    parse_bytes(s).ok_or_else(|| format!("invalid size {s:?}; use e.g. 512MB or 2GB"))
 }
 
 #[tokio::main]
@@ -140,10 +137,14 @@ async fn main() -> ExitCode {
             match serve(cfg, shutdown).await {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("tracedb: {e:#}");
+                    eprintln!("tracedb: {}", tracedb_storage::redact(&format!("{e:#}")));
                     ExitCode::FAILURE
                 }
             }
+        }
+        Cmd::Demo(args) => {
+            let code = tracedb::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            ExitCode::from(code)
         }
         Cmd::Query(args) => {
             let code = tracedb::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;

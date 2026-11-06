@@ -10,7 +10,7 @@ Extends the [M1 CLI](../../001-m1-see-agent-trace-live/contracts/cli.md).
 | `tracedb serve … [--memtable 128MB] [--flush-age 10m] [--dedup-window 10m] [--cache 256MB]` | storage tuning |
 | `tracedb serve … [--ui-dir PATH]` (or `TRACEDB_UI_DIR`) | serve UI files from a folder instead of the built-in copy |
 | `tracedb seed …` | as M1 |
-| `tracedb demo [--seed 7] [--url URL \| --data DIR] [--checks m2]` | generate the overnight-eval scenario, run the M2 checks, print a pass/fail table; without `--url` it runs its own server on a temporary folder (or `--data`), and accepts the `serve` storage flags |
+| `tracedb demo [--seed 7] [--url URL \| --data DIR] [--checks m2]` | generate the overnight-eval scenario, run the M2 checks, print a pass/fail table; without `--url` it runs its own server on a temporary folder (or `--data`), and accepts the `serve` storage flags; `--memtable` (default 4MB) sizes the background volume that forces flushes |
 | `tracedb query [--project P] [--time 12h] [--root] [--trace-filter EXPR] [--tree-filter EXPR] [--limit 50] [--json] 'EXPR'` | run a query against a running server and print a table (or JSON lines) |
 
 Removed: `--max-memory`, `--max-runs` (M1 memory budget). They are accepted with a warning that they no longer apply.

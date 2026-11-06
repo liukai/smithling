@@ -20,6 +20,7 @@ path = "src/main.rs"
 tracedb-model.workspace = true
 tracedb-ingest.workspace = true
 tracedb-query.workspace = true
+tracedb-storage.workspace = true
 indexmap.workspace = true
 tokio-stream.workspace = true
 tokio.workspace = true
@@ -37,7 +38,8 @@ anyhow.workspace = true
 xxhash-rust.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
+datafusion.workspace = true
 futures-util.workspace = true
-tempfile.workspace = true

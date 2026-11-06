@@ -31,11 +31,11 @@ impl Rng {
     pub fn chance(&mut self, p: f64) -> bool {
         (self.next_u64() as f64 / u64::MAX as f64) < p
     }
-    fn uuid(&mut self) -> Uuid {
+    pub(crate) fn uuid(&mut self) -> Uuid {
         uuid::Builder::from_random_bytes(((self.next_u64() as u128) << 64 | self.next_u64() as u128).to_le_bytes())
             .into_uuid()
     }
-    fn pick<'a>(&mut self, xs: &'a [&'a str]) -> &'a str {
+    pub(crate) fn pick<'a>(&mut self, xs: &'a [&'a str]) -> &'a str {
         xs[self.range(0, xs.len() as u64 - 1) as usize]
     }
 }
@@ -207,7 +207,7 @@ fn new_node(rng: &mut Rng, parent: usize, depth: u16, leaf: bool) -> Node {
     }
 }
 
-fn outputs(rng: &mut Rng, run_type: &str) -> Value {
+pub(crate) fn outputs(rng: &mut Rng, run_type: &str) -> Value {
     if run_type == "llm" {
         let (i, o) = (rng.range(200, 8000), rng.range(50, 1500));
         json!({"content": "generated text", "usage_metadata": {"input_tokens": i, "output_tokens": o, "total_tokens": i + o}})
@@ -216,7 +216,7 @@ fn outputs(rng: &mut Rng, run_type: &str) -> Value {
     }
 }
 
-fn filler(rng: &mut Rng, bytes: usize) -> String {
+pub(crate) fn filler(rng: &mut Rng, bytes: usize) -> String {
     const WORDS: [&str; 8] = [
         "agent", "trace", "tool", "search", "model", "token", "result", "context",
     ];
@@ -229,17 +229,17 @@ fn filler(rng: &mut Rng, bytes: usize) -> String {
     s
 }
 
-fn merge(into: &mut Value, from: Value) {
+pub(crate) fn merge(into: &mut Value, from: Value) {
     if let (Some(a), Value::Object(b)) = (into.as_object_mut(), from) {
         a.extend(b);
     }
 }
 
-fn iso(us: i64) -> String {
+pub(crate) fn iso(us: i64) -> String {
     tracedb_model::Ts(us).to_string()
 }
 
-fn dotted_ts(us: i64) -> String {
+pub(crate) fn dotted_ts(us: i64) -> String {
     let d: String = iso(us).chars().filter(char::is_ascii_digit).collect();
     format!("{}T{}Z", &d[..8], &d[8..20])
 }
@@ -250,6 +250,8 @@ pub enum SeedError {
     Unreachable(String, String),
     #[error("upload failed: {0}")]
     Upload(String),
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// Sends the traces: all starts (and complete steps) first, then late updates after their delay
@@ -286,17 +288,25 @@ pub async fn send(url: &str, traces: &[GenTrace], no_delay: bool) -> Result<(usi
     Ok((posts.len(), late.len()))
 }
 
-async fn batch(http: &reqwest::Client, url: &str, body: Value) -> Result<(), SeedError> {
-    let r = http
-        .post(format!("{url}/runs/batch"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| SeedError::Upload(e.to_string()))?;
-    let status = r.status();
-    let v: Value = r.json().await.unwrap_or(Value::Null);
-    if status != 202 || v["rejected"].as_array().is_some_and(|a| !a.is_empty()) {
-        return Err(SeedError::Upload(format!("{status}: {v}")));
+/// One `/runs/batch` upload; "busy" (429) is retried shortly, as the SDK does.
+pub(crate) async fn batch(http: &reqwest::Client, url: &str, body: Value) -> Result<(), SeedError> {
+    for _ in 0..600 {
+        let r = http
+            .post(format!("{url}/runs/batch"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SeedError::Upload(e.to_string()))?;
+        let status = r.status();
+        if status == 429 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        let v: Value = r.json().await.unwrap_or(Value::Null);
+        if status != 202 || v["rejected"].as_array().is_some_and(|a| !a.is_empty()) {
+            return Err(SeedError::Upload(format!("{status}: {v}")));
+        }
+        return Ok(());
     }
-    Ok(())
+    Err(SeedError::Upload("tracedb stayed busy for 60 s".into()))
 }
