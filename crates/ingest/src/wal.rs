@@ -172,10 +172,9 @@ impl Wal {
     }
 }
 
-/// Deletes WAL files whose events are all `≤ flushed_seq` (they're in registered segments) and that were
-/// last written before `keep_since` (kept a while so a restart can rebuild the dedup window). The last file
-/// is never deleted. Returns how many files were removed.
-pub fn trim(dir: &Path, flushed_seq: u64, keep_since: std::time::SystemTime) -> io::Result<usize> {
+/// Deletes WAL files whose events are all `≤ flushed_seq` (they're in registered segments, and their dedup keys
+/// in the catalog). The last file is never deleted. Returns how many files were removed.
+pub fn trim(dir: &Path, flushed_seq: u64) -> io::Result<usize> {
     let files = wal_files(dir)?;
     let first = |p: &Path| -> Option<u64> { p.file_stem()?.to_str()?.parse().ok() };
     let mut removed = 0;
@@ -186,12 +185,9 @@ pub fn trim(dir: &Path, flushed_seq: u64, keep_since: std::time::SystemTime) -> 
         if next_first > flushed_seq + 1 {
             break;
         }
-        let modified = fs::metadata(this)?.modified()?;
-        if modified < keep_since {
-            fs::remove_file(this)?;
-            removed += 1;
-            crate::crash_point("during_trim");
-        }
+        fs::remove_file(this)?;
+        removed += 1;
+        crate::crash_point("during_trim");
     }
     if removed > 0 {
         File::open(dir)?.sync_all()?;
@@ -330,14 +326,14 @@ fn decode(rest: &[u8]) -> Option<RunEvent> {
 
 // The byte values below are part of the file format: never renumber them, only add new ones.
 
-fn op_byte(op: Op) -> u8 {
+pub(crate) fn op_byte(op: Op) -> u8 {
     match op {
         Op::Post => 0,
         Op::Patch => 1,
     }
 }
 
-fn byte_op(b: u8) -> Option<Op> {
+pub(crate) fn byte_op(b: u8) -> Option<Op> {
     match b {
         0 => Some(Op::Post),
         1 => Some(Op::Patch),

@@ -1,22 +1,23 @@
 //! The flusher: frozen memtable → Parquet files → catalog → WAL trim (design §4.2).
 //!
 //! The order is the whole safety argument. Files are written first (a crash leaves orphans, deleted on
-//! start); then one metastore transaction registers them and moves `flushed_seq` (a crash after it means
-//! replay skips `seq ≤ flushed_seq`); only then are WAL files deleted. At every step each confirmed event
-//! is in the WAL, in registered files, or both.
+//! start); then one metastore transaction registers them, saves the events' dedup keys and moves
+//! `flushed_seq` (a crash after it means replay skips `seq ≤ flushed_seq`); only then are WAL files deleted.
+//! At every step each confirmed event, and its dedup key, is in the WAL, in the catalog, or both.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tracedb_model::attrs::promote;
 use tracedb_model::{RunId, Ts};
 use tracedb_storage::segment::{self, Version as Row};
-use tracedb_storage::{FieldStat, SegmentMeta, StorageError};
+use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError};
 
+use crate::dedup::{self, DedupKey};
 use crate::memtable::Mem;
 use crate::store::RunStore;
 use crate::{Counters, Storage, crash_point, wal};
@@ -25,6 +26,8 @@ pub(crate) struct FlushJob {
     pub frozen: Arc<RunStore>,
     /// Every event in `frozen` has `seq ≤ max_seq`.
     pub max_seq: u64,
+    /// Dedup keys of the events written to the WAL since the previous freeze.
+    pub keys: Vec<(DedupKey, Ts)>,
 }
 
 pub(crate) struct Flusher {
@@ -121,6 +124,12 @@ impl Flusher {
         let meta = self.storage.meta.clone();
         let (m2, s2) = (metas.clone(), stats.clone());
         let max_seq = job.max_seq;
+        let keys = DedupKeys {
+            flushed_seq: max_seq,
+            newest_at: job.keys.iter().map(|k| k.1.0).max().unwrap_or(0),
+            keys: dedup::pack(&job.keys),
+        };
+        let forget_before = now.0.saturating_sub(self.dedup_window.as_micros() as i64);
         self.storage.block(async move {
             let put = async {
                 for w in &written {
@@ -142,14 +151,13 @@ impl Flusher {
             crash_point("after_put");
             // A failed commit may still have landed (e.g. a lost reply), so its files are kept; if it didn't,
             // they are orphans, deleted on the next start.
-            meta.commit_flush(&m2, &s2, max_seq).await?;
+            meta.commit_flush(&m2, &s2, max_seq, &keys, forget_before).await?;
             crash_point("after_commit");
             Ok(())
         })?;
         self.publish(metas, stats, job.max_seq);
         self.counters.flushed_seq.store(job.max_seq, Ordering::Relaxed);
-        let keep_since = SystemTime::now() - self.dedup_window;
-        match wal::trim(&self.wal_dir, job.max_seq, keep_since) {
+        match wal::trim(&self.wal_dir, job.max_seq) {
             Ok(n) if n > 0 => tracing::debug!(files = n, "trimmed wal"),
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "wal trim failed; will retry after the next flush"),

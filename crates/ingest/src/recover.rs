@@ -1,15 +1,15 @@
 //! Start-up recovery (design §4.6): read the catalog, delete orphan files, rebuild the multi-version set,
-//! replay the WAL past `flushed_seq`, and rebuild the dedup window. An M1 folder (only `wal/`) gets a fresh
-//! catalog with `flushed_seq = 0`, so its whole log is replayed.
+//! replay the WAL past `flushed_seq`, and rebuild the dedup window from the catalog's saved keys plus the WAL.
+//! An M1 folder (only `wal/`) gets a fresh catalog with `flushed_seq = 0`, so its whole log is replayed.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use tracedb_model::{Op, RunId, Ts};
-use tracedb_storage::{SegmentMeta, StorageError};
+use tracedb_storage::{DedupKeys, SegmentMeta, StorageError};
 
-use crate::dedup::Dedup;
+use crate::dedup::{self, Dedup, DedupKey};
 use crate::memtable::Version;
 use crate::store::RunStore;
 use crate::wal::{ReplayStats, Wal};
@@ -20,6 +20,8 @@ pub(crate) struct Recovered {
     pub wal_stats: ReplayStats,
     pub active: RunStore,
     pub dedup: Dedup,
+    /// Dedup keys of the replayed events, saved by the flush that takes them.
+    pub pending: Vec<(DedupKey, Ts)>,
     pub mvset: HashSet<RunId>,
     pub version: Version,
     /// Registered segments whose files are missing or unreadable; left out of `version`.
@@ -30,11 +32,12 @@ pub(crate) struct Recovered {
 pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered, OpenError> {
     let started = Instant::now();
     let (store, meta) = (storage.store.clone(), storage.meta.clone());
-    let (flushed_seq, segments, field_stats, objects) = storage.block(async move {
+    let (flushed_seq, segments, field_stats, saved_keys, objects) = storage.block(async move {
         Ok::<_, StorageError>((
             meta.flushed_seq().await?,
             meta.active_segments().await?,
             meta.field_stats().await?,
+            meta.dedup_keys().await?,
             store.list().await?,
         ))
     })?;
@@ -112,21 +115,49 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
     let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
     let now = Ts::now();
     let (mut replay_rejected, mut skipped) = (0, 0);
-    // Runs with a version already flushed (still in the WAL for the dedup window): a later start for one of
-    // them is a second version too.
+    // Runs with a version already flushed (recently: from the saved keys and any flushed WAL records left):
+    // a later start for one of them is a second version too.
     let mut flushed_ids: HashSet<RunId> = HashSet::new();
-    let (wal, wal_stats) = Wal::open(&cfg.data_dir.join("wal"), cfg.wal_roll_bytes, |ev| {
-        if let Some(id) = ev.fields.id
+    // Keys inside the window, inserted oldest first after replay (pruning pops from the front).
+    let mut recent: Vec<(DedupKey, Ts)> = Vec::new();
+    let mut latest_saved: Vec<(DedupKey, Ts)> = Vec::new();
+    for set in saved_keys {
+        let Some(keys) = dedup::unpack(&set.keys) else {
+            tracing::warn!(flushed_seq = set.flushed_seq, "unreadable saved dedup keys; skipped");
+            continue;
+        };
+        for &(key, at) in &keys {
+            flushed_ids.insert(key.0);
+            if dedup.in_window(at, now) {
+                recent.push((key, at));
+            }
+        }
+        if set.flushed_seq == flushed_seq {
+            latest_saved = keys;
+        }
+    }
+    // Flushed records still in the WAL: a crash between the catalog commit and the trim, or a folder from
+    // before D-022 (whose keys were never saved).
+    let mut flushed_in_wal: Vec<(DedupKey, Ts)> = Vec::new();
+    let mut pending: Vec<(DedupKey, Ts)> = Vec::new();
+    let wal_dir = cfg.data_dir.join("wal");
+    let (wal, wal_stats) = Wal::open(&wal_dir, cfg.wal_roll_bytes, |ev| {
+        let key = ev.fields.id.map(|id| (id, ev.op, ev.body_hash));
+        if let Some(key) = key
             && dedup.in_window(ev.received_at, now)
         {
-            dedup.insert((id, ev.op, ev.body_hash), ev.received_at);
+            recent.push((key, ev.received_at));
         }
         if ev.event_seq <= flushed_seq {
             skipped += 1;
-            if let Some(id) = ev.fields.id {
-                flushed_ids.insert(id);
+            if let Some(key) = key {
+                flushed_ids.insert(key.0);
+                flushed_in_wal.push((key, ev.received_at));
             }
             return;
+        }
+        if let Some(key) = key {
+            pending.push((key, ev.received_at));
         }
         match active.apply(&ev) {
             Ok(c) if c.created && (ev.op == Op::Patch || flushed_ids.contains(&c.header.run_id)) => {
@@ -136,6 +167,28 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
             Err(_) => replay_rejected += 1,
         }
     })?;
+    recent.sort_by_key(|k| k.1);
+    for (key, at) in recent {
+        dedup.insert(key, at);
+    }
+    if skipped > 0 {
+        // Save their keys with the latest flush's (all of them: the next start also takes `flushed_ids` from
+        // them), then the records can go.
+        let mut keys = latest_saved;
+        let mut have: HashSet<DedupKey> = keys.iter().map(|k| k.0).collect();
+        keys.extend(flushed_in_wal.into_iter().filter(|k| have.insert(k.0)));
+        let set = DedupKeys {
+            flushed_seq,
+            newest_at: keys.iter().map(|k| k.1.0).max().unwrap_or(0),
+            keys: dedup::pack(&keys),
+        };
+        let meta = storage.meta.clone();
+        storage.block(async move { meta.save_dedup_keys(&set).await })?;
+        match crate::wal::trim(&wal_dir, flushed_seq) {
+            Ok(n) => tracing::info!(files = n, "trimmed flushed wal files on start"),
+            Err(e) => tracing::warn!(error = %e, "wal trim failed; will retry after the next flush"),
+        }
+    }
 
     let stats = OpenStats {
         replayed_events: wal_stats.records - skipped,
@@ -161,6 +214,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         wal_stats,
         active,
         dedup,
+        pending,
         mvset,
         version,
         corrupt,

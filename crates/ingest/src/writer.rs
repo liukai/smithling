@@ -44,14 +44,22 @@ pub(crate) struct Shared {
     pub flush_tx: Sender<FlushJob>,
 }
 
-pub(crate) fn run(rx: Receiver<Request>, mut wal: Wal, mut dedup: Dedup, mut seq: u64, sh: Shared) {
+/// `pending`: dedup keys of the WAL events not yet handed to the flusher (on start, those replayed).
+pub(crate) fn run(
+    rx: Receiver<Request>,
+    mut wal: Wal,
+    mut dedup: Dedup,
+    mut pending: Vec<(DedupKey, Ts)>,
+    mut seq: u64,
+    sh: Shared,
+) {
     loop {
         let first = match rx.recv_timeout(TICK) {
             Ok(r) => Some(r),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        maybe_freeze(&mut wal, seq, &sh);
+        maybe_freeze(&mut wal, seq, &mut pending, &sh);
         let Some(first) = first else { continue };
         let mut group = vec![first];
         let mut bytes = group[0].bytes;
@@ -71,10 +79,10 @@ pub(crate) fn run(rx: Receiver<Request>, mut wal: Wal, mut dedup: Dedup, mut seq
             continue;
         }
         let before = wal.appended_bytes();
-        commit(group, &mut wal, &mut dedup, &mut seq, &sh);
+        commit(group, &mut wal, &mut dedup, &mut pending, &mut seq, &sh);
         let added = wal.appended_bytes() - before;
         sh.counters.unflushed_wal.fetch_add(added, Ordering::Relaxed);
-        maybe_freeze(&mut wal, seq, &sh);
+        maybe_freeze(&mut wal, seq, &mut pending, &sh);
     }
 }
 
@@ -87,7 +95,7 @@ fn overloaded(sh: &Shared) -> bool {
 
 /// Freezes the active memtable when it is full or old, or when the unflushed WAL passes half its limit
 /// (many updates to few runs grow the log much faster than memory), if no flush is in progress.
-fn maybe_freeze(wal: &mut Wal, seq: u64, sh: &Shared) {
+fn maybe_freeze(wal: &mut Wal, seq: u64, pending: &mut Vec<(DedupKey, Ts)>, sh: &Shared) {
     let now = Ts::now();
     {
         let mem = sh.mem.read().unwrap();
@@ -113,7 +121,11 @@ fn maybe_freeze(wal: &mut Wal, seq: u64, sh: &Shared) {
         mem.frozen = Some(frozen.clone());
         frozen
     };
-    let job = FlushJob { frozen, max_seq: seq };
+    let job = FlushJob {
+        frozen,
+        max_seq: seq,
+        keys: std::mem::take(pending),
+    };
     if sh.flush_tx.send(job).is_err() {
         tracing::error!("flusher is gone; data stays in the WAL until restart");
     }
@@ -125,7 +137,14 @@ struct Outcome {
     keys: Vec<DedupKey>,
 }
 
-fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, sh: &Shared) {
+fn commit(
+    group: Vec<Request>,
+    wal: &mut Wal,
+    dedup: &mut Dedup,
+    pending: &mut Vec<(DedupKey, Ts)>,
+    seq: &mut u64,
+    sh: &Shared,
+) {
     if let Some(err) = sh.health.lock().unwrap().clone() {
         for r in group {
             let _ = r.reply.send(Err(AcceptError::Storage(err.clone())));
@@ -250,6 +269,7 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
     for out in &outcomes {
         for k in &out.keys {
             dedup.insert(*k, now);
+            pending.push((*k, now));
         }
     }
     for c in changes {

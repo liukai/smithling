@@ -12,7 +12,7 @@ bench and crash test.
 
 **Assumed answers to design §8** (proposed defaults; change before implementing if you disagree):
 1. Identity conflicts for runs only on disk are accepted and flagged (`identity_conflict` warning), not rejected.
-2. Dedup window 10 min (configurable); WAL files kept at least that long.
+2. Dedup window 10 min (configurable); each flush saves its dedup keys in the catalog, flushed WAL files go at once (D-022).
 3. `build.rs` stops running npm; it embeds `ui/dist` if present, else a placeholder page.
 4. Memtable limit 128 MB; flush age 10 min.
 5. No `field:value` short form in M2.
@@ -83,7 +83,7 @@ upload (spec Story 3).
 ### Tests for User Story 3
 
 - [X] T020 [P] [US3] Segment round-trip test `crates/storage/tests/segment.rs`: write run versions → read back equal; sorted by `(trace_id, dotted_order)`; bloom filters answer `may_contain` for every written `trace_id` and `run_id`; promoted paths per data-model §4 ("metadata depth ≤ 4, strings ≤ 256 B"; "inputs/outputs depth ≤ 3, ≤ 64 leaves per field")
-- [X] T021 [P] [US3] Flush test `crates/ingest/tests/flush.rs`: after a flush the catalog lists the segment, `flushed_seq = S`, WAL files with last seq ≤ S and older than the dedup window are gone, field stats rows exist
+- [X] T021 [P] [US3] Flush test `crates/ingest/tests/flush.rs`: after a flush the catalog lists the segment, `flushed_seq = S`, WAL files with last seq ≤ S are gone (D-022), field stats rows exist
 - [X] T022 [P] [US3] Recovery test `crates/ingest/tests/recover.rs`: orphan files (written, not registered) are deleted on start; replay skips seq ≤ `flushed_seq`; multi-version set is rebuilt from `needs_merge` rows; an M1 data folder (fixture in `tests/fixtures/m1-folder/`) opens with no manual step (M2-FR-20) — M1 folder is generated in the test (M2 writer, same WAL format) instead of a checked-in `tests/fixtures/m1-folder/`; also covers dedup rebuild, a missing data file → `corrupt_segments`, and refusing to delete files the WAL no longer covers
 - [X] T023 [P] [US3] Extend the crash harness `crates/tracedb/tests/crash.rs`: kill points during upload, during file put, between put and COMMIT, after COMMIT before trim, during trim (via a `TRACEDB_TEST_CRASH_AT` hook); 10 rounds; assert 0 missing and 0 duplicated (SC-05) — 5 random kills during upload + `during_put`, `after_put`, `after_commit`, `during_trim`, `after_trim`; small WAL files via `TRACEDB_TEST_WAL_ROLL`; also bounds stored versions (reads merge duplicates)
 - [X] T024 [P] [US3] Slowdown test `crates/tracedb/tests/slowdown.rs`: with a 4 MB memtable and a slowed flusher, a burst gets `429` + `Retry-After: 1`, the client retries, nothing is lost, memtable bytes stay ≤ 2 × limit (R-8)

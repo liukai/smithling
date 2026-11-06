@@ -1,5 +1,5 @@
 //! The catalog of data files and their field statistics: SQLite locally, Postgres in cloud mode, same SQL
-//! (data-model §5). A flush registers its files and moves `flushed_seq` in one transaction.
+//! (data-model §5). A flush registers its files, saves its dedup keys and moves `flushed_seq` in one transaction.
 
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::{AnyPool, Row};
@@ -39,6 +39,22 @@ const MIGRATION: &[&str] = &[
         PRIMARY KEY (segment_id, path, type))",
 ];
 
+/// Added after the first M2 release; `CREATE … IF NOT EXISTS` upgrades older catalogs in place.
+const DEDUP_TABLE: &str = "CREATE TABLE IF NOT EXISTS dedup_keys (
+        flushed_seq BIGINT PRIMARY KEY,
+        newest_at BIGINT NOT NULL,
+        keys BLOB NOT NULL)";
+
+/// The dedup keys of one flush's events, packed by the caller (the catalog doesn't read them).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DedupKeys {
+    /// The flush's `flushed_seq`.
+    pub flushed_seq: u64,
+    /// Newest `received_at` among the keys (µs); rows older than the dedup window are deleted.
+    pub newest_at: i64,
+    pub keys: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct Metastore {
     pool: AnyPool,
@@ -68,6 +84,12 @@ impl Metastore {
         for stmt in MIGRATION {
             sqlx::query(*stmt).execute(&m.pool).await?;
         }
+        let dedup_table = if pg {
+            DEDUP_TABLE.replace("BLOB", "BYTEA")
+        } else {
+            DEDUP_TABLE.to_string()
+        };
+        sqlx::query(sqlx::AssertSqlSafe(dedup_table)).execute(&m.pool).await?;
         let have: Option<i64> = sqlx::query("SELECT schema_version FROM state WHERE id = 1")
             .fetch_optional(&m.pool)
             .await?
@@ -176,12 +198,51 @@ impl Metastore {
             .collect()
     }
 
-    /// Registers a flush: its segments and field stats, and the new `flushed_seq`, all or nothing.
+    /// Every saved set of dedup keys, oldest flush first.
+    pub async fn dedup_keys(&self) -> Result<Vec<DedupKeys>, StorageError> {
+        let rows = sqlx::query("SELECT flushed_seq, newest_at, keys FROM dedup_keys ORDER BY flushed_seq")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| DedupKeys {
+                flushed_seq: r.get::<i64, _>(0) as u64,
+                newest_at: r.get(1),
+                keys: r.get(2),
+            })
+            .collect())
+    }
+
+    /// Saves `keys` outside a flush (replacing a set saved for the same `flushed_seq`).
+    pub async fn save_dedup_keys(&self, keys: &DedupKeys) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        self.upsert_dedup(&mut tx, keys).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn upsert_dedup(&self, tx: &mut sqlx::Transaction<'_, sqlx::Any>, k: &DedupKeys) -> Result<(), StorageError> {
+        sqlx::query(self.sql(
+            "INSERT INTO dedup_keys (flushed_seq, newest_at, keys) VALUES (?, ?, ?)
+             ON CONFLICT (flushed_seq) DO UPDATE SET newest_at = excluded.newest_at, keys = excluded.keys",
+        ))
+        .bind(k.flushed_seq as i64)
+        .bind(k.newest_at)
+        .bind(k.keys.clone())
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Registers a flush, all or nothing: its segments and field stats, its dedup keys, and the new
+    /// `flushed_seq`. Older key sets whose newest key is before `forget_before` (µs) are deleted.
     pub async fn commit_flush(
         &self,
         segments: &[SegmentMeta],
         stats: &[FieldStat],
         flushed_seq: u64,
+        dedup: &DedupKeys,
+        forget_before: i64,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
         let ins_seg = self.sql(
@@ -236,6 +297,12 @@ impl Metastore {
                 "flushed_seq would move backwards to {flushed_seq}"
             )));
         }
+        self.upsert_dedup(&mut tx, dedup).await?;
+        sqlx::query(self.sql("DELETE FROM dedup_keys WHERE newest_at < ? AND flushed_seq < ?"))
+            .bind(forget_before)
+            .bind(dedup.flushed_seq as i64)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }

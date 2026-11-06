@@ -8,7 +8,7 @@ use serde_json::json;
 use tracedb_model::attrs::promote;
 use tracedb_model::{Op, RunEvent, RunFields, RunState, Source, Ts, merge, merge_versions};
 use tracedb_storage::segment::{self, Version, decode_core, decode_payload, start_key};
-use tracedb_storage::{Metastore, Store};
+use tracedb_storage::{DedupKeys, Metastore, Store};
 use uuid::Uuid;
 
 fn uid(n: u128) -> Uuid {
@@ -214,6 +214,14 @@ async fn store_is_write_once_and_readable_by_datafusion() {
     assert!(store.list().await.unwrap().is_empty());
 }
 
+fn keys(flushed_seq: u64, newest_at: i64) -> DedupKeys {
+    DedupKeys {
+        flushed_seq,
+        newest_at,
+        keys: vec![flushed_seq as u8; 33],
+    }
+}
+
 #[tokio::test]
 async fn metastore_flush_is_atomic_and_persistent() {
     let dir = tempfile::tempdir().unwrap();
@@ -222,20 +230,20 @@ async fn metastore_flush_is_atomic_and_persistent() {
     assert_eq!(m.flushed_seq().await.unwrap(), 0);
     let rows: Vec<Version> = (1..=5).map(|n| version(state(n, 1, true))).collect();
     let w = segment::write("p", rows, Ts(0)).unwrap();
-    m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, 42)
+    m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, 42, &keys(42, 1_000), 0)
         .await
         .unwrap();
 
     // A failing flush (duplicate segment id) changes nothing.
     assert!(
-        m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, 99)
+        m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, 99, &keys(99, 2_000), 0)
             .await
             .is_err()
     );
     // flushed_seq never moves backwards.
     let w2 = segment::write("p", vec![version(state(7, 1, true))], Ts(0)).unwrap();
     assert!(
-        m.commit_flush(std::slice::from_ref(&w2.meta), &w2.stats, 10)
+        m.commit_flush(std::slice::from_ref(&w2.meta), &w2.stats, 10, &keys(10, 2_000), 0)
             .await
             .is_err()
     );
@@ -246,6 +254,43 @@ async fn metastore_flush_is_atomic_and_persistent() {
     assert_eq!(segs, vec![w.meta.clone()]);
     let stats = m.field_stats().await.unwrap();
     assert_eq!(stats.len(), w.stats.len());
+    assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(42, 1_000)]);
+}
+
+#[tokio::test]
+async fn dedup_keys_are_pruned_by_age_but_the_newest_flush_keeps_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
+    let m = Metastore::open(&url).await.unwrap();
+    for (seq, at) in [(10, 100), (20, 200), (30, 300)] {
+        let w = segment::write("p", vec![version(state(seq as u128, 1, true))], Ts(0)).unwrap();
+        m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, seq, &keys(seq, at), 150)
+            .await
+            .unwrap();
+    }
+    assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(20, 200), keys(30, 300)]);
+    // Even past the window, the newest flush's keys stay (start-up uses them to rebuild the multi-version set).
+    let w = segment::write("p", vec![version(state(40, 1, true))], Ts(0)).unwrap();
+    m.commit_flush(std::slice::from_ref(&w.meta), &w.stats, 40, &keys(40, 400), 1_000)
+        .await
+        .unwrap();
+    assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(40, 400)]);
+    // Saving again for the same flush replaces the set.
+    m.save_dedup_keys(&keys(40, 500)).await.unwrap();
+    assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(40, 500)]);
+}
+
+#[tokio::test]
+async fn a_catalog_from_before_dedup_keys_is_upgraded_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
+    drop(Metastore::open(&url).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    sqlx::query("DROP TABLE dedup_keys").execute(&pool).await.unwrap();
+    pool.close().await;
+    let m = Metastore::open(&url).await.unwrap();
+    assert!(m.dedup_keys().await.unwrap().is_empty());
+    m.save_dedup_keys(&keys(1, 1)).await.unwrap();
 }
 
 #[test]

@@ -118,9 +118,18 @@ CREATE TABLE field_stats (
   other_count     BIGINT NOT NULL,
   PRIMARY KEY (segment_id, path, type)
 );
+
+CREATE TABLE dedup_keys (                    -- D-022; added in place to older M2 catalogs (schema_version stays 1)
+  flushed_seq     BIGINT PRIMARY KEY,        -- the flush that saved them
+  newest_at       BIGINT NOT NULL,           -- newest received_at (µs) among the keys
+  keys            BLOB   NOT NULL            -- BYTEA on Postgres; packed 33 B keys, see below
+);
 ```
 
-A flush is one transaction: insert its `segments` rows and `field_stats` rows, then update `state.flushed_seq`.
+A flush is one transaction: insert its `segments`, `field_stats` and `dedup_keys` rows, update `state.flushed_seq`,
+and delete `dedup_keys` rows older than the dedup window (except the newest). A packed key is `run_id` (16 B) + `op`
+(1 B, WAL byte values) + `body_hash` (u64 LE) + `received_at` µs (i64 LE): the keys of every event the flush took
+from the WAL, so start rebuilds the dedup window with no flushed WAL files kept.
 
 ## 6. Object layout
 
@@ -129,7 +138,7 @@ A flush is one transaction: insert its `segments` rows and `field_stats` rows, t
   <project>/<yyyy-mm-dd>/seg-<ulid>.core.parquet
   <project>/<yyyy-mm-dd>/seg-<ulid>.payload.parquet
   _unknown/<yyyy-mm-dd>/seg-<ulid>.…              versions without a known project
-<data>/wal/<first_seq:020>.wal                      local disk in every mode (M1 format)
+<data>/wal/<first_seq:020>.wal                      local disk in every mode (M1 format); only unflushed files
 <data>/meta.sqlite                                  local mode only
 ```
 

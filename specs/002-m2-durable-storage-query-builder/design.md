@@ -97,8 +97,8 @@ Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`
   except through the flusher.
 
 #### 4. WAL
-- **Can**: replay only records with `seq > flushed_seq`; delete whole files whose records are all flushed and older than
-  the dedup window.
+- **Can**: replay only records with `seq > flushed_seq`; delete whole files whose records are all flushed, right after
+  the flush (their dedup keys are in the catalog, D-022).
 - **Cannot**: live on object storage. It stays on local disk in every mode, like SmithDB's WAL on the ingestion node's
   SSD. Cloud mode therefore still needs a local data folder for the WAL.
 
@@ -171,10 +171,10 @@ sequenceDiagram
     W->>F: freeze: frozen = active (max seq S); new active
     F->>F: per project: sort rows, mark needs_merge, build field stats
     F->>OS: put seg-<ulid>.core.parquet, seg-<ulid>.payload.parquet
-    F->>MS: BEGIN; insert segments; insert field_stats; flushed_seq = S; COMMIT
+    F->>MS: BEGIN; insert segments, field_stats, dedup keys; flushed_seq = S; COMMIT
     F->>Q: publish Version{segments + new, frozen = none}
     F->>F: drop frozen (when no reader holds it)
-    F->>F: WAL: delete files with last seq ≤ S and older than dedup window
+    F->>F: WAL: delete files with last seq ≤ S
 ```
 
 Crash at each point:
@@ -183,8 +183,12 @@ Crash at each point:
 |---|---|---|
 | freeze, before files are written | no new files; `flushed_seq` unchanged; WAL replays everything > old `flushed_seq` | no / no |
 | files written, before COMMIT | files exist but aren't in the catalog → **orphans**, deleted on start; WAL replays | no / no |
-| COMMIT, before WAL trim | catalog has the files and `flushed_seq = S`; replay skips seq ≤ S | no / no |
+| COMMIT, before WAL trim | catalog has the files, their dedup keys and `flushed_seq = S`; replay skips seq ≤ S, then start trims those files | no / no |
 | WAL trim | normal state | no / no |
+
+The dedup keys `(run_id, op, body_hash, received_at)` of the flushed events (33 B each, one row per flush) go in the
+same transaction, so a restart rebuilds the window without the WAL. The flush deletes key rows whose newest key is
+older than the window, but keeps the latest flush's (start uses its run ids to rebuild the multi-version set) (D-022).
 
 **Triggers**: active ≥ 128 MB, or the oldest event in active is ≥ 10 min old, or shutdown. The 10-minute age limit
 bounds how much the WAL must replay on restart, without creating thousands of tiny files.
@@ -264,7 +268,9 @@ open:
   metastore.open(); read flushed_seq S and the segment list
   delete orphan files (in storage, not in the catalog)
   build multi-version set = run ids of rows with needs_merge = true (one column read per file, cached)
-  replay WAL records with seq > S into the active memtable; rebuild dedup from records inside the window
+  rebuild dedup from the catalog's saved keys inside the window, then from WAL records inside the window
+  replay WAL records with seq > S into the active memtable
+  if the WAL still holds records ≤ S (crash before a trim, or a folder from before D-022): save their keys, trim
   open HTTP
 ```
 
@@ -380,7 +386,8 @@ in both modes. Automated checks run the demo checks and the crash test against M
    `identity_conflict` warning to the run. Checking against disk would put file reads in the write path.
    *Proposed: accept this in M2; revisit with compaction (M4), which sees all versions.*
 2. **Dedup window shrinks from 24 h to 10 min.** At 2M+ runs a 24 h key set is too big to keep in memory, and SDK
-   retries happen within seconds. WAL files are kept at least as long as the window so a restart rebuilds it.
+   retries happen within seconds. Each flush saves its events' keys in the catalog so a restart rebuilds the window
+   (D-022; at first the WAL was kept that long, which took more disk than the raw JSON).
    *Proposed: 10 min, configurable.*
 3. **UI build leaves `cargo build`** (M2-FR-25, reverses M1 decision §11.3). CI builds the UI first and the Rust build
    embeds `ui/dist` if present, else a one-page "UI not built — run `npm run build` in ui/" placeholder. Release

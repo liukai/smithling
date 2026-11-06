@@ -1,4 +1,5 @@
-//! Remembers recent `(run_id, op, body_hash)` keys so an SDK retry is stored once.
+//! Remembers recent `(run_id, op, body_hash)` keys so an SDK retry is stored once. Each flush saves the keys
+//! of its events in the catalog (D-022), so a restart rebuilds the window without keeping flushed WAL files.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -8,6 +9,37 @@ use tracedb_model::{Op, RunId, Ts};
 pub const DEFAULT_WINDOW_US: i64 = 10 * 60 * 1_000_000;
 
 pub type DedupKey = (RunId, Op, u64);
+
+/// One packed key: run id (16 B) + op (1 B) + body hash (8 B LE) + received µs (8 B LE).
+const PACKED_LEN: usize = 16 + 1 + 8 + 8;
+
+pub fn pack(keys: &[(DedupKey, Ts)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(keys.len() * PACKED_LEN);
+    for ((id, op, hash), at) in keys {
+        out.extend_from_slice(id.as_bytes());
+        out.push(crate::wal::op_byte(*op));
+        out.extend_from_slice(&hash.to_le_bytes());
+        out.extend_from_slice(&at.0.to_le_bytes());
+    }
+    out
+}
+
+/// The reverse of [`pack`]; `None` if the bytes aren't a whole number of valid keys.
+pub fn unpack(bytes: &[u8]) -> Option<Vec<(DedupKey, Ts)>> {
+    if !bytes.len().is_multiple_of(PACKED_LEN) {
+        return None;
+    }
+    let (keys, _) = bytes.as_chunks::<PACKED_LEN>();
+    keys.iter()
+        .map(|k| {
+            let id = RunId::from_bytes(k[..16].try_into().unwrap());
+            let op = crate::wal::byte_op(k[16])?;
+            let hash = u64::from_le_bytes(k[17..25].try_into().unwrap());
+            let at = Ts(i64::from_le_bytes(k[25..].try_into().unwrap()));
+            Some(((id, op, hash), at))
+        })
+        .collect()
+}
 
 pub struct Dedup {
     seen: HashMap<DedupKey, Ts>,

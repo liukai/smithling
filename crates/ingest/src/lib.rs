@@ -151,7 +151,8 @@ pub enum OpenError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OpenStats {
     pub replayed_events: u64,
-    /// Events already in data files, skipped by replay (still used to rebuild the dedup window).
+    /// Events already in data files, skipped by replay: left by a crash between a flush's catalog commit and its
+    /// WAL trim (or by an older M2 folder). Their dedup keys are saved, then their WAL files trimmed.
     pub skipped_flushed: u64,
     pub replay_rejected: u64,
     pub wal_files: usize,
@@ -448,6 +449,7 @@ impl Ingest {
             wal_stats,
             active,
             dedup,
+            pending,
             mvset,
             version,
             corrupt,
@@ -501,7 +503,7 @@ impl Ingest {
         let last_seq = wal_stats.last_seq.max(flushed_seq);
         let thread = std::thread::Builder::new()
             .name("tracedb-writer".into())
-            .spawn(move || writer::run(rx, wal, dedup, last_seq, shared))
+            .spawn(move || writer::run(rx, wal, dedup, pending, last_seq, shared))
             .map_err(OpenError::Thread)?;
 
         let inner = Inner {

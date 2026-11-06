@@ -34,8 +34,8 @@ fn end_item(n: u64) -> Value {
 
 fn spawn(data: &std::path::Path, crash_at: Option<&str>) -> (Child, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));
-    // Small WAL files and a short dedup window, so flushes have whole files to trim; retries are re-sent
-    // right after the restart, well inside the window.
+    // Small WAL files, so flushes have whole files to trim; retries are re-sent right after the restart, well
+    // inside the dedup window (rebuilt from the catalog's saved keys).
     cmd.args([
         "serve",
         "--data",
@@ -157,8 +157,7 @@ async fn kill_9_loses_nothing_confirmed() {
 
         let wait = random_ms(round);
         if crash_at.is_some() {
-            // The server aborts itself at the crash point of a flush (`during_trim`: once a WAL file is older
-            // than the dedup window).
+            // The server aborts itself at the crash point of a flush.
             let deadline = std::time::Instant::now() + Duration::from_secs(120);
             let status = loop {
                 if let Some(s) = child.try_wait().unwrap() {
