@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/model", "crates/ingest", "crates/query", "crates/tracedb"]
+members = ["crates/model", "crates/storage", "crates/ingest", "crates/query", "crates/tracedb"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "MIT"
 
 [workspace.dependencies]
 tracedb-model = { path = "crates/model" }
+tracedb-storage = { path = "crates/storage" }
 tracedb-ingest = { path = "crates/ingest" }
 tracedb-query = { path = "crates/query" }
 tokio = { version = "1", features = ["full"] }
@@ -35,6 +36,12 @@ tempfile = "3"
 base64 = "0.22"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
+datafusion = { version = "55.2", default-features = false, features = ["parquet", "nested_expressions", "datetime_expressions"] }
+object_store = { version = "0.13", features = ["aws"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "any", "sqlite", "postgres", "migrate"] }
+ulid = "1"
+bytes = "1"
+url = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

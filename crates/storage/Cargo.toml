@@ -1,0 +1,29 @@
+[package]
+name = "tracedb-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracedb-model.workspace = true
+datafusion.workspace = true
+object_store.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+bytes.workspace = true
+url.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true

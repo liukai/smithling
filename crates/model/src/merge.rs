@@ -271,6 +271,24 @@ fn fold(a: RunState, b: RunState) -> RunState {
     st.created_at = a.created_at.min(b.created_at);
     st.updated_at = a.updated_at.max(b.updated_at);
     st.event_count = a.event_count + b.event_count;
+    // Versions read from files carry payload bits and sizes without the payload itself; keep them.
+    for (bit, size) in [
+        (present::INPUTS, &mut st.payload_sizes.inputs),
+        (present::OUTPUTS, &mut st.payload_sizes.outputs),
+        (present::EVENTS, &mut st.payload_sizes.events),
+    ] {
+        let pick = |v: &RunState| match bit {
+            present::INPUTS => v.payload_sizes.inputs,
+            present::OUTPUTS => v.payload_sizes.outputs,
+            _ => v.payload_sizes.events,
+        };
+        if b.present & bit != 0 {
+            *size = pick(&b);
+        } else if a.present & bit != 0 {
+            *size = pick(&a);
+        }
+    }
+    st.present |= (a.present | b.present) & (present::INPUTS | present::OUTPUTS | present::EVENTS);
     st.present = (st.present & !present::CREATED_BY_PATCH)
         | (a.present & present::CREATED_BY_PATCH)
         | ((a.present | b.present) & present::CONFLICT)
