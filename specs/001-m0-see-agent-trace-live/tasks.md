@@ -148,11 +148,11 @@ loads; opening a step shows its full payload.
 **Independent Test**: upload continuously, `kill -9` at random times, restart, compare against every confirmed
 upload; 10 rounds.
 
-- [ ] T050 [P] [US3] Crash harness `crates/tracedb/tests/crash.rs` (`#[ignore]`, run in CI): spawn `tracedb serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
-- [ ] T051 [P] [US3] Retry-after-crash test in `crates/tracedb/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
-- [ ] T052 [P] [US3] Restart timing test `crates/tracedb/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
-- [ ] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/tracedb/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
-- [ ] T054 [US3] Add the crash and restart tests to `.github/workflows/ci.yml` (`cargo test -- --ignored crash restart`)
+- [X] T050 [P] [US3] Crash harness `crates/tracedb/tests/crash.rs` (`#[ignore]`, run in CI): spawn `tracedb serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
+- [X] T051 [P] [US3] Retry-after-crash test in `crates/tracedb/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
+- [X] T052 [P] [US3] Restart timing test `crates/tracedb/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
+- [X] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/tracedb/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
+- [X] T054 [US3] Add the crash and restart tests to `.github/workflows/ci.yml` (`cargo test -- --ignored crash restart`)
 
 **Checkpoint**: crash harness green in CI 10/10.
 
@@ -164,9 +164,9 @@ upload; 10 rounds.
 
 **Independent Test**: `tracedb seed --traces 100` → browse traces with deep trees, late finishes, errors, large payloads.
 
-- [ ] T055 [P] [US4] Seed shape test `crates/tracedb/tests/seed.rs`: with `--seed 42`, generated traces have depth 3–8, 20–300 steps, ≈5% errors, ≈10% of steps finishing 30–120 s late, payloads 1–50 KB; the same seed gives the same output
-- [ ] T056 [US4] Implement the generator in `crates/tracedb/src/seed.rs`: research-agent-like step names (`plan`, `web_search`, `fetch_url`, `python_exec`, `summarize`, `llm`), LangSmith-shaped `post`/`patch` items with valid `dotted_order`, deterministic from `--seed`
-- [ ] T057 [US4] Wire `tracedb seed [--traces 100] [--seed 42] [--url http://localhost:7070]` in `crates/tracedb/src/cli.rs`: sends batches to `/runs/batch` (≤ 100 items), sends late `patch`es after their delay (or immediately with `--no-delay`), exit codes 0/1/2
+- [X] T055 [P] [US4] Seed shape test `crates/tracedb/tests/seed.rs`: with `--seed 42`, generated traces have depth 3–8, 20–300 steps, ≈5% errors, ≈10% of steps finishing 30–120 s late, payloads 1–50 KB; the same seed gives the same output
+- [X] T056 [US4] Implement the generator in `crates/tracedb/src/seed.rs`: research-agent-like step names (`plan`, `web_search`, `fetch_url`, `python_exec`, `summarize`, `llm`), LangSmith-shaped `post`/`patch` items with valid `dotted_order`, deterministic from `--seed`
+- [X] T057 [US4] Wire `tracedb seed [--traces 100] [--seed 42] [--url http://localhost:7070]` in `crates/tracedb/src/cli.rs`: sends batches to `/runs/batch` (≤ 100 items), sends late `patch`es after their delay (or immediately with `--no-delay`), exit codes 0/1/2
 
 **Checkpoint (demo)**: `tracedb seed --traces 100`, then click through the generated traces.
 

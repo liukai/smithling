@@ -2,6 +2,7 @@
 
 pub mod langsmith_map;
 pub mod routes;
+pub mod seed;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -29,3 +29,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: crash and restart tests (slow)
+        run: cargo test --release -p tracedb --test crash --test restart -- --ignored
