@@ -6,7 +6,7 @@
 
 **Branch**: `000-tracedb-master-plan` | **Date**: 2026-11-05 | **Spec**: [spec.md](spec.md)
 
-**Progress and decisions**: [roadmap.md](roadmap.md) (plan of record).
+**Progress and decisions**: [roadmap.md](roadmap.md) (plan of record) · **Decision changes**: [decisions.md](decisions.md).
 
 **Input**: Feature specification from `specs/000-tracedb-master-plan/spec.md`. Design input: [design-notes.md](design-notes.md).
 

@@ -1,6 +1,7 @@
 # tracedb master roadmap (plan of record)
 
 > This is the master plan and progress tracker for tracedb. Every other doc points here for status and decisions.
+> Changes of direction (what we decided before, and why it changed) are logged in [decisions.md](decisions.md).
 > Requirements: [spec.md](spec.md) · Architecture and phases: [plan.md](plan.md) · Design: [design-notes.md](design-notes.md) ·
 > Principles: [constitution](../../.specify/memory/constitution.md). Each phase is its own spec (`specs/00N-…`); this file rolls them up.
 
@@ -37,6 +38,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
 - 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
+- 2026-11-06: **Keep 000 in step with reality**: after every phase checkpoint, update the roadmap (STATE, NEXT, progress), the [decision log](decisions.md) for any change of direction, and the master plan/design notes where the design moved. The decision log records every change of an earlier decision.
 
 **STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
 M1 is **built** on branch `001-m1-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
