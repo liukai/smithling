@@ -83,7 +83,7 @@ fn versions_round_trip_and_merge_like_the_originals() {
     assert_eq!(w.meta.row_count, 80);
     assert_eq!(w.meta.needs_merge_rows, 40, "patch-created versions are marked");
     assert!(
-        w.meta.core_path.starts_with("eval-agent/2023-11-14/seg-"),
+        w.meta.core_path.starts_with("eval-agent-") && w.meta.core_path.contains("/2023-11-14/seg-"),
         "{}",
         w.meta.core_path
     );
@@ -179,8 +179,14 @@ async fn store_is_write_once_and_readable_by_datafusion() {
     let rows: Vec<Version> = (1..=5).map(|n| version(state(n, 1, true))).collect();
     let w = segment::write("p q/x", rows, Ts(0)).unwrap();
     assert!(
-        w.meta.core_path.starts_with("p_q_x/"),
+        w.meta.core_path.starts_with("p_q_x-"),
         "project names are sanitized for paths"
+    );
+    let other = segment::write("p_q_x", vec![version(state(9, 1, true))], Ts(0)).unwrap();
+    assert_ne!(
+        other.meta.core_path.split('/').next(),
+        w.meta.core_path.split('/').next(),
+        "different projects never share a folder"
     );
     store.put_new(&w.meta.core_path, w.core.clone()).await.unwrap();
     assert!(
@@ -226,6 +232,13 @@ async fn metastore_flush_is_atomic_and_persistent() {
             .await
             .is_err()
     );
+    // flushed_seq never moves backwards.
+    let w2 = segment::write("p", vec![version(state(7, 1, true))], Ts(0)).unwrap();
+    assert!(
+        m.commit_flush(std::slice::from_ref(&w2.meta), &w2.stats, 10)
+            .await
+            .is_err()
+    );
     drop(m);
     let m = Metastore::open(&url).await.unwrap();
     assert_eq!(m.flushed_seq().await.unwrap(), 42);
@@ -245,4 +258,80 @@ fn passwords_are_redacted() {
         tracedb_storage::redact("sqlite:///tmp/meta.sqlite"),
         "sqlite:///tmp/meta.sqlite"
     );
+}
+
+#[test]
+fn tokens_survive_a_round_trip_without_the_payload() {
+    let id = uid(77);
+    let mut slot = None;
+    let mut f = RunFields {
+        id: Some(id),
+        trace_id: Some(id),
+        dotted_order: Some(dotted(5, id)),
+        name: Some("llm".into()),
+        run_type: Some("llm".into()),
+        start_time: Ts::parse("2026-11-05T02:05:00Z"),
+        ..Default::default()
+    };
+    f.outputs = Some(json!({"usage_metadata": {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150}}));
+    merge(
+        &mut slot,
+        &RunEvent {
+            op: Op::Post,
+            event_seq: 1,
+            received_at: Ts(1),
+            source: Source::Native,
+            body_hash: 0,
+            fields: f,
+        },
+    )
+    .unwrap();
+    let st = slot.unwrap();
+    assert_eq!(st.run.total_tokens, Some(150));
+    let w = segment::write("p", vec![version(st.clone())], Ts(0)).unwrap();
+    let back = decode_core(&read_all(&w.core)[0]).unwrap().remove(0).state;
+    assert!(back.run.outputs.is_none(), "payload isn't loaded from the core file");
+    assert_eq!((back.run.input_tokens, back.run.total_tokens), (Some(120), Some(150)));
+
+    // Merging with a later header-only version keeps them, and keeps the payload unloaded.
+    let mut later = None;
+    let p = RunFields {
+        id: Some(id),
+        trace_id: Some(id),
+        dotted_order: Some(dotted(5, id)),
+        end_time: Ts::parse("2026-11-05T02:06:00Z"),
+        ..Default::default()
+    };
+    merge(
+        &mut later,
+        &RunEvent {
+            op: Op::Patch,
+            event_seq: 2,
+            received_at: Ts(2),
+            source: Source::Native,
+            body_hash: 0,
+            fields: p,
+        },
+    )
+    .unwrap();
+    let m = merge_versions(vec![back, later.unwrap()]).unwrap();
+    assert_eq!(m.run.total_tokens, Some(150));
+    assert_eq!(m.payload_sizes, st.payload_sizes);
+}
+
+#[test]
+fn a_state_without_its_payload_is_never_rewritten() {
+    let st = state(3, 1, true);
+    let w = segment::write("p", vec![version(st)], Ts(0)).unwrap();
+    let back = decode_core(&read_all(&w.core)[0]).unwrap().remove(0);
+    let err = segment::write(
+        "p",
+        vec![Version {
+            state: back.state,
+            attrs: back.attrs,
+            needs_merge: false,
+        }],
+        Ts(0),
+    );
+    assert!(err.is_err(), "writing would silently drop the payload");
 }

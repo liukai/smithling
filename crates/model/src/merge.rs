@@ -96,6 +96,7 @@ fn new_state(ev: &RunEvent) -> Result<RunState, Reject> {
         updated_at: ev.received_at,
         event_count: 0,
         payload_sizes: PayloadSizes::default(),
+        outputs_usage: None,
         has_start: false,
         project_set: false,
         present: if ev.op == Op::Patch {
@@ -189,6 +190,7 @@ fn apply(st: &mut RunState, ev: &RunEvent) {
     }
     if let Some(v) = &f.outputs {
         st.payload_sizes.outputs = json_size(v);
+        st.outputs_usage = v.get("usage_metadata").and_then(serde_json::Value::as_object).cloned();
         r.outputs = Some(v.clone());
         st.present |= present::OUTPUTS;
     }
@@ -250,9 +252,23 @@ fn fold(a: RunState, b: RunState) -> RunState {
         tags: fb.tags.or(fa.tags),
         metadata: fb.metadata.or(fa.metadata),
         extra: fb.extra.or(fa.extra),
-        inputs: fb.inputs.or(fa.inputs),
-        outputs: fb.outputs.or(fa.outputs),
-        events: fb.events.or(fa.events),
+        // Payload fields: the newer version's value whenever it set the field, even if that payload isn't
+        // loaded (then the merged payload is unloaded too, never an older one).
+        inputs: if b.present & present::INPUTS != 0 {
+            fb.inputs
+        } else {
+            fa.inputs
+        },
+        outputs: if b.present & present::OUTPUTS != 0 {
+            fb.outputs
+        } else {
+            fa.outputs
+        },
+        events: if b.present & present::EVENTS != 0 {
+            fb.events
+        } else {
+            fa.events
+        },
         dropped: fb.dropped.or(fa.dropped),
     };
     let ev = RunEvent {
@@ -289,6 +305,11 @@ fn fold(a: RunState, b: RunState) -> RunState {
         }
     }
     st.present |= (a.present | b.present) & (present::INPUTS | present::OUTPUTS | present::EVENTS);
+    st.outputs_usage = if b.present & present::OUTPUTS != 0 {
+        b.outputs_usage.clone()
+    } else {
+        a.outputs_usage.clone()
+    };
     st.present = (st.present & !present::CREATED_BY_PATCH)
         | (a.present & present::CREATED_BY_PATCH)
         | ((a.present | b.present) & present::CONFLICT)

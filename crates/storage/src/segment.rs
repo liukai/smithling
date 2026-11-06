@@ -133,6 +133,7 @@ pub fn core_schema() -> SchemaRef {
         s("metadata"),
         s("extra"),
         s("dropped"),
+        s("outputs_usage"),
         Field::new("attrs", DataType::Utf8, false),
         i("present", false),
         i("first_seq", false),
@@ -188,11 +189,7 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
     });
     let id = ulid::Ulid::new().to_string();
     let day = created_at.to_string().get(..10).unwrap_or("1970-01-01").to_string();
-    let dir = if project.is_empty() {
-        "_unknown".to_string()
-    } else {
-        sanitize(project)
-    };
+    let dir = folder(project);
     let core_path = format!("{dir}/{day}/seg-{id}.core.parquet");
     let payload_path = format!("{dir}/{day}/seg-{id}.payload.parquet");
 
@@ -225,19 +222,28 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
     })
 }
 
-/// Folder names: letters, digits and `-_.`; anything else becomes `_` (the real name is in the catalog).
-fn sanitize(project: &str) -> String {
+/// Folder name for a project: readable letters, digits and `-_.`, plus a short hash of the real name, so two
+/// projects never share a folder (`a/b` vs `a_b`, or `Foo` vs `foo` on a case-insensitive disk).
+fn folder(project: &str) -> String {
+    if project.is_empty() {
+        return "_unknown".into();
+    }
     let s: String = project
         .chars()
+        .take(64)
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
+                c.to_ascii_lowercase()
             } else {
                 '_'
             }
         })
         .collect();
-    if s.starts_with('.') { format!("_{s}") } else { s }
+    // FNV-1a: stable across builds and platforms.
+    let h = project.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    });
+    format!("{}-{:08x}", s.trim_start_matches('.'), h as u32)
 }
 
 fn props() -> WriterProperties {
@@ -266,7 +272,7 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
     let mut tags = ListBuilder::new(StringBuilder::new());
     let mut is_root = BooleanBuilder::with_capacity(n);
     let mut needs_merge = BooleanBuilder::with_capacity(n);
-    let mut strs: Vec<StringBuilder> = (0..14).map(|_| StringBuilder::new()).collect();
+    let mut strs: Vec<StringBuilder> = (0..15).map(|_| StringBuilder::new()).collect();
     let mut ints: Vec<Int64Builder> = (0..18).map(|_| Int64Builder::with_capacity(n)).collect();
     for (row, v) in rows.iter().enumerate() {
         let st = &v.state;
@@ -289,7 +295,7 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
             tags.append(false);
         }
         let opt = |b: bool, s: Option<&str>| if b { s.map(str::to_string) } else { None };
-        let svals: [Option<String>; 14] = [
+        let svals: [Option<String>; 15] = [
             Some(r.dotted_order.clone()),
             opt(has(present::PROJECT), Some(&r.project)),
             opt(has(present::ADDRESS), r.address.as_deref()),
@@ -307,6 +313,7 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
             has(present::EXTRA).then(|| json_text(&Value::Object(r.extra.clone()))),
             has(present::DROPPED).then(|| serde_json::to_string(&r.dropped).expect("map serializes")),
             Some(serde_json::to_string(&v.attrs).expect("attrs serialize")),
+            st.outputs_usage.as_ref().map(|u| json_text(&Value::Object(u.clone()))),
             None,
         ];
         for (b, val) in strs.iter_mut().zip(svals) {
@@ -340,7 +347,22 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
     let mut s: Vec<ArrayRef> = strs.into_iter().map(|mut b| Arc::new(b.finish()) as ArrayRef).collect();
     let mut i: Vec<ArrayRef> = ints.into_iter().map(|mut b| Arc::new(b.finish()) as ArrayRef).collect();
     let mut take_s = |k: usize| std::mem::replace(&mut s[k], Arc::new(StringArray::from(Vec::<String>::new())));
-    let (dotted, project, address, name, run_type, status, error, thread, model, metadata, extra, dropped, attrs) = (
+    let (
+        dotted,
+        project,
+        address,
+        name,
+        run_type,
+        status,
+        error,
+        thread,
+        model,
+        metadata,
+        extra,
+        dropped,
+        attrs,
+        usage,
+    ) = (
         take_s(0),
         take_s(1),
         take_s(2),
@@ -354,6 +376,7 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
         take_s(10),
         take_s(11),
         take_s(12),
+        take_s(13),
     );
     let mut take_i = |k: usize| std::mem::replace(&mut i[k], Arc::new(Int64Array::from(Vec::<i64>::new())));
     let cols: Vec<ArrayRef> = vec![
@@ -382,6 +405,7 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
         metadata,
         extra,
         dropped,
+        usage,
         attrs,
         take_i(8),
         take_i(9),
@@ -403,6 +427,16 @@ fn encode_payload(rows: &[Version]) -> Result<Bytes, StorageError> {
     let (mut inputs, mut outputs, mut events) = (StringBuilder::new(), StringBuilder::new(), StringBuilder::new());
     for v in rows {
         let r = &v.state.run;
+        let p = v.state.present;
+        let unloaded = (p & present::INPUTS != 0 && r.inputs.is_none())
+            || (p & present::OUTPUTS != 0 && r.outputs.is_none())
+            || (p & present::EVENTS != 0 && r.events.is_none());
+        if unloaded {
+            return Err(StorageError::Format(format!(
+                "run {} has a payload that isn't loaded; writing it would drop the payload",
+                r.run_id
+            )));
+        }
         run_id.append_value(r.run_id.as_bytes())?;
         inputs.append_option(r.inputs.as_ref().map(json_text));
         outputs.append_option(r.outputs.as_ref().map(json_text));
@@ -482,12 +516,16 @@ impl<'a> Cols<'a> {
         self.col(name)?
             .as_any()
             .downcast_ref::<FixedSizeBinaryArray>()
-            .ok_or_else(|| StorageError::Format(format!("column {name} is not FixedSizeBinary")))
+            .filter(|a| a.value_length() == 16)
+            .ok_or_else(|| StorageError::Format(format!("column {name} is not FixedSizeBinary(16)")))
     }
 }
 
 fn uuid_at(a: &FixedSizeBinaryArray, i: usize) -> Option<uuid::Uuid> {
-    (!a.is_null(i)).then(|| uuid::Uuid::from_slice(a.value(i)).expect("16 bytes"))
+    if a.is_null(i) {
+        return None;
+    }
+    uuid::Uuid::from_slice(a.value(i)).ok()
 }
 
 fn int_at(a: &Int64Array, i: usize) -> Option<i64> {
@@ -512,6 +550,7 @@ pub fn decode_core(batch: &RecordBatch) -> Result<Vec<StoredRow>, StorageError> 
         c.strs("dropped")?,
         c.strs("attrs")?,
     );
+    let usage = c.strs("outputs_usage")?;
     let (start, end) = (c.ints("start_time")?, c.ints("end_time")?);
     let (pres, first, last, count) = (
         c.ints("present")?,
@@ -591,6 +630,7 @@ pub fn decode_core(batch: &RecordBatch) -> Result<Vec<StoredRow>, StorageError> 
         st.created_at = Ts(created.value(i));
         st.updated_at = Ts(updated.value(i));
         st.present = bits;
+        st.outputs_usage = json_obj(usage.get(i))?;
         st.payload_sizes = PayloadSizes {
             inputs: ib.value(i) as u64,
             outputs: ob.value(i) as u64,
@@ -624,7 +664,7 @@ pub fn decode_payload(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, Stor
                 None => None,
             };
             Ok((
-                uuid_at(ids, i).expect("run_id is not null"),
+                uuid_at(ids, i).ok_or_else(|| StorageError::Format(format!("payload row {i} has no run_id")))?,
                 Payload {
                     inputs: parse(inputs.get(i))?,
                     outputs: parse(outputs.get(i))?,

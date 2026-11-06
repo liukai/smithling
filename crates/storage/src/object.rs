@@ -21,6 +21,9 @@ pub struct Store {
     prefix: Path,
     /// `file://` or `s3://bucket`, the key DataFusion looks the store up by.
     base: Url,
+    /// Set for local stores: puts are written and fsynced here directly (object_store's local backend
+    /// doesn't fsync, and a catalog entry must never point at a file a power cut could lose).
+    local_dir: Option<std::path::PathBuf>,
 }
 
 impl Store {
@@ -37,6 +40,7 @@ impl Store {
                 root: Arc::new(s3),
                 prefix: Path::from(prefix.trim_matches('/')),
                 base: Url::parse(&format!("s3://{bucket}")).map_err(|e| StorageError::Config(e.to_string()))?,
+                local_dir: None,
             });
         }
         let dir = spec.strip_prefix("file://").unwrap_or(spec);
@@ -50,6 +54,7 @@ impl Store {
             root: Arc::new(LocalFileSystem::new()),
             prefix: Path::from_absolute_path(&abs).map_err(|e| StorageError::Config(e.to_string()))?,
             base: Url::parse("file://").expect("valid"),
+            local_dir: Some(abs),
         })
     }
 
@@ -59,8 +64,16 @@ impl Store {
             .fold(self.prefix.clone(), |p, seg| p.join(seg))
     }
 
-    /// Writes a new object; fails if the name is already taken (names are never reused).
+    /// Writes a new object; fails if the name is already taken (names are never reused). Durable when it
+    /// returns: on local disk the file and its folder are fsynced.
     pub async fn put_new(&self, rel: &str, bytes: Bytes) -> Result<(), StorageError> {
+        if let Some(dir) = &self.local_dir {
+            let dir = dir.clone();
+            let rel = rel.to_string();
+            return tokio::task::spawn_blocking(move || put_local(&dir, &rel, &bytes))
+                .await
+                .map_err(|e| StorageError::Config(e.to_string()))?;
+        }
         let opts = PutOptions {
             mode: PutMode::Create,
             ..Default::default()
@@ -121,4 +134,41 @@ impl Store {
     pub fn describe(&self) -> String {
         format!("{}/{}", self.base.as_str().trim_end_matches('/'), self.prefix)
     }
+}
+
+/// Write to a temp file, fsync it, hard-link it to its final name (fails if taken), fsync the folder.
+fn put_local(dir: &FsPath, rel: &str, bytes: &[u8]) -> Result<(), StorageError> {
+    use std::io::Write;
+    let dest = dir.join(rel);
+    let parent = dest
+        .parent()
+        .ok_or_else(|| StorageError::Config(format!("bad object name {rel}")))?;
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(
+        ".{}.tmp-{}",
+        dest.file_name().unwrap_or_default().to_string_lossy(),
+        ulid::Ulid::new()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::hard_link(&tmp, &dest)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result?;
+    // The new name (and any new parent folders) must survive a power cut too.
+    let mut d = parent;
+    loop {
+        std::fs::File::open(d)?.sync_all()?;
+        if d == dir {
+            break;
+        }
+        match d.parent() {
+            Some(p) if p.starts_with(dir) => d = p,
+            _ => break,
+        }
+    }
+    Ok(())
 }

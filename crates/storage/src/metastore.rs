@@ -225,10 +225,17 @@ impl Metastore {
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query(self.sql("UPDATE state SET flushed_seq = ? WHERE id = 1"))
+        // Never moves backwards: a stale or repeated flush must not make replay redo flushed events.
+        let moved = sqlx::query(self.sql("UPDATE state SET flushed_seq = ? WHERE id = 1 AND flushed_seq <= ?"))
+            .bind(flushed_seq as i64)
             .bind(flushed_seq as i64)
             .execute(&mut *tx)
             .await?;
+        if moved.rows_affected() != 1 {
+            return Err(StorageError::Metastore(format!(
+                "flushed_seq would move backwards to {flushed_seq}"
+            )));
+        }
         tx.commit().await?;
         Ok(())
     }

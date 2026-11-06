@@ -173,6 +173,9 @@ pub struct RunState {
     pub has_start: bool,
     /// Whether `project` came from an event (it is immutable once set) or is still the default.
     pub project_set: bool,
+    /// `outputs.usage_metadata` of the latest outputs, kept apart from the payload so token counts can be
+    /// derived when the payload isn't loaded (versions read from files).
+    pub outputs_usage: Option<JsonMap>,
     /// Which fields some event set (`present::*`). Parquet can't tell absent from empty, and the merge rule
     /// needs to ("absent never overwrites"), so versions carry this bitmask.
     pub present: u32,

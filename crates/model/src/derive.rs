@@ -38,11 +38,9 @@ pub fn derive(st: &mut RunState) {
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let usage = r
-        .outputs
+    let usage = st
+        .outputs_usage
         .as_ref()
-        .and_then(|o| o.get("usage_metadata"))
-        .and_then(Value::as_object)
         .or_else(|| r.metadata.get("usage_metadata").and_then(Value::as_object));
     let count = |u: Option<&JsonMap>, k: &str| u.and_then(|u| u.get(k)).and_then(Value::as_u64);
     r.input_tokens = count(usage, "input_tokens");
