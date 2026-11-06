@@ -5,14 +5,27 @@ This is a subset of the [master contract](../../000-tracedb-master-plan/contract
 ## Ingest
 | Method + path | Notes |
 |---|---|
-| `GET /info` | `{version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}` |
+| `GET /info` | `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}` |
 | `POST /runs/batch` | `{post: [Run], patch: [Run]}` → `202 {accepted, rejected: [{id, reason}]}` |
 | `POST /runs` | one Run → `202` |
 | `PATCH /runs/{run_id}` | partial Run → `202` |
 | `POST /v1/events` | `{events: [RunEvent]}` → same as batch |
 | `POST /runs/multipart` | `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}` |
 
-`202` is sent only after fsync. Other responses: `413` (too large), `503` (storage error or capacity reached, with a reason).
+| `POST /feedback` | `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` (the SDK sends feedback here when multipart is off) |
+
+`202` is sent only after fsync. Per-item validation failures go in `rejected[]` (the SDK ignores this body, so it holds only
+items that could never succeed). Whole-request failures use status codes the SDK acts on:
+
+| Status | When | SDK behaviour (0.14.17) |
+|---|---|---|
+| `413` | body over 50 MB | not retried |
+| `429` + `Retry-After: 1` | writer queue full (> 10,000 events in flight) | retried, honouring `Retry-After` |
+| `507` | memory budget reached and the batch contains a **new** run; nothing in the batch is applied | not retried; the SDK logs the error |
+| `503` + `Retry-After: 5` | storage error (fsync/write failed, disk full) | retried with backoff |
+
+`version` is empty on purpose: the SDK only uses it for minimum-version warnings on non-upload features, and an empty
+value skips them. `tracedb_version` carries our own version.
 
 ## Query
 | Method + path | Response |

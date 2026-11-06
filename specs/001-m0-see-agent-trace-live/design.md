@@ -91,7 +91,7 @@ numbers, and when a non-goal is lifted. A "cannot" here is a promise, not an ove
   before confirming; apply it to the run store; publish the change; report per-item rejections.
 - **Cannot**: write anything except the WAL (no columnar files, no metastore); scale past one writer; trim the WAL;
   apply back-pressure per client (all clients share one queue); reorder events by client time.
-- **Limits**: ≥ 5,000 events/s target (SC-07); in-flight queue 10,000 events, beyond which requests get `503 busy`;
+- **Limits**: ≥ 5,000 events/s target (SC-07); in-flight queue 10,000 events, beyond which requests get `429` + `Retry-After: 1`;
   group commit every ~5 ms or 1 MB.
 - **Later**: flush to disk segments and trim the WAL (M1); 20,000 events/s (M2).
 
@@ -258,12 +258,14 @@ Readers take a short read lock, copy out headers, and release it; only the write
 |---|---|
 | `post` item / `POST /runs` | `op = post` |
 | `patch` item / `PATCH /runs/{id}` | `op = patch` |
-| `session_name` | `project` (default `default`) |
+| `session_name` | `project` (else `session_id`, else derived from `address`, else `default`) |
+| `address` (SDK 0.14+) | `address`; sets `project` to `<agent id>/<environment>` when no project is named |
 | `extra.metadata` | `metadata` |
 | `inputs`, `outputs`, `events`, `error`, `tags`, times, `run_type`, `name`, ids, `dotted_order` | same meaning |
 | `serialized`, attachments | dropped in M0, with sizes logged |
 
-`GET /info` answers with `batch_ingest_config.use_multipart_endpoint = false`, so the SDK sends JSON batches
+`GET /info` answers with `version: ""` (no compatibility claim; the SDK then skips its version warnings), `tracedb_version`,
+and `batch_ingest_config.use_multipart_endpoint = false`, so the SDK sends JSON batches
 (master research R2). This is pinned by contract tests built from recorded SDK traffic.
 
 ## 7. UI design (M0 screens)
@@ -297,11 +299,12 @@ Readers take a short read lock, copy out headers, and release it; only the write
 |---|---|
 | Malformed item | rejected with a reason; rest of batch accepted |
 | Body > 50 MB, or field > 20 MB | `413` / per-item rejection with reason |
-| Memory budget reached | new runs rejected with `capacity`; updates to existing runs still accepted |
-| Disk full / fsync error | the writer stops confirming; requests get `503`; health shows the error; nothing confirmed is lost |
+| Memory budget reached | a batch with any new run gets `507` and nothing in it is applied; batches with only updates to known runs are still accepted |
+| Disk full / fsync error | the writer stops confirming; requests get `503` + `Retry-After: 5`; health shows the error; nothing confirmed is lost |
 | Kill mid-write | the unconfirmed tail is truncated on replay |
 | Slow browser | it gets `resync` and reloads its view; the writer never waits (§4.3) |
-| Writer queue full (> 10,000 events in flight) | `503 busy`; the SDK retries; nothing is half-accepted |
+| Writer queue full (> 10,000 events in flight) | `429` + `Retry-After: 1`; the SDK retries; nothing is half-accepted |
+| SDK sends feedback (`POST /feedback`) | `501` "feedback is supported from M2" (a `404` would be retried by the SDK) |
 | Unsupported upload format (multipart) | `415` with "supported from a later version" |
 
 ## 9. How M0 is proven (tests)
@@ -311,7 +314,7 @@ Readers take a short read lock, copy out headers, and release it; only the write
 | Merge rule | unit + property tests in `model` (any order of events → same result as sorted by seq) | M0-FR-03 |
 | WAL replay | property test: random batches, random truncation point → replay equals the confirmed prefix | M0-FR-04 |
 | **Crash test** | test harness spawns `tracedb serve`, uploads continuously while logging confirmed ids, `kill -9` at random times, restarts, checks every confirmed id is present; 10 rounds | SC-04 |
-| **SDK contract** | fixtures recorded once by running the real Python SDK (0.8.18) against a recording endpoint; a Rust test replays them and compares resulting runs to golden JSON | SC-06 |
+| **SDK contract** | fixtures recorded once per pinned Python SDK (0.14.17 and 0.8.18) against a recording endpoint; a Rust test replays them and compares resulting runs to golden JSON | SC-06 |
 | **No outbound** | CI runs the demo under a syscall trace (`strace -f -e connect`) and fails on any non-loopback address | SC-05 |
 | Live latency | integration test: upload, then time until the event shows on the tail stream (p99 < 1 s) | SC-02 |
 | Trace open | integration test with a seeded 250-step trace: API + render under 1 s | SC-03 |

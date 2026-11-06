@@ -64,7 +64,7 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 - [ ] T019 Implement `RunStore` in `crates/ingest/src/store.rs`: `runs: HashMap<RunId, RunState>`, `by_trace: HashMap<TraceId, Vec<RunId>>`, `roots: HashMap<Project, BTreeSet<(Reverse<Ts>, RunId)>>` (only runs with `has_start` and `is_root`), `bytes`; `apply(&RunEvent) -> Result<Change, Reject>` calling `model::merge` + `derive`; `Change { kind: NewRoot|Updated|NewChild, header: Arc<RunHeader> }`
 - [ ] T020 [P] Implement dedup in `crates/ingest/src/dedup.rs`: key `(run_id, op, body_hash)`, 24 h window with periodic pruning; a duplicate is "dropped silently and counted as accepted"
 - [ ] T021 [P] Implement the memory budget in `crates/ingest/src/budget.rs`: approximate bytes = headers + `payload_bytes`; default 2 GB and 500k runs; new run over the limit → `capacity`; "updates to known runs are still accepted"
-- [ ] T022 Implement the writer task in `crates/ingest/src/writer.rs`: bounded mpsc (10,000 events in flight, then `Busy`); loop: dedup → assign `event_seq` → WAL append → group commit (fsync every ~5 ms or 1 MB) → `store.apply` → publish to the hub → resolve each request's oneshot with `AcceptResult { accepted, rejected: Vec<{id, reason, detail}> }`; on fsync error stop confirming and report unhealthy
+- [ ] T022 Implement the writer task in `crates/ingest/src/writer.rs`: bounded mpsc (10,000 events in flight, then `Busy` → HTTP `429` + `Retry-After: 1`); loop: dedup → assign `event_seq` → WAL append → group commit (fsync every ~5 ms or 1 MB) → `store.apply` → publish to the hub → resolve each request's oneshot with `AcceptResult { accepted, rejected: Vec<{id, reason, detail}> }`; on fsync error stop confirming and report unhealthy
 - [ ] T023 Implement the tail hub publisher in `crates/ingest/src/hub.rs`: `tokio::sync::broadcast` of `Change` with capacity 4,096; `subscribe()`; sending never blocks
 - [ ] T024 Implement `Ingest` in `crates/ingest/src/lib.rs`: `Ingest::open(data_dir, budget) -> Ingest` (replays the WAL into the store before returning, logging count and duration), `accept(Vec<RunEvent>) -> AcceptResult` (async), `snapshot() -> impl Snapshot`, `subscribe()`, `health()`; export the read-only `Snapshot` trait (`get_run`, `trace_runs`, `roots_page`)
 - [ ] T025 [P] Integration test in `crates/ingest/tests/writer.rs`: concurrent `accept` calls get confirmations only after fsync; duplicate batches counted once; capacity and identity-conflict rejections reported per item
@@ -73,9 +73,21 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 - [ ] T026 Implement the CLI in `crates/tracedb/src/cli.rs` (clap): `serve --data ./.tracedb --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
 - [ ] T027 Implement the server in `crates/tracedb/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
 - [ ] T028 [P] Serve the embedded UI in `crates/tracedb/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
-- [ ] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; `503` with reason on `Busy`, capacity or storage errors
+- [ ] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
 
 **Checkpoint**: `tracedb serve` starts, replays its WAL, accepts native events, and `/healthz` reports run count.
+
+---
+
+## Phase 2b: LangSmith SDK 0.14 reconciliation (roadmap R-1, decided 2026-11-05)
+
+**Purpose**: keep M0 correct for the current SDK. T066 runs first (PR1.5, before PR2) because everything builds on the
+model; T067–T069 land with the HTTP layer in PR3.
+
+- [ ] T066 Add `address` to the model: `RunFields.address: Option<String>`, `Run.address`, `RunHeader.address` in `crates/model/src/run.rs` and `crates/model/src/views.rs`; validation "≤ 512 chars" → `too_large` in `crates/model/src/validate.rs`; immutable once set (`identity_conflict` if a later event differs) in `crates/model/src/merge.rs`; tests in `crates/model/tests/merge.rs` and `crates/model/tests/validate.rs`
+- [ ] T067 Map overload and storage errors to HTTP in `crates/tracedb/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/tracedb/tests/status_codes.rs`
+- [ ] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
+- [ ] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
 
 ---
 
@@ -87,14 +99,14 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 and see its runs appear within 1 s and update when they finish.
 
 ### Tests for User Story 1
-- [ ] T030 [P] [US1] Write `scripts/record-sdk-fixtures.py`: runs a LangGraph example agent with `langsmith==0.8.18` against a recording HTTP endpoint and writes each request (method, path, headers, body) to `tests/fixtures/sdk-0.8.18/requests.jsonl` plus the expected merged runs to `tests/fixtures/sdk-0.8.18/expected-runs.json`; commit the recorded fixtures
-- [ ] T031 [P] [US1] Contract test `crates/tracedb/tests/contract.rs`: replay `tests/fixtures/sdk-0.8.18/requests.jsonl` against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
+- [ ] T030 [P] [US1] Write `scripts/record-sdk-fixtures.py`: runs a LangGraph example agent against a recording HTTP endpoint, once with `langsmith==0.14.17` and once with `langsmith==0.8.18`, and writes each request (method, path, headers, body) to `tests/fixtures/sdk-<version>/requests.jsonl` plus the expected merged runs to `tests/fixtures/sdk-<version>/expected-runs.json`; include one run sent with `LANGSMITH_AGENT_ID`/`LANGSMITH_AGENT_ENVIRONMENT` and no project; commit the recorded fixtures
+- [ ] T031 [P] [US1] Contract test `crates/tracedb/tests/contract.rs`: replay `tests/fixtures/sdk-*/requests.jsonl` (0.14.17 and 0.8.18) against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
 - [ ] T032 [P] [US1] E2E test `crates/tracedb/tests/e2e_tail.rs`: subscribe to `/api/tail?project=p`, upload 1,000 events at a steady rate, assert p99 confirm→received < 1 s (SC-02) and that a burst of 1,000 updates to one run yields ≤ 10 messages/s
 - [ ] T033 [P] [US1] API test `crates/tracedb/tests/roots.rs`: `/api/roots` newest first, cursor paging without repeats while new runs arrive, project and status filters, `limit ≤ 200`
 
 ### Implementation for User Story 1
-- [ ] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project` (default `default`); `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
-- [ ] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}`; accept and ignore API-key headers
+- [ ] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
+- [ ] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}`; accept and ignore API-key headers
 - [ ] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
 - [ ] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/tracedb/src/routes/api.rs`
 - [ ] T038 [US1] Implement the per-tab tail task in `crates/tracedb/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
@@ -139,7 +151,7 @@ upload; 10 rounds.
 - [ ] T050 [P] [US3] Crash harness `crates/tracedb/tests/crash.rs` (`#[ignore]`, run in CI): spawn `tracedb serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
 - [ ] T051 [P] [US3] Retry-after-crash test in `crates/tracedb/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
 - [ ] T052 [P] [US3] Restart timing test `crates/tracedb/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
-- [ ] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/tracedb/src/routes/*`: on fsync/write error stop confirming, return `503` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
+- [ ] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/tracedb/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
 - [ ] T054 [US3] Add the crash and restart tests to `.github/workflows/ci.yml` (`cargo test -- --ignored crash restart`)
 
 **Checkpoint**: crash harness green in CI 10/10.
@@ -165,7 +177,7 @@ upload; 10 rounds.
 - [ ] T058 [P] No-outbound check `scripts/no-outbound.sh`: run `tracedb serve` + `tracedb seed --traces 20 --no-delay` + contract replay under `strace -f -e trace=connect`; fail on any non-loopback address; add to CI (SC-05)
 - [ ] T059 [P] Throughput test `crates/tracedb/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
 - [ ] T060 [P] Clean-container check in CI: build the release binary, run it in a minimal container without Node, `curl /healthz` (QR-002)
-- [ ] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.8.18`
+- [ ] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.14.17`
 - [ ] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M0 limits (memory budget, no filters)
 - [ ] T063 Update the spec's restart target to 30 s in `specs/001-m0-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
 - [ ] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m0-see-agent-trace-live/quickstart.md` under "Last verified"
@@ -176,7 +188,7 @@ upload; 10 rounds.
 ## Dependencies and execution order
 
 ```
-Phase 1 Setup ──▶ Phase 2 Foundational ──┬──▶ US1 (P1, MVP) ──┬──▶ US2 (P1)   (US2 reuses US1's UI shell, api.ts, live.ts)
+Phase 1 Setup ──▶ T066 ──▶ Phase 2 Foundational (+ T067–T069 with the HTTP layer) ──┬──▶ US1 (P1, MVP) ──┬──▶ US2 (P1)   (US2 reuses US1's UI shell, api.ts, live.ts)
                                          │                    └──▶ US4 (P2)   (seed needs the LangSmith routes, T035)
                                          └──▶ US3 (P1)        (needs only the writer + WAL + server; can run alongside US1)
                                                         all ──▶ Phase 7 Polish
@@ -199,5 +211,5 @@ Phase 1 Setup ──▶ Phase 2 Foundational ──┬──▶ US1 (P1, MVP) �
 4. **Add US4**: seed for anyone without an agent.
 5. **Polish**: no-outbound, throughput, clean container, README, quickstart verified, roadmap updated.
 
-PR mapping (plan.md "Delivery order"): PR1 = T001–T016 · PR2 = T017–T025 · PR3 = T026–T035 · PR4 = T036–T038 ·
+PR mapping (plan.md "Delivery order"): PR1 = T001–T016 · PR1.5 = T066 · PR2 = T017–T025 · T067–T069 with PR3 · PR3 = T026–T035 · PR4 = T036–T038 ·
 PR5 = T039–T042 · PR6 = T043–T049 · PR7 = T050–T065.

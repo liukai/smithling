@@ -150,6 +150,7 @@ steps, errors and large payloads.
 - **Duplicate upload**: a retried batch is stored once.
 - **Malformed item**: rejected on its own with a reason; the rest of the batch is accepted.
 - **Huge payload**: a single input or output up to 20 MB is accepted and viewable; larger ones are rejected with a reason.
+- **Agent address instead of a project** (SDK 0.14+): the run is accepted, and its project is `<agent id>/<environment>` from the address.
 - **Unknown fields**: kept rather than dropped; ignored fields (such as attachments) are acknowledged and noted.
 - **Memory limit reached** (M0 keeps data in memory): tracedb refuses new uploads with a clear reason instead of confirming and then losing them.
 - **Disk full**: uploads are refused with a clear reason; nothing confirmed is lost.
@@ -204,7 +205,7 @@ Each requirement names the master requirement it delivers. The master text is no
 - **Upload formats**: plain JSON batches and single creates/updates are supported. The multipart format, feedback and
   attachments arrive in M2; attachments are acknowledged and noted, not stored.
 - **SDK versions**: compatibility is checked against pinned Python and JS SDK versions from recorded traffic. The
-  first pin is Python `langsmith` 0.8.18 (the version read for the design).
+  pins are Python `langsmith` **0.14.17** (current as of 2026-11-05) and **0.8.18** (older agents still run it); both were read for the design.
 - **Filters** in M0 are project and status only. The query builder is M1.
 - **Single user**, localhost only, no login.
 - **Out of scope for M0**: disk columnar storage, metastore, query builder and filters beyond project/status, text

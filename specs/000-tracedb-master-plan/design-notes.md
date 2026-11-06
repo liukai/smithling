@@ -46,7 +46,7 @@ Multi-tenant auth, HA/replication, evaluation runners, prompt playground, horizo
 | Progressive querying (newest segments first, early stop) | same | same |
 
 SmithDB numbers to compare against (prod, cloud scale), at P50 / P99: trace tree 92ms / 595ms, single run 71ms / 358ms,
-run filtering 82ms / 434ms, full-text search 400ms / 870ms, threads 131ms / 268ms.
+run filtering 82ms / 434ms, full-text search 400ms / 870ms, threads 131ms / 268ms; ingestion (event to queryable) 630ms / 1.47s.
 
 ### 2.1 Services and interfaces (kept simple)
 
@@ -58,6 +58,9 @@ the interfaces below, never through shared mutable state, so each can later beco
 | **Ingest** | WAL, memtable, flush | `accept(batch) -> ack`; `fresh_scan(filter)` for data not yet in segments |
 | **Query** | planning, merge-on-read, progressive query | runs/traces/threads/search/stats APIs; reads segments + Ingest's `fresh_scan` |
 | **Compaction** | tiered merges, segment swaps | background only; reads and writes segments, swaps them atomically in the metastore |
+
+Cloud path: Compaction splits into one **scheduler** plus scalable **workers**, and the cluster manager becomes its own
+service. Self-hosted SmithDB runs five services (roadmap R-6). Locally they all stay in one process.
 
 Shared storage interfaces (one simple v0 implementation each):
 
@@ -120,7 +123,7 @@ Endpoints (all accept batches):
 4. **Importer** `tracedb import claude-code ~/.claude/projects/...`: turns local agent session JSONL into traces
    (`uuid`/`parentUuid` → tree, `sessionId` → thread, `isSidechain` → sub-agent span, `tool_use`/`tool_result` → tool runs). This solves "what did my local agent do" with zero instrumentation.
 
-**LangSmith wire format (read from `langsmith` Python SDK 0.8.18 source, 2026-11-05).** Known, not invented:
+**LangSmith wire format (read from `langsmith` Python SDK source, 0.8.18 and 0.14.17, 2026-11-05).** Known, not invented:
 - On startup the SDK calls `GET /info` and reads `batch_ingest_config` (incl. `use_multipart_endpoint`, `size_limit`,
   `size_limit_bytes`) and `instance_flags`. If `/info` fails, it logs a warning and falls back to defaults. **Serve `/info`**
   to control which path the SDK takes.
@@ -133,8 +136,16 @@ Endpoints (all accept batches):
 - Single-run `POST /runs` and `PATCH /runs/{id}` exist as older or fallback paths.
 - Run fields: `id, trace_id, parent_run_id, dotted_order, name, run_type, start_time, end_time, inputs, outputs, error,
   events, tags, extra` (metadata lives in `extra.metadata`), `session_name` (= project), `serialized`, `reference_example_id`.
+- **New in 0.14.x: `address`.** A run can be sent to an *agent address* instead of a project: wire value
+  `lrn:agents/<agent id>/environments/<environment>`, set in code or by `LANGSMITH_AGENT_ID` + `LANGSMITH_AGENT_ENVIRONMENT`.
+  When a run is addressed and no project is named, the SDK **removes `session_name`/`session_id`**. tracedb keeps `address`
+  as its own field and derives the project from it (spec.md Assumptions).
+- Unchanged in 0.14.17: `/info` drives the choice; with `use_multipart_endpoint: false` the SDK sends `POST /runs/batch`;
+  zstd is used only for multipart and only if `/info` sets `instance_flags.zstd_compression_enabled`; `RunTree.patch`
+  still re-sends full `events`. The SDK retries `408, 425, 429, 500, 502, 503, 504` and honours `Retry-After`.
+- Feedback: multipart part `feedback.{id}` by default; with multipart off, the SDK calls `POST /feedback` instead.
 - The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (M4) is a cheap add-on.
-- Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version (Python and JS).
+- Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
 
 Write path: validate → assign `event_seq` → append to WAL → insert into memtable (Arrow builders keyed by project) → ack.
 Flush when the memtable passes 64 MB or 5 s → sort by `(trace_id, dotted_order, event_seq)` → write core + payload Parquet →
@@ -154,6 +165,10 @@ register in metastore → truncate WAL. Recovery on startup = replay WAL.
 | `POST /sql` (local only) | raw DataFusion SQL over a `runs` view, for power users and debugging |
 
 ### 5.2 Filter DSL (a subset of LangSmith's grammar)
+
+This is the `filter` grammar the LangSmith SDK still documents in 0.14.17 (`Client.list_runs`), so it stays canonical for
+the API, CLI and agents. A `field:value` search-bar form, if confirmed in LangSmith's UI docs, could be added later as an
+alternate text form in the M1 query builder (roadmap R-2).
 ```
 filter:       and(eq(run_type,"tool"), gt(latency_ms,2000), has(tags,"prod"), eq(metadata.user,"kai"))
 trace_filter: eq(status,"error")              -- predicate on the ROOT run
@@ -175,8 +190,8 @@ The DSL compiles to a DataFusion `LogicalPlan`. `tree_filter` becomes a semi-joi
 - **v0**: substring/token scan of payload files, limited to segments that pass a per-segment **bloom filter on tokens**.
   This is fine for laptop-scale data (≤ a few GB).
 - **Backlog** (the interesting part, following SmithDB): a per-segment `.fts` sidecar behind the same `TextIndex` interface
-  - term dictionary sorted and split into **blocks with min/max term zones**, so a lookup reads one small block;
-  - postings and positions in **separate fixed-size chunks**, fetched with range reads (S3-friendly, no huge allocations);
+  - terms stored in row groups with **min/max term zones**, so a lookup reads one small block;
+  - postings and positions **chunked apart from the term dictionary**, fetched with range reads (S3-friendly, no huge allocations);
   - postings reference `(run_id, field)` and feed back into DataFusion as a run_id filter.
 
 ## 7. Compaction & lifecycle
@@ -230,6 +245,8 @@ UI first: every milestone ships its browser view and is demoed in the browser (s
 ## 12. Crates
 `tokio`, `axum`, `datafusion`, `arrow`, `parquet`, `object_store`, `sqlx` (sqlite + postgres), `serde_json`, `uuid`, `ulid`,
 `roaring`, `moka` (cache), `rust-embed`, `clap`, `opentelemetry-proto` (M4). Backlog: `vortex`.
+Pin `object_store` to the **0.13** line: `vortex-datafusion` 0.91 (DataFusion 55) needs `object_store` 0.13.2, and the
+latest is 0.14.2. Staying on 0.13 keeps the Vortex swap open (roadmap R-4).
 
 ## 13. Open questions (to iterate on)
 
@@ -240,4 +257,4 @@ spec.md's Assumptions set defaults for 1 (compat first), 2 (importer is P2), 3 (
 3. **Merge semantics**: last-write-wins per field vs. append-only fields (e.g. `events`, streamed tokens)?
 4. ~~**FTS**: custom index or tantivy?~~ Decided 2026-11-05: scan + bloom in v0, custom index in backlog; tantivy dropped.
 5. **UI stack**: plain TS + Vite SPA, or reuse an existing OSS trace viewer?
-6. **Exact LangSmith wire format**: verify `/runs/batch` and `/runs/multipart` payloads against the current SDK before M2.
+6. ~~**Exact LangSmith wire format**~~ Checked 2026-11-05 against SDK 0.14.17 (see §4); re-check multipart against the pinned SDK when M2 starts.

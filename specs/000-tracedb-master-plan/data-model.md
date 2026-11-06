@@ -10,7 +10,8 @@ Logical model. Physical layout: design-notes §3.2–3.3. Merge rule: research R
 | trace_id | uuid | required; equals run_id for the root |
 | parent_run_id | uuid? | empty for the root |
 | dotted_order | string | required; `<start_ts><run_id>` per ancestor, joined by `.` |
-| project | string | from `session_name`; default `default` |
+| project | string | `session_name`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default` |
+| address | string? | SDK 0.14+ agent address, `lrn:agents/<id>/environments/<env>`, kept as sent |
 | op | `post` \| `patch` | `post` = start, `patch` = update/end |
 | event_seq | u64 | assigned at ingest, monotonic; orders the merge |
 | received_at | timestamp | assigned at ingest |

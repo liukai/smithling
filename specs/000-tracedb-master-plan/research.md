@@ -2,13 +2,13 @@
 
 Phase 0 decisions. Each one is a decision, then why, then what else was considered. The source for SmithDB is the
 [SmithDB post](https://www.langchain.com/blog/introducing-smithdb). The source for LangSmith is the `langsmith` Python SDK
-0.8.18 code (read locally on 2026-11-05).
+0.8.18 and 0.14.17 code (read locally on 2026-11-05).
 
 ## R1. Merge rule for run events (FR-002)
 - **Decision (confirmed by user 2026-11-05)**: for every field, the latest event wins (ordered by `event_seq`, which is
   assigned at ingest). A missing field never overwrites a value. No field appends.
 - **Rationale**: the SDK keeps the full run in memory and sends complete values in each patch. That includes the
-  whole `events` list (`RunTree.patch` sends `events=self.events`; checked in SDK 0.8.18 source on 2026-11-05), as well
+  whole `events` list (`RunTree.patch` sends `events=self.events`; checked in SDK 0.8.18 and 0.14.17 source on 2026-11-05), as well
   as `tags` and `extra`. Appending would duplicate events. Replacing matches what the SDK does itself when it folds a
   patch into a post.
 - **Alternatives**: appending `events`, which was the earlier default and is wrong for LangSmith clients. It could be
@@ -18,10 +18,11 @@ Phase 0 decisions. Each one is a decision, then why, then what else was consider
 ## R2. LangSmith compatibility (FR-001)
 - **Decision**: implement `GET /info` (advertise `batch_ingest_config.use_multipart_endpoint=true` and size limits, with
   no zstd flag), `POST /runs/batch`, `POST /runs/multipart`, `POST /runs` and `PATCH /runs/{id}`. Map `session_name` to
-  project and `extra.metadata` to metadata. Accept and drop `serialized` and attachments in v0, logging their sizes.
+  project and `extra.metadata` to metadata. Keep the 0.14 `address` field; when no project is named, derive the project
+  from it (`<agent id>/<environment>`). Accept and drop `serialized` and attachments in v0, logging their sizes.
 - **Rationale**: the format is defined by open-source SDKs. Controlling `/info` decides which path clients take.
 - **Verification**: golden-file contract tests built by running the real Python and JS SDKs against tracedb, one fixture
-  set per pinned SDK version.
+  set per pinned SDK version: Python 0.14.17 and 0.8.18.
 - **Alternatives**: OTLP-first, which moves to the backlog because the SDK's OTel mode makes it a cheap add-on later.
 
 ## R3. UI stack (FR-022, FR-025–027)
@@ -36,7 +37,8 @@ Phase 0 decisions. Each one is a decision, then why, then what else was consider
 - **Decision**: Parquet behind `SegmentFormat`. Each segment is split into a `core` file (small columns, sorted by
   `(trace_id, dotted_order)`) and a `payload` file (zstd). Row groups are about 128k rows, with page indexes on.
 - **Rationale**: DataFusion supports Parquet natively, it's stable, and its row-group statistics give us pruning.
-- **Alternatives**: Vortex (SmithDB's choice), moved to the backlog for maturity reasons. See the plan's Constitution Check.
+- **Alternatives**: Vortex (SmithDB's choice), moved to the backlog: it is pre-1.0 and not benchmarked by us. It does
+  now support DataFusion 55 (`vortex-datafusion` 0.91, which needs `object_store` 0.13). See the plan's Constitution Check.
 
 ## R5. Text search (FR-011)
 - **Decision**: `TextIndex` v0 is a per-segment bloom filter over lowercased word tokens from inputs and outputs, stored

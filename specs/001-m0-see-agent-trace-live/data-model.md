@@ -2,7 +2,7 @@
 
 Everything M0 stores, how each field arrives, how it merges, and how it's held. The master model
 ([000 data-model](../000-tracedb-master-plan/data-model.md)) covers all phases; this file is the M0 detail of record.
-Field sources were checked against `langsmith` SDK 0.8.18 source on 2026-11-05 and are pinned by contract fixtures
+Field sources were checked against `langsmith` SDK 0.8.18 and 0.14.17 source on 2026-11-05 and are pinned by contract fixtures
 (research M0-R5).
 
 ## 1. The entities and how they relate
@@ -51,7 +51,8 @@ every merge, never sent.
 ### 3.2 Grouping
 | Field | Type | LangSmith source | Req | Merge | Validation and meaning |
 |---|---|---|---|---|---|
-| `project` | string | `session_name` | no | I | default `default`; 1–128 chars |
+| `project` | string | `session_name`, else `session_id`, else derived from `address` | no | I | `<agent id>/<environment>` when only `address` is sent; default `default`; 1–128 chars |
+| `address` | string? | `address` (SDK 0.14+) | no | I | ≤ 512 chars; kept as sent; when it matches `lrn:agents/<id>/environments/<env>` and no project is named, it sets `project` |
 | `tags` | [string] | `tags` | no | R | whole list replaced (the SDK re-sends the full list); ≤ 100 tags, each ≤ 256 chars |
 | `metadata` | JSON object | `extra.metadata` | no | R | whole object replaced; ≤ 1 MB |
 | `extra` | JSON object | `extra` minus `metadata` | no | R | kept as is (runtime, invocation params) |
@@ -145,7 +146,7 @@ Events for a run are applied in `event_seq` order (= arrival order, since one wr
 | `invalid_dotted_order` | the format or segment checks in §3.7 fail |
 | `identity_conflict` | §5 |
 | `too_large` | a field over its limit; the body over 50 MB rejects the whole request (`413`) |
-| `capacity` | the memory budget is reached and this is a **new** run (updates to known runs are still accepted) |
+| `capacity` | the memory budget is reached and the batch contains a **new** run: the whole request gets `507`, and nothing in it is applied (updates to known runs are still accepted) |
 
 Each rejected item is returned as `{id, reason, detail}`. All other items in the batch are accepted.
 

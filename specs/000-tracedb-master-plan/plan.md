@@ -25,7 +25,7 @@ each get the simplest v0 implementation, with the SmithDB/cloud version as a dro
 **Primary Dependencies**: tokio, axum, datafusion + arrow + parquet, object_store, sqlx (sqlite; postgres for cloud
 tests), serde_json, uuid, ulid, roaring, moka, rust-embed, clap. UI: React + Vite, TanStack Virtual, uPlot (see research R3).
 
-**Storage**: `./.tracedb/`: WAL files, Parquet segments (core + payload split) on `object_store` local FS, SQLite metastore.
+**Storage**: `./.tracedb/`: WAL files, Parquet segments (core + payload split) on `object_store` (0.13 line, design-notes §12) local FS, SQLite metastore.
 
 **Testing**: `cargo test` (unit + integration), contract tests replaying recorded LangSmith SDK traffic, scenario demo
 (`tracedb demo`) asserting spec numbers, crash test (kill -9 loop) and `tracedb bench` in CI.
@@ -60,7 +60,7 @@ Recorded differences from SmithDB (Principle II):
 
 | Difference | Allowed reason | Interface |
 |---|---|---|
-| Parquet instead of Vortex | (b) maturity: Vortex's DataFusion integration not yet proven for our version | `SegmentFormat` |
+| Parquet instead of Vortex | (b) maturity: Vortex is pre-1.0 and not benchmarked by us (it supports DataFusion 55 via `vortex-datafusion` 0.91) | `SegmentFormat` |
 | SQLite metastore instead of Postgres (locally) | (a) local-first: no database server | `Metastore` |
 | Three services in one process | (a) local-first; Architecture Constraints allow it | service traits |
 | In-memory cache instead of SSD cache | (a) local-first: data is already on local disk | `Cache` |

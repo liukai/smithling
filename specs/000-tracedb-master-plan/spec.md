@@ -347,7 +347,7 @@ Brackets give each requirement's source: **[Post]** = named in the SmithDB post;
 - **Feedback**: filtering and averaging feedback that arrives with runs is in scope (P1 stories). Attaching it after the fact is P2.
 - **Text search** at laptop scale (a few GB) may use a simple approach first. The response-time target, not the technique, is the requirement.
 - **Single user, single machine**: no login, no access control, bound to localhost only.
-- **LangSmith wire format** is public: the SDKs are open source and define it. tracedb targets a pinned SDK version and adds new versions through recorded-traffic tests (details in design-notes.md §4). Compatibility covers ingest only, not the rest of the LangSmith API (datasets, prompts, evaluators).
+- **LangSmith wire format** is public: the SDKs are open source and define it. tracedb targets pinned SDK versions (Python 0.14.17, the current release, and 0.8.18) and adds new versions through recorded-traffic tests (details in design-notes.md §4). Runs sent to an agent address instead of a project (SDK 0.14+) are accepted; their project is `<agent id>/<environment>`. Compatibility covers ingest only, not the rest of the LangSmith API (datasets, prompts, evaluators).
 - **Out of scope for v0** (besides the Backlog below): OpenTelemetry ingest, run rules, run-by-run experiment comparison, raw SQL access, multi-tenant auth, replication and high availability, eval runners, prompt playground, multi-machine scale-out. Raw SQL and OpenTelemetry ingest are the likely first follow-ups.
 - **Reference hardware** for performance targets is a recent developer laptop (8+ cores, 16+ GB RAM, SSD).
 

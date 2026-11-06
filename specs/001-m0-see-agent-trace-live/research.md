@@ -24,7 +24,7 @@ cursor, R11 dedup ([master research](../000-tracedb-master-plan/research.md)). T
 - **Rationale**: one direction is all M0 needs; it's simpler than WebSockets and reconnects natively.
 
 ## M0-R5. SDK contract fixtures
-- **Decision**: record real SDK traffic once (Python `langsmith` 0.8.18 with a LangGraph example) through a recording
+- **Decision**: record real SDK traffic once per pinned version (Python `langsmith` 0.14.17 and 0.8.18, with a LangGraph example) through a recording
   endpoint, commit the requests and expected runs, and replay them in `cargo test`. Re-record per pinned version.
 - **Rationale**: no Python needed in normal CI; drift is caught when the pin is bumped.
 

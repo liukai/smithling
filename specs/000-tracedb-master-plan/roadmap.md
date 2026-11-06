@@ -28,20 +28,23 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05: **LangSmith JSON ingest is in M0** (`/info`, `/runs/batch`, `POST/PATCH /runs`), so the M0 demo uses a real agent. Multipart stays in M2.
 - 2026-11-05: **Merge rule**: the latest value wins for every field; nothing appends (research R1, because the SDK re-sends full values).
 - 2026-11-05: **Constitution v1.1.0**: SmithDB is the target reached in stages; "deliberately staged" is an allowed reason (Principle II (c)). No Simplicity principle; simplicity stays a standing preference.
+- 2026-11-05: **M0 reconciliation with SDK 0.14** (tasks T066–T069): `address` in the model; overload codes `429`+`Retry-After` (queue full), `507` (memory budget, whole request), `503`+`Retry-After` (storage); `POST /feedback` → `501`; `/info.version` empty.
+- 2026-11-05 (standing approval): **proceed through M0 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
+- 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted.
 
-**STATE as of 2026-11-05** (verified by `git log` and listing `specs/`): the master plan is committed on `master`
-(`5e923fc`). M0 is on branch `001-m0-see-agent-trace-live` (worktree `../rust-001`), with spec, design, plan, research,
-contracts and quickstart drafted and not committed. No code yet.
+**STATE as of 2026-11-05** (verified by `git log`): `master` = `adddbb7`: master plan, M0 docs, and M0 PR1 (workspace, CI,
+UI scaffold, `model` crate, 19 tests). M0 is 16/65 tasks. First LangSmith/SmithDB reconciliation round applied to the docs,
+uncommitted for review.
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) User reviews M0 [design.md](../001-m0-see-agent-trace-live/design.md) (3 open questions in §11). 2) Commit the M0 docs. 3) `/speckit-tasks` for M0.
+**NEXT**: 1) Review and commit the reconciliation doc round. 2) Agree the reconciliation tasks for M0 and add them to tasks.md. 3) Continue M0 (UI preview or PR2).
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
-| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | spec + design drafted, in review | — | not run |
+| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | in progress (PR1 of 7 done) | — | not run |
 | M1 Durable storage + query builder | — | not started | — | — |
 | M2 Core demo | — | not started | — | — |
 | M3 Follow-through | — | not started | — | — |
@@ -208,16 +211,28 @@ Mark ✅ only after the phase's exit check passes.
 ## Backlog: SmithDB reconciliation (found 2026-11-05)
 
 From checking spec 000 against the SmithDB post, the LangSmith self-hosted docs, and `langsmith` SDK 0.8.18 vs 0.14.17.
+First reconciliation round applied to the docs on 2026-11-05 (source read from `/tmp/lsdiff/`); the code changes are proposed as M0 tasks.
 **Local** = does the laptop version need it.
 
-| # | Item | Local? | When | Done when |
+| # | Item | Local? | When | Status (2026-11-05) |
 |---|---|---|---|---|
-| R-1 | Re-pin the SDK from 0.8.18 to 0.14.x (Python; JS 0.11.x). Accept the new run `address` field (agent id + environment) and store it as metadata, don't reject it | **Yes**: unmodified agents run the latest SDK | M0 (`specs/001-…`) | Contract fixtures recorded with 0.14.x; a run with `address` is accepted |
-| R-2 | Use LangSmith's current `field:value` filter syntax (`-`, `~`, `*`, `>`, `[a TO b]`, AND/OR/NOT, `a.b` JSON paths; scopes thread / root / run / any) as the query builder's text form, replacing the `eq()/and()` grammar in design-notes §5.2 | **Yes**: it's what LangSmith users type now | Decide before M1 | design-notes §5.2 rewritten; M1 builder round-trips panel ↔ text |
-| R-3 | Fix design-notes wording: §6 "fixed-size chunks" → "terms in row groups with min/max term zones; postings and positions chunked apart from the term dictionary"; add SmithDB ingest numbers (P50 630 ms / P99 1.47 s) to §2 | Doc only | Anytime | Text matches the post |
-| R-4 | Pin `object_store` to the 0.13 line (what `vortex-datafusion` 0.91 needs) and update the Vortex reason in plan.md / research R4 to "pre-1.0, not benchmarked by us" (it now supports DataFusion 55) | Cheap, keeps the Vortex swap open | M1, when crates are added | `Cargo.toml` pin + updated reason |
-| R-5 | If we add LangSmith *read* compatibility, copy the v2 API (`/api/v2/runs/query`, `/api/v2/threads/query`, project UUIDs, no child runs in run queries); v1 is removed on Cloud 2027-01-31 | No: compat is ingest-only (spec.md Assumptions) | Deprioritized | — |
-| R-6 | Cloud path: split Compaction into a single scheduler plus scalable workers, and the cluster manager into its own service (self-hosted SmithDB runs 5 services) | No: one process locally | Cloud | design-notes §2.1 cloud column updated |
+| R-1 | Re-pin the SDK to Python **0.14.17** (keep 0.8.18 as a second fixture set). Accept the new `address` field (`lrn:agents/<id>/environments/<env>`); when no project is named the SDK drops `session_name`, so derive the project from the address | **Yes** | M0 | **Docs updated** (000 spec, design-notes §4, research R2, data-model; 001 spec, data-model, design §6/§9, research, tasks T030/T031/T034/T061). Verified in SDK source. Code: proposed tasks |
+| R-2 | ~~Replace the `eq()/and()` grammar with `field:value`~~. **Corrected:** SDK 0.14.17 still documents `eq()/and()/has()` for `filter`, so it stays canonical. A `field:value` search-bar form is a possible M1 add-on once confirmed in LangSmith's UI docs | Maybe | M1 | **Docs updated** (design-notes §5.2). `field:value` unverified offline |
+| R-3 | design-notes §6 wording (term zones; postings/positions chunked apart from the term dictionary) and SmithDB ingest numbers (P50 630 ms / P99 1.47 s) in §2 | Doc only | Anytime | **Docs updated**, from the earlier reconciliation note; the SmithDB post was not re-read in this session |
+| R-4 | Pin `object_store` to 0.13 (`vortex-datafusion` 0.91 needs 0.13.2; latest is 0.14.2); Vortex reason → "pre-1.0, not benchmarked by us; supports DataFusion 55" | Cheap | M1 (when crates are added) | **Docs updated** (plan, research R4, design-notes §12). Verified on crates.io. `Cargo.toml` pin when `object_store` is added |
+| R-5 | If we add LangSmith *read* compatibility, copy the v2 API (`/api/v2/runs/query`, `/api/v2/threads/query`, project UUIDs, no child runs in run queries); v1 is removed on Cloud 2027-01-31 | No: compat is ingest-only | Deprioritized | No change |
+| R-6 | Cloud path: Compaction → one scheduler + scalable workers; cluster manager as its own service (self-hosted SmithDB runs 5 services) | No | Cloud | **Docs updated** (design-notes §2.1) |
+
+### LSM ideas borrowed from RocksDB / LevelDB (chosen 2026-11-05)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| R-7 | **Pinned versions for readers**: each query holds a reference to the segment set it started on; a compacted-away segment is deleted only when no reader holds it (replaces the grace-period GC in design-notes §7) | A long query never loses a file mid-scan | Test: a scan runs across a compaction swap and returns the same rows |
+| R-8 | **Write slowdown**: when memtable size, unflushed WAL or T0 file count passes a limit, ingest returns `429` + `Retry-After` (the SDK retries) | Memory stays bounded during bursts | Test: a burst past the limit gets 429s, no event lost, memory under the cap |
+| R-9 | **Bloom filter on keys**: Parquet bloom filters on `trace_id` and `run_id` in core files | Trace-tree and single-run lookups skip most segments | Bench: segments opened per lookup drops vs. without |
+| R-10 | **Two memtables**: one mutable, one frozen while it flushes; writes go to the new mutable one | Ingest never pauses during a flush | Test: ingest latency stays flat while a flush runs |
+
+Not adopted: compaction I/O rate limit, payload-file GC (BlobDB-style), checkpoints, merge operator, FIFO/TTL compaction.
 
 ## History
 
