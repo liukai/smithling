@@ -205,6 +205,20 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 Mark ✅ only after the phase's exit check passes.
 
+## Backlog: SmithDB reconciliation (found 2026-11-05)
+
+From checking spec 000 against the SmithDB post, the LangSmith self-hosted docs, and `langsmith` SDK 0.8.18 vs 0.14.17.
+**Local** = does the laptop version need it.
+
+| # | Item | Local? | When | Done when |
+|---|---|---|---|---|
+| R-1 | Re-pin the SDK from 0.8.18 to 0.14.x (Python; JS 0.11.x). Accept the new run `address` field (agent id + environment) and store it as metadata, don't reject it | **Yes**: unmodified agents run the latest SDK | M0 (`specs/001-…`) | Contract fixtures recorded with 0.14.x; a run with `address` is accepted |
+| R-2 | Use LangSmith's current `field:value` filter syntax (`-`, `~`, `*`, `>`, `[a TO b]`, AND/OR/NOT, `a.b` JSON paths; scopes thread / root / run / any) as the query builder's text form, replacing the `eq()/and()` grammar in design-notes §5.2 | **Yes**: it's what LangSmith users type now | Decide before M1 | design-notes §5.2 rewritten; M1 builder round-trips panel ↔ text |
+| R-3 | Fix design-notes wording: §6 "fixed-size chunks" → "terms in row groups with min/max term zones; postings and positions chunked apart from the term dictionary"; add SmithDB ingest numbers (P50 630 ms / P99 1.47 s) to §2 | Doc only | Anytime | Text matches the post |
+| R-4 | Pin `object_store` to the 0.13 line (what `vortex-datafusion` 0.91 needs) and update the Vortex reason in plan.md / research R4 to "pre-1.0, not benchmarked by us" (it now supports DataFusion 55) | Cheap, keeps the Vortex swap open | M1, when crates are added | `Cargo.toml` pin + updated reason |
+| R-5 | If we add LangSmith *read* compatibility, copy the v2 API (`/api/v2/runs/query`, `/api/v2/threads/query`, project UUIDs, no child runs in run queries); v1 is removed on Cloud 2027-01-31 | No: compat is ingest-only (spec.md Assumptions) | Deprioritized | — |
+| R-6 | Cloud path: split Compaction into a single scheduler plus scalable workers, and the cluster manager into its own service (self-hosted SmithDB runs 5 services) | No: one process locally | Cloud | design-notes §2.1 cloud column updated |
+
 ## History
 
 - 2026-11-05: product spec, primer, design notes, constitution v1.0.0, plan + Phase 1 artifacts written; the original SPEC.md and REQUIREMENTS.md were folded in and deleted.

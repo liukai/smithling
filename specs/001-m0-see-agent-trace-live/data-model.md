@@ -196,7 +196,7 @@ Resulting `RunHeader`, as the runs list and trace tree see it:
 {"run_id": "7c1e…a4", "trace_id": "0b9f…11", "parent_run_id": "0b9f…11", "depth": 1, "is_root": false,
  "project": "research-agent", "name": "fetch_url", "run_type": "tool",
  "start_time": "2026-11-05T02:14:07.123456Z", "end_time": "2026-11-05T02:14:38.200000Z",
- "status": "error", "error": "HTTPError: 429 Too Many Requests", "latency_ms": 31077,
+ "status": "error", "error": "HTTPError: 429 Too Many Requests", "latency_ms": 31076,
  "tags": ["batch=a"], "metadata": {"prompt_version": "v7"}, "model": null, "total_tokens": null,
  "payload_sizes": {"inputs": 31, "outputs": 19, "events": 0}, "child_count": 0,
  "first_seq": 1042, "last_seq": 1987, "event_count": 2}

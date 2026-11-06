@@ -1,2 +1,10 @@
 /target
 __pycache__/
+*.rs.bk
+.tracedb/
+ui/node_modules/
+ui/dist/
+.DS_Store
+*.log
+.env*
+.idea/

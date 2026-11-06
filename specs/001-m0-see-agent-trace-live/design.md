@@ -239,7 +239,7 @@ JSON keeps the log debuggable. A binary encoding can replace it behind the same 
 ```
 runs
   0b9f…11 → research_task  agent  running  start 02:14:00  children 3   seq 1001..1001
-  7c1e…a4 → fetch_url      tool   error    31 077 ms  "429 Too Many…"  seq 1042..1987  inputs 31 B, outputs 19 B
+  7c1e…a4 → fetch_url      tool   error    31 076 ms  "429 Too Many…"  seq 1042..1987  inputs 31 B, outputs 19 B
 by_trace
   0b9f…11 → [0b9f…11, 3d2a…, 7c1e…a4, 9e44…]
 roots
