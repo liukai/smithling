@@ -196,13 +196,13 @@ status → three chips; results match (spec Story 2).
 
 ### Tests for User Story 5
 
-- [ ] T064 [P] [US5] Scenario generator test `crates/tracedb/tests/scenario.rs`: same seed → identical data; planted counts exactly as research M2-R14 (200 roots tagged `batch=2026-11-05-a`; 14 roots error; 23 roots ok with ≥ 1 errored step; `metadata.prompt_version` on 1,840 runs: v6 928, v7 912); background volume forces ≥ 2 flushes
+- [X] T064 [P] [US5] *(also: exactly the planted root ids; v7 ∧ 429 = 19; late in 30–120 s or 40+ min; a load test asserts ≥ 2 flushes and every failing root starts in a file and ends in the memtable)* Scenario generator test `crates/tracedb/tests/scenario.rs`: same seed → identical data; planted counts exactly as research M2-R14 (200 roots tagged `batch=2026-11-05-a`; 14 roots error; 23 roots ok with ≥ 1 errored step; `metadata.prompt_version` on 1,840 runs: v6 928, v7 912); background volume forces ≥ 2 flushes
 
 ### Implementation for User Story 5
 
-- [ ] T065 [US5] Scenario generator in `crates/tracedb/src/scenario.rs` per research M2-R14, sent through `/runs/batch`; late finishers 30–120 s and a few 40+ min (sent immediately with correct timestamps under `--no-delay` semantics)
-- [ ] T066 [US5] `tracedb demo` in `crates/tracedb/src/demo.rs` + `main.rs`: flags per `contracts/cli.md` (`--seed`, `--url` or `--data`, `serve` storage flags, `--checks m2`); run its own server on a temp folder when no `--url`; checks: 14 failing roots, 23 quiet failures, `prompt_version` top values, the planted v7 ∧ `status_code = 429` count, and "checks across memtable and files" (at least one counted run has versions in both); print the pass/fail table with timings; exit 1 naming expected vs actual on failure
-- [ ] T067 [US5] Run `tracedb demo` in CI (`.github/workflows/ci.yml`, local job)
+- [X] T065 [US5] *(`load` sends background one trace per upload, pausing while a memtable is frozen, and stops once the starts are flushed after ≥ 2 flushes, so the late updates stay in the memtable; up to 3 memtables of background. Timestamps are relative to now − 6 h, so two demo runs differ only by a time shift; `generate(seed, base, …)` is identical for the same base. `seed`'s uploads now retry on 429; refuses a server that already holds the batch)* Scenario generator in `crates/tracedb/src/scenario.rs` per research M2-R14, sent through `/runs/batch`; late finishers 30–120 s and a few 40+ min (sent immediately with correct timestamps under `--no-delay` semantics)
+- [X] T066 [US5] *(adds `--memtable` (default 4MB; background sized from it, match the server's with `--url`); top values come from `/api/fields/values` and are cross-checked with `/api/query` counts; counts also require exactly the planted run ids; "across" = a counted run with `first_seq ≤ flushed_seq < last_seq`, `flushed_seq` read before the queries; all queries use the last 12 h)* `tracedb demo` in `crates/tracedb/src/demo.rs` + `main.rs`: flags per `contracts/cli.md` (`--seed`, `--url` or `--data`, `serve` storage flags, `--checks m2`); run its own server on a temp folder when no `--url`; checks: 14 failing roots, 23 quiet failures, `prompt_version` top values, the planted v7 ∧ `status_code = 429` count, and "checks across memtable and files" (at least one counted run has versions in both); print the pass/fail table with timings; exit 1 naming expected vs actual on failure
+- [X] T067 [US5] *(YAML parses; not run on a CI runner)* Run `tracedb demo` in CI (`.github/workflows/ci.yml`, local job)
 
 **Checkpoint (demo)**: quickstart step 1.
 
@@ -216,7 +216,7 @@ status → three chips; results match (spec Story 2).
 
 - [ ] T068 [US6] Run the storage trait tests (T007) against S3 (MinIO) and Postgres when `TRACEDB_TEST_S3_URL` / `TRACEDB_TEST_PG_URL` are set, in `crates/storage/tests/traits.rs`
 - [ ] T069 [US6] Cloud CI job in `.github/workflows/ci.yml`: start `ci/cloud.yml`, run storage trait tests, `tracedb demo --storage s3://tracedb/ci --metastore postgres://…`, and the crash harness with the same flags; compare the demo table with the local job's
-- [ ] T070 [US6] Ensure credentials never reach logs: redact `postgres://user:pass@` and `AWS_*` values in `crates/tracedb/src/main.rs` startup logging; test in `crates/tracedb/tests/redact.rs`
+- [X] T070 [US6] *(startup logs `storage_summary` in `lib.rs::serve`: URL passwords and every `AWS_*` value as `***`; the startup error is redacted too; `tracedb_storage::redact` now also hides passwords containing `/`; the test runs `serve` against an unresolvable postgres URL with `RUST_LOG=debug`)* Ensure credentials never reach logs: redact `postgres://user:pass@` and `AWS_*` values in `crates/tracedb/src/main.rs` startup logging; test in `crates/tracedb/tests/redact.rs`
 
 **Checkpoint**: cloud CI job green with the same demo numbers (SC-08).
 
@@ -241,9 +241,9 @@ done right after Phase 2 (plan PR 2).
 
 ## Phase 10: Polish and cross-cutting
 
-- [ ] T076 [P] Pinned-version test `crates/query/tests/pinned.rs`: a long scan across a test-only `swap` returns the same rows; swapped-out files are deleted only after the scan drops its `Arc<Version>` (R-7)
-- [ ] T077 [P] Bloom bench in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): files opened per trace lookup with and without blooms at 2M runs; report (R-9)
-- [ ] T078 [P] M2 bench in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): P50/P99 for filtered list, trace, single run, suggestions at 2M runs; assert SC-03 (filter p50 ≤ 500 ms; trace/run p50 ≤ 200 ms; suggestions p50 ≤ 500 ms); report memory and disk vs raw JSON (SC-04)
+- [X] T076 [P] *(M2 deletes no files, so `swap` and the deleter rule are test-only stand-ins for M4: a scan paused after pinning returns the same rows across a rewrite swap, a published version that drops a file, and a real flush; the old files go only once its `Arc<Version>` is dropped)* Pinned-version test `crates/query/tests/pinned.rs`: a long scan across a test-only `swap` returns the same rows; swapped-out files are deleted only after the scan drops its `Arc<Version>` (R-7)
+- [X] T077 [P] *(release, 37 files, scattered trace ids so bounds prune nothing: files with rows decoded per lookup 36.98 without blooms → 1.20 with (max 3); p50 6.0 → 5.7 ms, as the page index on sorted `trace_id` already skips most of each file)* Bloom bench in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): files opened per trace lookup with and without blooms at 2M runs; report (R-9)
+- [ ] T078 [P] *(built and run; release, 2M runs / 5.13 GB raw JSON: **fails** SC-03 for broad filters (metadata + name p50 2.7 s, quiet failures p50 4.7 s; errors-only 129 ms passes) and SC-04 disk (6.10 GB = 119%: data 0.90 GB, WAL 5.20 GB kept for the 10-min dedup window); trace p50 6.0 ms, run 31 ms, suggestions ≈ 3 ms, memtable peak 138 MB ≤ limit + one batch)* M2 bench in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): P50/P99 for filtered list, trace, single run, suggestions at 2M runs; assert SC-03 (filter p50 ≤ 500 ms; trace/run p50 ≤ 200 ms; suggestions p50 ≤ 500 ms); report memory and disk vs raw JSON (SC-04)
 - [ ] T079 [P] No-outbound check `scripts/no-outbound.sh`: add a flush and a `tracedb demo` run in local mode (M1 check extended)
 - [ ] T080 [P] `README.md`: storage flags, `tracedb demo`, `tracedb query`, the query panel, cloud mode, M2 limits (no compaction, no text search)
 - [ ] T081 Run [quickstart.md](quickstart.md) end to end and record results under "Last verified"
