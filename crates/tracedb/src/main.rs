@@ -61,6 +61,8 @@ enum Cmd {
         #[arg(long)]
         no_delay: bool,
     },
+    /// Run a query against a running tracedb and print a table (or JSON lines).
+    Query(tracedb::cli_query::QueryArgs),
 }
 
 /// `10m`, `30s`, `2h` → microseconds.
@@ -90,7 +92,19 @@ async fn main() -> ExitCode {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=warn".into()),
         )
         .init();
-    match Cli::parse().cmd {
+    // Usage errors exit 1 (contracts/cli.md: 2 means the server isn't reachable).
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = e.print();
+            return if e.use_stderr() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+    };
+    match cli.cmd {
         Cmd::Serve {
             data,
             port,
@@ -130,6 +144,10 @@ async fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Cmd::Query(args) => {
+            let code = tracedb::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            ExitCode::from(code)
         }
         Cmd::Seed {
             traces,

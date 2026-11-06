@@ -5,6 +5,7 @@
 //! memtable rows. So results never depend on where a run's pieces are.
 
 pub mod cursor;
+pub mod fields;
 pub mod pushdown;
 pub mod scan;
 
@@ -21,6 +22,7 @@ use tracedb_storage::segment::start_key;
 use xxhash_rust::xxh64::xxh64;
 
 pub use cursor::Key;
+pub use fields::{FieldInfo, Fields, TypeCount, ValueCount, Values};
 pub use scan::{Merged, ScanStats, Scope};
 
 pub const DEFAULT_LIMIT: usize = 50;

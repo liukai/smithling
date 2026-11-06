@@ -131,7 +131,7 @@ newest first across pages (spec Story 1).
 - [X] T044 [US1] Tree filters in `crates/query/src/plan.rs`: `trace_filter` = semi-join with roots matching it on `trace_id`; `tree_filter` = semi-join with distinct `trace_id`s of any run matching it (including the run itself; contract note)
 - [X] T045 [US1] `Query` service API in `crates/query/src/lib.rs`: `query(Query) -> Page{runs, next_cursor, warnings, stats{files_scanned, files_pruned, rows_merged, ms}}`; move M1 `roots`, `trace`, `run` onto it; drop the `Snapshot` adapter from T018
 - [X] T046 [US1] Routes in `crates/tracedb/src/routes/api.rs`: `POST /api/query` (request/response per `contracts/http-api.md`), errors with slot and byte range; `GET /api/roots` mapped onto `query` with `is_root: true`
-- [ ] T047 [P] [US1] `tracedb query` in `crates/tracedb/src/main.rs` + `crates/tracedb/src/cli_query.rs`: flags per `contracts/cli.md`; table output, `--json` for JSON lines
+- [X] T047 [P] [US1] *(also `--url`/`TRACEDB_URL`, default `http://localhost:7070`; no default `--time`, so all time; footer `N runs` or `showing N of M runs`; usage errors now exit 1 for every command, not clap's 2)* `tracedb query` in `crates/tracedb/src/main.rs` + `crates/tracedb/src/cli_query.rs`: flags per `contracts/cli.md`; table output, `--json` for JSON lines
 - [ ] T048 [P] [US1] UI query model in `ui/src/query/ast.ts`, `ui/src/query/print.ts`, `ui/src/query/parse.ts` mirroring the Rust grammar; a shared golden file `tests/fixtures/filter-golden.json` used by both T004 and the UI tests so the two parsers can't drift
 - [ ] T049 [US1] Query panel in `ui/src/query/Panel.tsx`, `ui/src/query/Chip.tsx`, `ui/src/query/TextEditor.tsx`: project, time range, three where-rows (this run / its root / any run in its trace), order, limit; text ⇄ panel toggle; deep expressions shown as one expression chip; inline errors
 - [ ] T050 [US1] Samples view in `ui/src/views/Samples.tsx` (from M1 `RunsList`, now driven by `POST /api/query`, infinite paging by cursor); click-to-filter on status badges, tags, names
@@ -151,14 +151,14 @@ status → three chips; results match (spec Story 2).
 
 ### Tests for User Story 2
 
-- [ ] T052 [P] [US2] Field catalog tests `crates/query/tests/fields.rs`: stats summed across segments in scope plus memtable stats; a metadata key first seen today is listed; `complete = false` past 10,000 paths; values endpoint returns ≤ 50 with `approximate` when any segment's top 50 cut it off
-- [ ] T053 [P] [US2] Suggestion latency check in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): p50 ≤ 500 ms for fields and values at 2M runs (SC-03)
+- [X] T052 [P] [US2] *(plus `crates/query/tests/tree_filters.rs`: 14 failing roots / 23 quiet failures across files and memtable, and trace conditions over >2,000 candidate traces read only those traces)* Field catalog tests `crates/query/tests/fields.rs`: stats summed across segments in scope plus memtable stats; a metadata key first seen today is listed; `complete = false` past 10,000 paths; values endpoint returns ≤ 50 with `approximate` when any segment's top 50 cut it off
+- [X] T053 [P] [US2] *(release, 2M runs = 7 files + 222k memtable runs: p50 ≈ 262 ms (max 286 ms) for fields, fields by prefix, values, values by prefix)* Suggestion latency check in `crates/tracedb/tests/bench_m2.rs` (`#[ignore]`): p50 ≤ 500 ms for fields and values at 2M runs (SC-03)
 - [ ] T054 [P] [US2] UI tests `ui/src/fields/FieldBrowser.test.tsx` and `ui/src/views/Table.test.tsx`: suggestions with counts as you type; add a column; click a cell value → chip
 
 ### Implementation for User Story 2
 
-- [ ] T055 [US2] Field catalog reads in `crates/query/src/fields.rs`: `fields(scope)` and `values(scope, path, prefix)` from `field_stats` rows of segments in scope (one SQL `GROUP BY path, type`; merge `top_values` in Rust) + `ingest.memtable_stats(scope)` computed on demand
-- [ ] T056 [US2] Routes `GET /api/fields` and `GET /api/fields/values` in `crates/tracedb/src/routes/api.rs` per `contracts/http-api.md`
+- [X] T055 [US2] *(summed in memory from the pinned `Version`'s stats, not SQL — D-020; per-field `complete` = all its values known exactly; `other_count` = runs with the path minus listed counts; active memtable read in batches of 4,096 runs per lock hold; approximate by design: a file counts whole if its time range overlaps, a multi-version run counts per version)* Field catalog reads in `crates/query/src/fields.rs`: `fields(scope)` and `values(scope, path, prefix)` from `field_stats` rows of segments in scope (one SQL `GROUP BY path, type`; merge `top_values` in Rust) + `ingest.memtable_stats(scope)` computed on demand
+- [X] T056 [US2] *(`time` = last span like `12h`; missing `path` → `400 bad_request`)* Routes `GET /api/fields` and `GET /api/fields/values` in `crates/tracedb/src/routes/api.rs` per `contracts/http-api.md`
 - [ ] T057 [P] [US2] Field browser in `ui/src/fields/FieldBrowser.tsx` + `ui/src/fields/ValueList.tsx`: paths by count with types, values with counts, prefix search, click → chip in "This run"
 - [ ] T058 [P] [US2] Table view in `ui/src/views/Table.tsx`: user-chosen columns sent as `columns` in the query; cells clickable to filter; columns kept in the URL (`cols=`)
 

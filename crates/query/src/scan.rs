@@ -136,6 +136,13 @@ fn fresh(ingest: &Ingest, scope: &Scope) -> Fresh {
             rows.extend(store.get(&id).filter(|st| scope.row_in_scope(st)).map(take));
         } else if let Some(t) = scope.trace_id {
             rows.extend(store.trace_run_ids(&t).iter().filter_map(|id| store.get(id)).map(take));
+        } else if let Some(ts) = scope.traces.as_ref().filter(|ts| ts.len() < store.len()) {
+            let ids = ts.iter().flat_map(|t| store.trace_run_ids(t));
+            rows.extend(
+                ids.filter_map(|id| store.get(id))
+                    .filter(|st| scope.row_in_scope(st))
+                    .map(take),
+            );
         } else {
             rows.extend(store.states().filter(|st| scope.row_in_scope(st)).map(take));
         }
@@ -201,6 +208,19 @@ pub async fn collect(
     pushed: Option<DfExpr>,
     stats: &mut ScanStats,
 ) -> Result<Vec<Merged>, QueryError> {
+    // A run belongs to one trace, so trace chunks can be collected separately; each keeps its `IN (…)` list.
+    if let Some(ts) = scope.traces.as_ref().filter(|ts| ts.len() > IN_CHUNK) {
+        let ids: Vec<TraceId> = ts.iter().copied().collect();
+        let mut out = Vec::new();
+        for chunk in ids.chunks(IN_CHUNK) {
+            let part = Scope {
+                traces: Some(Arc::new(chunk.iter().copied().collect())),
+                ..scope.clone()
+            };
+            out.extend(Box::pin(collect(ctx, ingest, &part, pushed.clone(), stats)).await?);
+        }
+        return Ok(out);
+    }
     let fresh = fresh(ingest, scope);
     let all: Vec<&SegmentMeta> = fresh.version.segments.iter().map(|s| &**s).collect();
     let files: Vec<&SegmentMeta> = all.iter().copied().filter(|s| scope.file_in_scope(s)).collect();

@@ -1,4 +1,4 @@
-//! Read API: queries, root list (M1), projects, trace tree, single run (contracts/http-api.md).
+//! Read API: queries, root list (M1), projects, field catalog, trace tree, single run (contracts/http-api.md).
 
 use axum::Json;
 use axum::extract::{Path, Query as Q, State};
@@ -285,5 +285,42 @@ pub async fn run(State(st): State<AppState>, Path(id): Path<String>, Q(q): Q<Run
         Ok(Some(r)) => Json(r).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "not_found", "no such run"),
         Err(e) => query_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FieldsQs {
+    project: Option<String>,
+    /// `"12h"`: the last such span.
+    time: Option<String>,
+    path: Option<String>,
+    #[serde(default)]
+    prefix: String,
+}
+
+impl FieldsQs {
+    fn scope(&self) -> Result<(Option<&str>, TimeRange), BadRequest> {
+        let mut time = TimeRange::default();
+        if let Some(t) = self.time.as_deref().filter(|t| !t.is_empty()) {
+            time.from = Some(time_at("time", &format!("-{}", t.trim_start_matches('-')))?);
+        }
+        Ok((self.project.as_deref().filter(|p| !p.is_empty()), time))
+    }
+}
+
+pub async fn fields(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Response {
+    match q.scope() {
+        Ok((project, time)) => Json(st.query.fields(project, time, &q.prefix)).into_response(),
+        Err(BadRequest(r)) => *r,
+    }
+}
+
+pub async fn field_values(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Response {
+    let Some(path) = q.path.as_deref().filter(|p| !p.is_empty()) else {
+        return error(StatusCode::BAD_REQUEST, "bad_request", "path is required");
+    };
+    match q.scope() {
+        Ok((project, time)) => Json(st.query.values(project, time, path, &q.prefix)).into_response(),
+        Err(BadRequest(r)) => *r,
     }
 }

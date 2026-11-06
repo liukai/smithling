@@ -1,5 +1,6 @@
 //! The `tracedb` server: HTTP routes over the ingest and query services, plus the embedded UI.
 
+pub mod cli_query;
 pub mod langsmith_map;
 pub mod routes;
 pub mod seed;
@@ -65,6 +66,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/query", post(routes::api::query))
         .route("/api/roots", get(routes::api::roots))
         .route("/api/projects", get(routes::api::projects))
+        .route("/api/fields", get(routes::api::fields))
+        .route("/api/fields/values", get(routes::api::field_values))
         .route("/api/traces/{trace_id}", get(routes::api::trace))
         .route("/api/runs/{run_id}", get(routes::api::run))
         .route("/api/tail", get(routes::tail::tail))

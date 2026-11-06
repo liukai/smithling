@@ -195,7 +195,7 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
 
     let core = encode_core(&rows)?;
     let payload = encode_payload(&rows)?;
-    let stats = field_stats(&id, &rows);
+    let stats = field_stats(&id, rows.iter().map(|v| (&v.state, &v.attrs)));
     let keys: Vec<i64> = rows.iter().map(|r| start_key(&r.state.run.dotted_order)).collect();
     let meta = SegmentMeta {
         id,
@@ -678,28 +678,40 @@ pub fn decode_payload(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, Stor
 /// Rows with the path, and value (as JSON text) → (value, count).
 type PathCounts = (u64, HashMap<String, (Value, u64)>);
 
-/// Field catalog stats for one segment (data-model §10): built-in fields and every promoted path.
-pub fn field_stats(segment_id: &str, rows: &[Version]) -> Vec<FieldStat> {
-    let mut counts: HashMap<(String, &'static str), PathCounts> = HashMap::new();
-    let mut incomplete = false;
-    let mut add = |path: &str, ty: &'static str, value: Value| {
-        let key = (path.to_string(), ty);
-        if !counts.contains_key(&key) && counts.len() >= MAX_PATHS {
-            incomplete = true;
-            return;
-        }
-        let e = counts.entry(key).or_default();
+/// Field catalog stats (data-model §10), built one run at a time: built-in fields and every promoted path.
+#[derive(Default)]
+pub struct StatsBuilder {
+    /// type → path → counts
+    counts: HashMap<&'static str, HashMap<String, PathCounts>>,
+    paths: usize,
+    incomplete: bool,
+}
+
+impl StatsBuilder {
+    fn add(&mut self, path: &str, ty: &'static str, value: Value) {
+        let by_path = self.counts.entry(ty).or_default();
+        let e = match by_path.get_mut(path) {
+            Some(e) => e,
+            None if self.paths >= MAX_PATHS => {
+                self.incomplete = true;
+                return;
+            }
+            None => {
+                self.paths += 1;
+                by_path.entry(path.to_string()).or_default()
+            }
+        };
         e.0 += 1;
-        let k = json_text(&value);
-        e.1.entry(k).or_insert((value, 0)).1 += 1;
-    };
-    for v in rows {
-        let r = &v.state.run;
-        add("status", "string", tracedb_model::filter::status_name(r.status).into());
+        e.1.entry(json_text(&value)).or_insert((value, 0)).1 += 1;
+    }
+
+    pub fn add_run(&mut self, state: &RunState, attrs: &Attrs) {
+        let r = &state.run;
+        self.add("status", "string", tracedb_model::filter::status_name(r.status).into());
         if let Some(n) = &r.name {
-            add("name", "string", n.clone().into());
+            self.add("name", "string", n.clone().into());
         }
-        add(
+        self.add(
             "run_type",
             "string",
             r.run_type_raw
@@ -708,15 +720,15 @@ pub fn field_stats(segment_id: &str, rows: &[Version]) -> Vec<FieldStat> {
                 .into(),
         );
         if let Some(m) = &r.model {
-            add("model", "string", m.clone().into());
+            self.add("model", "string", m.clone().into());
         }
-        if v.state.project_set {
-            add("project", "string", r.project.clone().into());
+        if state.project_set {
+            self.add("project", "string", r.project.clone().into());
         }
         for t in &r.tags {
-            add("tags", "list", t.clone().into());
+            self.add("tags", "list", t.clone().into());
         }
-        for (path, val) in &v.attrs {
+        for (path, val) in attrs {
             let (ty, value) = match val {
                 Scalar::Str(s) => ("string", Value::from(s.clone())),
                 Scalar::Num(n) => (
@@ -728,38 +740,51 @@ pub fn field_stats(segment_id: &str, rows: &[Version]) -> Vec<FieldStat> {
                 Scalar::Bool(b) => ("bool", Value::Bool(*b)),
                 Scalar::Unindexed => ("unindexed", Value::Null),
             };
-            add(path, ty, value);
+            self.add(path, ty, value);
         }
     }
-    let mut out: Vec<FieldStat> = counts
-        .into_iter()
-        .map(|((path, ty), (count, values))| {
-            let mut vals: Vec<(Value, u64)> = values.into_values().collect();
-            vals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| json_text(&a.0).cmp(&json_text(&b.0))));
-            vals.truncate(TOP_VALUES);
-            let top: u64 = vals.iter().map(|v| v.1).sum();
-            FieldStat {
+
+    pub fn finish(self, segment_id: &str) -> Vec<FieldStat> {
+        let mut out: Vec<FieldStat> = self
+            .counts
+            .into_iter()
+            .flat_map(|(ty, by_path)| by_path.into_iter().map(move |(path, c)| (path, ty, c)))
+            .map(|(path, ty, (count, values))| {
+                let mut vals: Vec<(Value, u64)> = values.into_values().collect();
+                vals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| json_text(&a.0).cmp(&json_text(&b.0))));
+                vals.truncate(TOP_VALUES);
+                let top: u64 = vals.iter().map(|v| v.1).sum();
+                FieldStat {
+                    segment_id: segment_id.to_string(),
+                    path,
+                    ty: ty.to_string(),
+                    count,
+                    other_count: count - top,
+                    top_values: vals,
+                }
+            })
+            .collect();
+        if self.incomplete {
+            out.push(FieldStat {
                 segment_id: segment_id.to_string(),
-                path,
-                ty: ty.to_string(),
-                count,
-                other_count: count - top,
-                top_values: vals,
-            }
-        })
-        .collect();
-    if incomplete {
-        out.push(FieldStat {
-            segment_id: segment_id.to_string(),
-            path: INCOMPLETE_PATH.into(),
-            ty: "marker".into(),
-            count: 0,
-            top_values: vec![],
-            other_count: 0,
-        });
+                path: INCOMPLETE_PATH.into(),
+                ty: "marker".into(),
+                count: 0,
+                top_values: vec![],
+                other_count: 0,
+            });
+        }
+        out.sort_by(|a, b| (&a.path, &a.ty).cmp(&(&b.path, &b.ty)));
+        out
     }
-    out.sort_by(|a, b| (&a.path, &a.ty).cmp(&(&b.path, &b.ty)));
-    out
+}
+
+pub fn field_stats<'a>(segment_id: &str, rows: impl IntoIterator<Item = (&'a RunState, &'a Attrs)>) -> Vec<FieldStat> {
+    let mut b = StatsBuilder::default();
+    for (state, attrs) in rows {
+        b.add_run(state, attrs);
+    }
+    b.finish(segment_id)
 }
 
 /// Run ids of rows marked `needs_merge` in a core file (read at startup to rebuild the multi-version set).

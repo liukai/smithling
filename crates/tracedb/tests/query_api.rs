@@ -128,3 +128,48 @@ async fn m1_roots_endpoint_still_answers() {
     assert_eq!(v["runs"].as_array().unwrap().len(), 1);
     assert!(v.get("next_cursor").is_some());
 }
+
+async fn get(server: &Server, path: &str) -> (u16, Value) {
+    let r = reqwest::get(server.url(path)).await.unwrap();
+    (r.status().as_u16(), r.json().await.unwrap())
+}
+
+#[tokio::test]
+async fn field_catalog_lists_paths_and_values() {
+    let server = start().await;
+    let runs: Vec<Value> = (1..=3)
+        .map(|n| {
+            let mut r = ls_root(n, "p", n as u32);
+            r["extra"] = json!({"metadata": {"prompt_version": if n == 3 { "v6" } else { "v7" }}});
+            r
+        })
+        .collect();
+    post_batch(&server, runs, vec![]).await;
+
+    let (s, v) = get(&server, "/api/fields?project=p&prefix=meta").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v,
+        json!({"fields": [{"path": "metadata.prompt_version", "types": [{"type": "string", "count": 3}],
+                           "complete": true}], "complete": true})
+    );
+    let (s, v) = get(&server, "/api/fields?project=nope&time=12h").await;
+    assert_eq!((s, v["fields"].as_array().map(Vec::len)), (200, Some(0)));
+
+    let (s, v) = get(
+        &server,
+        "/api/fields/values?project=p&path=metadata.prompt_version&prefix=v",
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v,
+        json!({"values": [{"value": "v7", "count": 2}, {"value": "v6", "count": 1}], "other_count": 0,
+               "approximate": false})
+    );
+
+    let (s, v) = get(&server, "/api/fields/values?project=p").await;
+    assert_eq!((s, v["error"]["code"].as_str()), (400, Some("bad_request")));
+    let (s, v) = get(&server, "/api/fields?time=yesterday").await;
+    assert_eq!((s, v["error"]["code"].as_str()), (400, Some("bad_time")));
+}
