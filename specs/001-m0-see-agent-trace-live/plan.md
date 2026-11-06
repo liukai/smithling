@@ -11,6 +11,38 @@ WAL, merges them into an in-memory run store and fans changes out to browsers ov
 runs list, a trace tree with waterfall, and a step panel. `tracedb seed` generates realistic traces through the same
 HTTP path. The full design and its components are in [design.md](design.md).
 
+## End-state map: where you see each requirement
+
+One row per M0 requirement. "Where you see it" is the screen, command or check to look at; "What you should see" is
+the pass condition. Steps refer to [quickstart.md](quickstart.md).
+
+### Functional (what you can do)
+
+| Req | As a…, I can… | Where you see it | What you should see | Automated check |
+|---|---|---|---|---|
+| M0-FR-01 | As an agent developer, I can trace an unmodified LangSmith SDK agent by changing only its endpoint | Browser → runs list, after quickstart step 2 | the agent's root run appears; no code change | contract test (recorded SDK traffic) |
+| M0-FR-02 | As an agent developer, I can upload a batch with a bad item and still keep the good ones | upload response (`rejected[]`); runs list | good items listed; the bad one rejected with a reason code (data-model §6) | `ingest` validation tests |
+| M0-FR-03 | As an agent developer, I can see one correct state for a step that arrived in pieces | Browser → trace → step panel | after start + update: `error`, 31 s, outputs present | merge unit + property tests |
+| M0-FR-04 | As an agent developer, I can kill tracedb and restart without losing anything it confirmed | `cargo test --test crash` (step 4); the browser after restart | `0 confirmed events missing` × 10 rounds; the same runs listed | crash harness in CI |
+| M0-FR-05 | As an agent developer, I can watch runs arrive and update without refreshing | Browser → runs list with the `● live` indicator | new rows within 1 s; a long root flips `running` → `ok` | e2e tail-latency test (p99 < 1 s) |
+| M0-FR-06 | As an agent developer, I can page through root runs newest first and narrow by project and status | Browser → runs list: project/status pickers, `older ▸` | newest first, no repeats across pages | query cursor tests |
+| M0-FR-07 | As an agent developer, I can open any trace and see its tree and waterfall at once | Browser → click a root run | 250 steps in tree order with aligned bars, in < 1 s | e2e trace-open timing test |
+| M0-FR-08 | As an agent developer, I can read any step's full inputs and outputs | Browser → click a step → right panel | full 40 KB payload, readable JSON | API test for `include=` |
+| M0-FR-09 | As an agent developer, I can share a link to a trace or step | copy the URL, open it in a new tab | the same trace and selected step | UI route test |
+| M0-FR-10 | As a test user, I can generate realistic traces without an agent | `tracedb seed --traces 100` (step 3), then the browser | 100 traces with deep trees, errors, late finishes, big payloads | seed shape test (fixed `--seed`) |
+
+### Non-functional (how well it does it)
+
+| Req | As a…, I can… | Where you see it | What you should see | Automated check |
+|---|---|---|---|---|
+| M0-FR-11 / QR-001 | As an agent developer, I can trust nothing leaves my laptop | `scripts/no-outbound.sh` (step 5); `--data` folder | 0 non-loopback connections; all files under the data folder | strace check in Linux CI |
+| M0-FR-12 / QR-002 | As a test user, I can run it with nothing else installed | a fresh machine: download the binary → `tracedb serve` | it starts; no Docker, DB or Node needed at runtime | CI runs the release binary in a clean container |
+| QR-003 (via FR-04) | As an agent developer, I can rely on durability | see M0-FR-04 | — | crash harness |
+| SC-02 | As an agent developer, I see my data quickly | e2e test output | p99 confirm → visible < 1 s | e2e tail-latency test |
+| SC-03 | As an agent developer, big traces open fast | e2e test output | 250-step trace < 1 s | e2e trace-open test |
+| SC-07 | As an agent developer, uploads keep up with my agent | `cargo test --test throughput -- --ignored` | ≥ 5,000 events/s sustained | throughput test |
+| M0-FR-13 | As a maintainer, I can trust all of the above stays true | CI on every PR | all checks green | CI workflow |
+
 ## Technical Context
 
 **Language/Version**: Rust 1.99 (edition 2024). UI in TypeScript (React + Vite), built by `cargo build` and embedded.

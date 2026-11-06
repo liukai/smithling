@@ -64,6 +64,89 @@ M1 and M3, when there is something to put in them (keep it simple).
 - `ingest` knows nothing about HTTP, `query` or the UI.
 - The HTTP layer is the only place that knows LangSmith field names. Everything inside uses `RunEvent`/`Run`.
 
+### 3.1 What each component can and cannot do in M0
+
+Every component lists what it **can** do, what it explicitly **cannot** do in M0 (non-goals), its **limits** in
+numbers, and when a non-goal is lifted. A "cannot" here is a promise, not an oversight: no code for it is written in M0.
+
+#### 1. `model`
+- **Can**: parse and validate events; merge them (latest present value wins; identity fields immutable); derive
+  status, latency, depth, tokens and model; check `dotted_order`.
+- **Cannot**: compute cost (no price table); append fields; resolve conflicting clocks (it trusts arrival order, not
+  client timestamps); support schema versions other than the LangSmith run shape plus native events.
+- **Limits**: field sizes in [data-model §6](data-model.md#6-validation-and-rejection-reasons).
+- **Later**: cost (M2); feedback fields (M2/M3).
+
+#### 2. HTTP layer
+- **Can**: answer `/info`; accept `/runs/batch`, `POST /runs`, `PATCH /runs/{id}`, `/v1/events`; serve the query
+  API, live tail and embedded UI; enforce body limits.
+- **Cannot**: accept multipart uploads (`415`), attachments (sizes noted, content dropped), feedback, compressed
+  bodies (zstd), OpenTelemetry; check API keys (any key is accepted, since it's localhost only); serve TLS; accept
+  connections from other machines by default.
+- **Limits**: body ≤ 50 MB; `/info` advertises `size_limit` 100 items and 20 MB per batch.
+- **Later**: multipart + feedback (M2); OTLP (backlog).
+
+#### 3. Ingest service (the writer)
+- **Can**: accept batches from many clients at once; dedupe retries; assign a global order; make every event durable
+  before confirming; apply it to the run store; publish the change; report per-item rejections.
+- **Cannot**: write anything except the WAL (no columnar files, no metastore); scale past one writer; trim the WAL;
+  apply back-pressure per client (all clients share one queue); reorder events by client time.
+- **Limits**: ≥ 5,000 events/s target (SC-07); in-flight queue 10,000 events, beyond which requests get `503 busy`;
+  group commit every ~5 ms or 1 MB.
+- **Later**: flush to disk segments and trim the WAL (M1); 20,000 events/s (M2).
+
+#### 4. WAL
+- **Can**: append records with checksums; fsync in groups; roll files at 64 MB; replay in order; truncate a torn tail.
+- **Cannot**: be trimmed or compacted (it grows for the whole life of the data folder); be read by anything except
+  replay; be copied safely while tracedb runs; survive disk corruption in the middle of a file (replay stops at the
+  first bad record and reports it).
+- **Limits**: disk use ≈ the raw upload size (every update is kept, including superseded ones). Restart time grows
+  with WAL size (open question §11.4).
+- **Later**: trimmed after each flush (M1), so restart replays only the short unflushed tail.
+
+#### 5. Run store
+- **Can**: hold every run merged in memory; answer the three M0 reads from memory; detect duplicates for 24 h; count
+  its own size against the budget; report each change.
+- **Cannot**: **be persisted**: it is never written to disk, and it is rebuilt from the WAL on every start. It also
+  can't evict or age out runs, hold more than the memory budget, answer filters other than project and status, sort
+  by anything other than newest root first, or search text.
+- **Limits**: default 2 GB or 500k runs (`--max-memory`); new runs are refused past it, and updates to known runs
+  are still accepted.
+- **Later**: becomes a true memtable that is flushed and emptied (M1); the limit then applies only to unflushed data.
+
+#### 6. Query service
+- **Can**: return a trace tree (headers only, depth-first order), one run with chosen payload fields, and root runs
+  newest first with a cursor, filtered by project and status.
+- **Cannot**: filter by tags, metadata, latency, time range, name or any JSON field; apply tree-aware filters; do
+  text search, aggregates, stats, threads or export; query across projects in one call; run SQL.
+- **Limits**: page size ≤ 200; a trace response holds all its runs (practical to ~10,000 runs per trace).
+- **Later**: query builder, filters, tree-aware filters (M1); search and stats (M2); threads and export (M3).
+
+#### 7. Tail hub
+- **Can**: push changes to every open tab within 1 s, filtered by project (runs list) or trace (trace view);
+  collapse bursts; tell slow tabs to resync instead of slowing the writer.
+- **Cannot**: filter by anything except project or trace; replay history ("send me what I missed since X"); deliver
+  every intermediate version of a run (only the latest per 100 ms window); guarantee delivery (a tab can always resync);
+  push payloads (headers only).
+- **Limits**: ring of 4,096 changes; ≤ 5,000 pending runs per tab; ≤ 10 messages/s per tab; heartbeat every 15 s.
+- **Later**: subscribe by any query (M1).
+
+#### 8. UI
+- **Can**: show the live runs list (project and status pickers, paging); open a trace as tree + waterfall; show a step's
+  full inputs, outputs, events and error; keep all state in the URL; show an empty state with setup instructions.
+- **Cannot**: build queries or filter by anything else; search; show charts or stats; compare runs; show threads;
+  export; edit, delete or annotate; show `serialized` or attachments; work offline from a saved file; give
+  multi-user views or log in.
+- **Limits**: trees stay smooth to ~10,000 steps (virtualized); payloads over 2 MB render as collapsed raw text first.
+- **Later**: query builder and field browser (M1); search, charts, compare (M2); threads, export, feedback, ranking (M3).
+
+#### 9. CLI
+- **Can**: `serve` (data folder, port, bind address, memory budget); `seed` (N traces with realistic shapes, a fixed
+  random seed, sent through `/runs/batch` like an agent).
+- **Cannot**: `query`, `tail`, `stats`, `export`, `import`, `demo`, `bench`, `mcp`; run as a background service or
+  daemon; migrate or repair a data folder.
+- **Later**: `query`, `seed --scenario`, `demo` (M1); `stats`, `bench` (M2); `export` (M3); `import`, `mcp` (M4).
+
 ## 4. Key flows
 
 ### 4.1 Write path (one upload)
@@ -96,15 +179,40 @@ HTTP ◀── 202 {accepted, rejected[]} ─────┘
 - Reads take a **snapshot**: a short read lock while copying the needed headers out, so readers never block the writer
   for long.
 
-### 4.3 Live tail
-The writer publishes `Change{run_header}` to a broadcast channel. Each browser connection (Server-Sent Events) filters
-and **coalesces** changes over 100 ms windows, so a burst of 1,000 updates becomes ≤ 10 messages per second per tab.
-A slow tab is dropped and reconnects, and never slows the writer.
+### 4.3 Live tail (fan-out and coalescing)
+
+```
+ writer ──publish(Change)──▶ ① broadcast ring ──▶ ② one task per open tab ──SSE──▶ ③ browser
+          (never blocks)       last 4,096 changes    filter → coalesce → send       apply by version
+```
+
+1. **Publish.** After fsync and before confirming, the writer sends `Change{kind, header: Arc<RunHeader>}` to a
+   `tokio::sync::broadcast` ring. `kind` is `new_root`, `updated` or `new_child`. The header has no payloads and is
+   shared, not copied. Sending never blocks; when the ring is full, the oldest change is overwritten.
+2. **Versioned.** Every header carries `last_seq`. A higher `last_seq` always wins, so duplicates, late arrivals and
+   out-of-order changes are harmless.
+3. **Per-tab task.** `GET /api/tail?project=P` (runs list: root runs of P) or `?trace=T` (trace view: every run of T).
+   The task subscribes **first**, then sends `hello`. The browser loads its view only after `hello`, so nothing
+   between load and subscribe is missed.
+4. **Coalesce.** The task keeps `pending: run_id → newest header`. Many updates to one run in a window collapse to one
+   entry; many runs go out together as one `event: runs` message holding an array.
+5. **Timing.** If nothing was sent in the last 100 ms, the first change goes out **immediately** (leading edge); later
+   ones wait for the next 100 ms tick. So a quiet system is instant, and a busy one sends at most 10 messages/s per tab.
+6. **Overload.** If the tab falls more than 4,096 changes behind (`Lagged`), or `pending` passes 5,000 runs, the task
+   drops `pending` and sends `event: resync`; the browser reloads its current view. The writer never waits for a tab.
+7. **Keep-alive and reconnect.** A comment every 15 s keeps proxies from closing the connection. On disconnect the
+   browser reconnects by itself, gets `hello`, and reloads.
+
+SSE event types: `hello {server_seq}`, `runs [RunHeader…]`, `resync {}`.
 
 ### 4.4 Start and restart
 Open the WAL directory, replay every record through the same `merge` used live, rebuild the indexes, then open the
 HTTP port. Partial or corrupt tail records (from a kill mid-write) are detected by their checksum and truncated.
 They were never confirmed, because confirmation waits for fsync.
+
+**What is persisted in M0: only the WAL.** The run store is never written to disk; it is a view of the WAL, rebuilt on
+every start. Restart time therefore grows with the WAL (about 1 s per 200–500 MB), and the WAL is never trimmed in M0.
+M1 removes both by flushing to segments and trimming the WAL.
 
 ## 5. Data structures and formats
 
@@ -126,6 +234,21 @@ JSON keeps the log debuggable. A binary encoding can replace it behind the same 
   these merged rows to disk segments, and later updates merge on read, as SmithDB does.
 - **Memory budget**: the store tracks approximate bytes (headers + payloads). Past the budget (default 2 GB) or 500k
   runs, `accept` rejects new runs with `capacity` and tells the user that M1 lifts this limit.
+
+**Example contents** after one research-agent trace, with the `fetch_url` start and update applied:
+```
+runs
+  0b9f…11 → research_task  agent  running  start 02:14:00  children 3   seq 1001..1001
+  7c1e…a4 → fetch_url      tool   error    31 077 ms  "429 Too Many…"  seq 1042..1987  inputs 31 B, outputs 19 B
+by_trace
+  0b9f…11 → [0b9f…11, 3d2a…, 7c1e…a4, 9e44…]
+roots
+  research-agent → [(02:51:10, a81c…), (02:14:00, 0b9f…11), (02:09:51, 55f0…)]    newest first
+seen
+  (7c1e…a4, post, 91fa…), (7c1e…a4, patch, c03b…), …                              last 24 h
+bytes = 1.3 GB of 2 GB budget
+```
+Readers take a short read lock, copy out headers, and release it; only the writer takes the write lock.
 
 **Cursor**: base64 of `{start_time, run_id, filter_hash}`.
 
@@ -177,7 +300,8 @@ JSON keeps the log debuggable. A binary encoding can replace it behind the same 
 | Memory budget reached | new runs rejected with `capacity`; updates to existing runs still accepted |
 | Disk full / fsync error | the writer stops confirming; requests get `503`; health shows the error; nothing confirmed is lost |
 | Kill mid-write | the unconfirmed tail is truncated on replay |
-| Slow browser | its tail stream is dropped; it reconnects and refetches |
+| Slow browser | it gets `resync` and reloads its view; the writer never waits (§4.3) |
+| Writer queue full (> 10,000 events in flight) | `503 busy`; the SDK retries; nothing is half-accepted |
 | Unsupported upload format (multipart) | `415` with "supported from a later version" |
 
 ## 9. How M0 is proven (tests)
@@ -210,3 +334,6 @@ JSON keeps the log debuggable. A binary encoding can replace it behind the same 
 2. **Memory budget default**: 2 GB / 500k runs. *Proposed as is; configurable with `--max-memory`.*
 3. **UI build**: the Node build runs from `cargo build` through a build script (one command), or is prebuilt and
    committed (no Node needed to build Rust). *Proposed: build script; CI caches it.*
+4. **Restart target**: the spec says "ready within 10 s at the capacity limit", but replaying a full WAL could take
+   5–20 s. Options: (a) correct the target to 30 s and measure it; (b) lower the default budget to ~1 GB; (c) add
+   store snapshots in M0 (replaced by M1's flush). *Proposed: (a).*

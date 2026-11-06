@@ -21,7 +21,7 @@ This is a subset of the [master contract](../../000-tracedb-master-plan/contract
 | `GET /api/runs/{run_id}?include=inputs,outputs,events` | `Run` |
 | `GET /api/roots?project=&status=&cursor=&limit=` | `{runs: [RunHeader], next_cursor?}` newest first, `limit ≤ 200` |
 | `GET /api/projects` | `[{name, runs}]` |
-| `GET /api/tail?project=` | SSE: `event: run` with a `RunHeader`, coalesced every 100 ms |
+| `GET /api/tail?project=` or `?trace=` | SSE: `hello {server_seq}` first, then `runs [RunHeader…]` (newest version per run, ≤ 10/s), `resync {}` when the tab must reload (design §4.3) |
 | `GET /healthz` | `{ok, wal_ok, runs, memory_bytes, capacity_bytes}` |
 
 ## UI
