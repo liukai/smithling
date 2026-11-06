@@ -5,7 +5,7 @@ This is a subset of the [master contract](../../000-tracedb-master-plan/contract
 ## Ingest
 | Method + path | Notes |
 |---|---|
-| `GET /info` | `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}` |
+| `GET /info` | `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, scale_up_qsize_trigger: 200, scale_up_nthreads_limit: 32, scale_down_nempty_trigger: 4, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`. **All `batch_ingest_config` keys are required**: the SDK reads them without defaults, and a missing one crashes its upload thread (found by T030) |
 | `POST /runs/batch` | `{post: [Run], patch: [Run]}` → `202 {accepted, rejected: [{id, reason}]}` |
 | `POST /runs` | one Run → `202` |
 | `PATCH /runs/{run_id}` | partial Run → `202` |

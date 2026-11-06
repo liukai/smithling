@@ -1,0 +1,86 @@
+[
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "LangGraph",
+    "parent_run_id": null,
+    "project": "research-agent",
+    "run_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f",
+    "run_type": "chain",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "plan",
+    "parent_run_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5834-71e1-b15d-c1a8e13effda",
+    "run_type": "chain",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "search",
+    "parent_run_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5835-7091-9258-027bac2ccbe0",
+    "run_type": "chain",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "fetch_url",
+    "parent_run_id": "01a1af9d-5835-7091-9258-027bac2ccbe0",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5836-7410-84f3-223cdd5a1ee5",
+    "run_type": "tool",
+    "status": "error",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "web_search",
+    "parent_run_id": "01a1af9d-5835-7091-9258-027bac2ccbe0",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5836-7593-878c-d02c7a395d59",
+    "run_type": "tool",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "summarize",
+    "parent_run_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5836-7e90-987d-a2e38244dd01",
+    "run_type": "chain",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  },
+  {
+    "address": null,
+    "has_inputs": true,
+    "has_outputs": true,
+    "name": "FakeListChatModel",
+    "parent_run_id": "01a1af9d-5836-7e90-987d-a2e38244dd01",
+    "project": "research-agent",
+    "run_id": "01a1af9d-5e18-7093-a3b8-6537d0e9a92c",
+    "run_type": "llm",
+    "status": "ok",
+    "trace_id": "01a1af9d-57fb-76c2-9c70-f39bbd2d662f"
+  }
+]

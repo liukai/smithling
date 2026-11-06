@@ -141,6 +141,7 @@ Events for a run are applied in `event_seq` order (= arrival order, since one wr
 | Reason code | When |
 |---|---|
 | `missing_field` | `post` without `id`, `trace_id`, `dotted_order`, `name`, `run_type` or `start_time`; `patch` without `id`, `trace_id` or `dotted_order` |
+| `invalid_field` | a field has the wrong JSON type (e.g. `tags` not an array of strings, `extra` not an object) |
 | `invalid_uuid` | an id isn't a UUID |
 | `invalid_timestamp` | a time can't be parsed |
 | `invalid_dotted_order` | the format or segment checks in §3.7 fail |

@@ -70,10 +70,10 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 - [X] T025 [P] Integration test in `crates/ingest/tests/writer.rs`: concurrent `accept` calls get confirmations only after fsync; duplicate batches counted once; capacity and identity-conflict rejections reported per item
 
 ### Serving skeleton (`crates/tracedb`)
-- [ ] T026 Implement the CLI in `crates/tracedb/src/cli.rs` (clap): `serve --data ./.tracedb --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
-- [ ] T027 Implement the server in `crates/tracedb/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
-- [ ] T028 [P] Serve the embedded UI in `crates/tracedb/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
-- [ ] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
+- [X] T026 Implement the CLI in `crates/tracedb/src/cli.rs` (clap): `serve --data ./.tracedb --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
+- [X] T027 Implement the server in `crates/tracedb/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
+- [X] T028 [P] Serve the embedded UI in `crates/tracedb/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
+- [X] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
 
 **Checkpoint**: `tracedb serve` starts, replays its WAL, accepts native events, and `/healthz` reports run count.
 
@@ -85,9 +85,9 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 model; T067–T069 land with the HTTP layer in PR3.
 
 - [X] T066 Add `address` to the model: `RunFields.address: Option<String>`, `Run.address`, `RunHeader.address` in `crates/model/src/run.rs` and `crates/model/src/views.rs`; validation "≤ 512 chars" → `too_large` in `crates/model/src/validate.rs`; immutable once set (`identity_conflict` if a later event differs) in `crates/model/src/merge.rs`; tests in `crates/model/tests/merge.rs` and `crates/model/tests/validate.rs`
-- [ ] T067 Map overload and storage errors to HTTP in `crates/tracedb/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/tracedb/tests/status_codes.rs`
-- [ ] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
-- [ ] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
+- [X] T067 Map overload and storage errors to HTTP in `crates/tracedb/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/tracedb/tests/status_codes.rs`
+- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
+- [X] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
 
 ---
 
@@ -99,14 +99,14 @@ model; T067–T069 land with the HTTP layer in PR3.
 and see its runs appear within 1 s and update when they finish.
 
 ### Tests for User Story 1
-- [ ] T030 [P] [US1] Write `scripts/record-sdk-fixtures.py`: runs a LangGraph example agent against a recording HTTP endpoint, once with `langsmith==0.14.17` and once with `langsmith==0.8.18`, and writes each request (method, path, headers, body) to `tests/fixtures/sdk-<version>/requests.jsonl` plus the expected merged runs to `tests/fixtures/sdk-<version>/expected-runs.json`; include one run sent with `LANGSMITH_AGENT_ID`/`LANGSMITH_AGENT_ENVIRONMENT` and no project; commit the recorded fixtures
-- [ ] T031 [P] [US1] Contract test `crates/tracedb/tests/contract.rs`: replay `tests/fixtures/sdk-*/requests.jsonl` (0.14.17 and 0.8.18) against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
+- [X] T030 [P] [US1] Write `scripts/record-sdk-fixtures.py`: runs a LangGraph example agent against a recording HTTP endpoint, once with `langsmith==0.14.17` and once with `langsmith==0.8.18`, and writes each request (method, path, headers, body) to `tests/fixtures/sdk-<version>/requests.jsonl` plus the expected merged runs to `tests/fixtures/sdk-<version>/expected-runs.json`; include one run sent with `LANGSMITH_AGENT_ID`/`LANGSMITH_AGENT_ENVIRONMENT` and no project; commit the recorded fixtures
+- [X] T031 [P] [US1] Contract test `crates/tracedb/tests/contract.rs`: replay `tests/fixtures/sdk-*/requests.jsonl` (0.14.17 and 0.8.18) against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
 - [ ] T032 [P] [US1] E2E test `crates/tracedb/tests/e2e_tail.rs`: subscribe to `/api/tail?project=p`, upload 1,000 events at a steady rate, assert p99 confirm→received < 1 s (SC-02) and that a burst of 1,000 updates to one run yields ≤ 10 messages/s
 - [ ] T033 [P] [US1] API test `crates/tracedb/tests/roots.rs`: `/api/roots` newest first, cursor paging without repeats while new runs arrive, project and status filters, `limit ≤ 200`
 
 ### Implementation for User Story 1
-- [ ] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
-- [ ] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}`; accept and ignore API-key headers
+- [X] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
+- [X] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}`; accept and ignore API-key headers
 - [ ] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
 - [ ] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/tracedb/src/routes/api.rs`
 - [ ] T038 [US1] Implement the per-tab tail task in `crates/tracedb/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s

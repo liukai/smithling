@@ -20,6 +20,8 @@ pub const MAX_ADDRESS_CHARS: usize = 512;
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     MissingField,
+    /// A field has the wrong JSON type (e.g. `tags` not an array of strings).
+    InvalidField,
     InvalidUuid,
     InvalidTimestamp,
     InvalidDottedOrder,
