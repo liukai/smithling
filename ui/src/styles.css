@@ -1,0 +1,27 @@
+:root {
+  --bg: #fbfbfa; --fg: #1d1d1f; --muted: #6e6e73; --line: #e4e4e2; --row: #ffffff; --hover: #f2f4f8;
+  --ok: #1f8a4c; --err: #c4302b; --run: #b26b00; --accent: #3355dd;
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg);
+}
+body { margin: 0; }
+header { display: flex; gap: 12px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fff; position: sticky; top: 0; z-index: 2; }
+.brand { font-weight: 700; font-size: 15px; color: var(--fg); text-decoration: none; }
+main { padding: 12px 16px; }
+.muted { color: var(--muted); }
+.toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 10px; }
+.toolbar select { font: inherit; padding: 2px 4px; }
+.live { margin-left: auto; font-size: 12px; }
+.live.on { color: var(--ok); } .live.off { color: var(--muted); }
+table.runs { width: 100%; border-collapse: collapse; background: var(--row); border: 1px solid var(--line); }
+table.runs th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.runs td { padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.runs tbody tr { cursor: pointer; } table.runs tbody tr:hover { background: var(--hover); }
+td.name { font-weight: 500; }
+.status { font-size: 12px; font-weight: 600; } .status-ok { color: var(--ok); } .status-error { color: var(--err); } .status-running { color: var(--run); }
+.tag { display: inline-block; background: #eef0f5; border-radius: 3px; padding: 0 5px; margin-right: 4px; font-size: 11px; }
+.pill { position: sticky; top: 50px; display: block; margin: 0 auto 8px; border: 0; border-radius: 12px; padding: 4px 12px; background: var(--accent); color: #fff; cursor: pointer; }
+.older { margin-top: 10px; font: inherit; padding: 4px 10px; cursor: pointer; }
+.error-banner { background: #fdecea; color: var(--err); padding: 6px 10px; margin-bottom: 8px; border-radius: 4px; }
+.empty { max-width: 640px; margin: 40px auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 16px 24px; }
+.empty pre { background: #f5f5f4; padding: 10px; border-radius: 4px; overflow-x: auto; }
+code { background: #f0f0ee; padding: 0 4px; border-radius: 3px; }

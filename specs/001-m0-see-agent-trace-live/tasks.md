@@ -110,10 +110,10 @@ and see its runs appear within 1 s and update when they finish.
 - [X] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
 - [X] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/tracedb/src/routes/api.rs`
 - [X] T038 [US1] Implement the per-tab tail task in `crates/tracedb/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
-- [ ] T039 [P] [US1] UI API client and live stream in `ui/src/api.ts` and `ui/src/live.ts`: fetch helpers; EventSource wrapper that waits for `hello` before loading, applies `runs` by `last_seq`, reloads on `resync`, reconnects automatically
-- [ ] T040 [US1] UI runs list in `ui/src/RunsList.tsx`: columns status, name, start, latency, tokens, tags; project and status pickers; `older ▸` paging; new roots on top when scrolled to the top, otherwise a "N new runs" pill; `● live` indicator; state in the URL query
-- [ ] T041 [P] [US1] UI empty state in `ui/src/EmptyState.tsx`: shows `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070` setup and a `tracedb seed` hint
-- [ ] T042 [US1] App shell and routing in `ui/src/App.tsx`: `/` → runs list, `/trace/:id` → trace view placeholder
+- [X] T039 [P] [US1] UI API client and live stream in `ui/src/api.ts` and `ui/src/live.ts`: fetch helpers; EventSource wrapper that waits for `hello` before loading, applies `runs` by `last_seq`, reloads on `resync`, reconnects automatically
+- [X] T040 [US1] UI runs list in `ui/src/RunsList.tsx`: columns status, name, start, latency, tokens, tags; project and status pickers; `older ▸` paging; new roots on top when scrolled to the top, otherwise a "N new runs" pill; `● live` indicator; state in the URL query
+- [X] T041 [P] [US1] UI empty state in `ui/src/EmptyState.tsx`: shows `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070` setup and a `tracedb seed` hint
+- [X] T042 [US1] App shell and routing in `ui/src/App.tsx`: `/` → runs list, `/trace/:id` → trace view placeholder
 
 **Checkpoint (demo)**: the LangGraph example agent streams into the runs list; a long root flips `running` → `ok`.
 
