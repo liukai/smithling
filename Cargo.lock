@@ -3905,6 +3905,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracedb-model",
+ "tracedb-storage",
  "tracing",
  "uuid",
 ]

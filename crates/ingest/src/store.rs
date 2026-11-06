@@ -1,5 +1,6 @@
-//! The run store: every run, merged, in memory, plus the indexes the M1 reads need.
-//! Mutated only by the writer; never persisted (it is rebuilt from the WAL on start).
+//! A memtable: merged runs for a range of events, in memory, plus the indexes reads need.
+//! The active one is mutated only by the writer; a frozen one is immutable (shared as `Arc`) until the
+//! flusher has written it to files. Memtables are never persisted themselves: the WAL rebuilds them.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
@@ -38,6 +39,8 @@ impl From<RootKey> for IndexKey {
 pub struct Change {
     pub kind: ChangeKind,
     pub header: Arc<RunHeader>,
+    /// The event created this memtable's first state for the run.
+    pub created: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,6 +58,9 @@ pub struct RunStore {
     children: HashMap<RunId, u32>,
     bytes: u64,
     last_seq: u64,
+    first_seq: u64,
+    /// When the oldest event in this memtable arrived (drives the flush-age trigger).
+    oldest: Option<Ts>,
 }
 
 impl RunStore {
@@ -78,6 +84,7 @@ impl RunStore {
             }
         };
         let st = slot.expect("merge fills the slot on success");
+        let created = before.is_none();
 
         match before {
             None => {
@@ -100,10 +107,14 @@ impl RunStore {
         }
         self.bytes += approx_bytes(&st);
         self.last_seq = self.last_seq.max(ev.event_seq);
+        if self.first_seq == 0 {
+            self.first_seq = ev.event_seq;
+        }
+        self.oldest = Some(self.oldest.map_or(ev.received_at, |o| o.min(ev.received_at)));
 
         let header = Arc::new(RunHeader::from_state(&st, self.child_count(id)));
         self.runs.insert(id, st);
-        Ok(Change { kind, header })
+        Ok(Change { kind, header, created })
     }
 
     pub fn get(&self, id: &RunId) -> Option<&RunState> {
@@ -128,6 +139,31 @@ impl RunStore {
 
     pub fn last_seq(&self) -> u64 {
         self.last_seq
+    }
+
+    /// The first event seq applied here (0 if empty).
+    pub fn first_seq(&self) -> u64 {
+        self.first_seq
+    }
+
+    pub fn oldest(&self) -> Option<Ts> {
+        self.oldest
+    }
+
+    pub fn states(&self) -> impl Iterator<Item = &RunState> {
+        self.runs.values()
+    }
+
+    pub fn trace_ids(&self) -> impl Iterator<Item = &TraceId> {
+        self.by_trace.keys()
+    }
+
+    pub fn trace_run_ids(&self, trace_id: &TraceId) -> &[RunId] {
+        self.by_trace.get(trace_id).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn child_count_of(&self, id: RunId) -> u32 {
+        self.child_count(id)
     }
 
     fn child_count(&self, id: RunId) -> u32 {

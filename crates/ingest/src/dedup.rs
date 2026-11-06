@@ -4,7 +4,8 @@ use std::collections::{HashMap, VecDeque};
 
 use tracedb_model::{Op, RunId, Ts};
 
-pub const DEFAULT_WINDOW_US: i64 = 24 * 3600 * 1_000_000;
+/// 10 minutes: SDK retries come within seconds; a longer window doesn't fit in memory at M2 scale (D-008).
+pub const DEFAULT_WINDOW_US: i64 = 10 * 60 * 1_000_000;
 
 pub type DedupKey = (RunId, Op, u64);
 

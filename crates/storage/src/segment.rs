@@ -761,3 +761,26 @@ pub fn field_stats(segment_id: &str, rows: &[Version]) -> Vec<FieldStat> {
     out.sort_by(|a, b| (&a.path, &a.ty).cmp(&(&b.path, &b.ty)));
     out
 }
+
+/// Run ids of rows marked `needs_merge` in a core file (read at startup to rebuild the multi-version set).
+/// Reads only the two columns it needs.
+pub fn needs_merge_ids(core: Bytes) -> Result<Vec<RunId>, StorageError> {
+    use datafusion::parquet::arrow::ProjectionMask;
+    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let b = ParquetRecordBatchReaderBuilder::try_new(core)?;
+    let mask = ProjectionMask::columns(b.parquet_schema(), ["run_id", "needs_merge"]);
+    let mut out = Vec::new();
+    for batch in b.with_projection(mask).build()? {
+        let batch = batch?;
+        let c = Cols { batch: &batch };
+        let (ids, needs) = (c.ids("run_id")?, c.bools("needs_merge")?);
+        for i in 0..batch.num_rows() {
+            if needs.value(i)
+                && let Some(id) = uuid_at(ids, i)
+            {
+                out.push(id);
+            }
+        }
+    }
+    Ok(out)
+}

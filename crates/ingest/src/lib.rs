@@ -1,55 +1,105 @@
-//! Ingest service: accepts events, makes them durable in the WAL, applies them to the run store,
-//! publishes changes, and only then confirms. Readers use [`Snapshot`]; they never write.
+//! Ingest service: accepts events, makes them durable in the WAL, applies them to the active memtable,
+//! publishes changes, and only then confirms. A full memtable is frozen and flushed to data files in the
+//! background (design §4.2). Readers get a consistent view of memtables and files; they never write.
 
 pub mod budget;
 pub mod dedup;
+pub mod flush;
 pub mod hub;
+pub mod memtable;
 pub mod store;
 pub mod wal;
 mod writer;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::{Semaphore, broadcast, oneshot};
 use tracedb_model::validate::json_size;
 use tracedb_model::{
-    Op, Reason, RunFields, RunHeader, RunId, RunView, Source, Status, TraceId, TraceView, Ts, validate,
+    Op, Reason, RunFields, RunHeader, RunId, RunState, RunView, Source, Status, TraceId, TraceView, Ts, merge_versions,
+    validate,
 };
+use tracedb_storage::{Metastore, StorageError, Store};
 
-pub use budget::Budget;
+pub use flush::FlushHealth;
+pub use memtable::{Mem, Version};
 pub use store::{Change, Include, RootKey};
 
 use crate::dedup::Dedup;
 use crate::hub::Hub;
 use crate::store::RunStore;
-use crate::wal::{ReplayStats, Wal, WalError};
+use crate::wal::{Wal, WalError};
 
 pub const DEFAULT_QUEUE_EVENTS: usize = 10_000;
+pub const DEFAULT_MEMTABLE_BYTES: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_FLUSH_AGE_US: i64 = 10 * 60 * 1_000_000;
+pub const DEFAULT_MAX_UNFLUSHED_WAL: u64 = 1024 * 1024 * 1024;
+
+/// When to freeze a memtable and when to tell clients to slow down (design §4.1, R-8, R-10).
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub memtable_bytes: u64,
+    pub flush_age_us: i64,
+    pub max_unflushed_wal: u64,
+    pub dedup_window_us: i64,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits {
+            memtable_bytes: DEFAULT_MEMTABLE_BYTES,
+            flush_age_us: DEFAULT_FLUSH_AGE_US,
+            max_unflushed_wal: DEFAULT_MAX_UNFLUSHED_WAL,
+            dedup_window_us: dedup::DEFAULT_WINDOW_US,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct IngestConfig {
     pub data_dir: PathBuf,
-    pub budget: Budget,
+    /// Data files: a folder or `s3://bucket/prefix`. Default: `<data>/data`.
+    pub storage: Option<String>,
+    /// Catalog: `sqlite://…` or `postgres://…`. Default: `sqlite://<data>/meta.sqlite`.
+    pub metastore: Option<String>,
+    pub limits: Limits,
     pub queue_events: usize,
     pub wal_roll_bytes: u64,
     pub hub_capacity: usize,
-    pub dedup_window_us: i64,
+    /// Tests only: delay every flush by this much.
+    pub test_flush_delay: Option<Duration>,
 }
 
 impl IngestConfig {
     pub fn new(data_dir: impl Into<PathBuf>) -> IngestConfig {
         IngestConfig {
             data_dir: data_dir.into(),
-            budget: Budget::default(),
+            storage: None,
+            metastore: None,
+            limits: Limits::default(),
             queue_events: DEFAULT_QUEUE_EVENTS,
             wal_roll_bytes: wal::DEFAULT_ROLL_BYTES,
             hub_capacity: hub::DEFAULT_CAPACITY,
-            dedup_window_us: dedup::DEFAULT_WINDOW_US,
+            test_flush_delay: None,
         }
+    }
+
+    pub fn storage_spec(&self) -> String {
+        self.storage
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("data").display().to_string())
+    }
+
+    pub fn metastore_url(&self) -> String {
+        self.metastore
+            .clone()
+            .unwrap_or_else(|| format!("sqlite://{}", self.data_dir.join("meta.sqlite").display()))
     }
 }
 
@@ -77,10 +127,8 @@ pub struct AcceptResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AcceptError {
-    #[error("too many events in flight; retry shortly")]
+    #[error("tracedb is busy; retry shortly")]
     Busy,
-    #[error("memory budget reached; new runs are refused until M2 adds disk storage")]
-    Capacity,
     #[error("storage error: {0}")]
     Storage(String),
     #[error("ingest is shut down")]
@@ -91,32 +139,113 @@ pub enum AcceptError {
 pub enum OpenError {
     #[error(transparent)]
     Wal(#[from] WalError),
-    #[error("could not start the writer thread: {0}")]
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OpenStats {
     pub replayed_events: u64,
+    /// Events already in data files, skipped by replay (still used to rebuild the dedup window).
+    pub skipped_flushed: u64,
     pub replay_rejected: u64,
     pub wal_files: usize,
     pub truncated_bytes: u64,
     pub runs: usize,
+    pub segments: usize,
+    pub orphans_removed: usize,
+    pub multi_version_runs: usize,
+    pub flushed_seq: u64,
     pub replay_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Health {
     pub ok: bool,
     pub wal_ok: bool,
+    pub flush_ok: bool,
     pub error: Option<String>,
+    pub flush_error: Option<String>,
+    /// Runs in the active and frozen memtables.
     pub runs: usize,
-    pub memory_bytes: u64,
-    pub capacity_bytes: u64,
-    pub max_runs: usize,
+    pub memtable_bytes: u64,
+    pub frozen: bool,
+    pub unflushed_wal_bytes: u64,
+    pub segments: usize,
+    pub flushed_seq: u64,
+    pub flushes: u64,
+    pub last_flush_at: Option<Ts>,
 }
 
-/// Read-only access to the run store, for the query service and live tail.
+/// Shared counters between the writer and the flusher.
+#[derive(Debug, Default)]
+pub struct Counters {
+    pub unflushed_wal: AtomicU64,
+    pub flushed_seq: AtomicU64,
+}
+
+/// Storage handles plus a small runtime of their own, so sync code (the flusher, `open`) can wait on
+/// async storage calls from any thread.
+pub struct Storage {
+    pub store: Store,
+    pub meta: Metastore,
+    rt: StorageRuntime,
+}
+
+struct StorageRuntime(Option<tokio::runtime::Runtime>);
+
+impl Drop for StorageRuntime {
+    fn drop(&mut self) {
+        // Allowed from inside async code, unlike dropping a runtime.
+        if let Some(rt) = self.0.take() {
+            rt.shutdown_background();
+        }
+    }
+}
+
+impl Storage {
+    pub fn open(cfg: &IngestConfig) -> Result<Storage, StorageError> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("tracedb-storage")
+            .enable_all()
+            .build()?;
+        let store = Store::open(&cfg.storage_spec())?;
+        let url = cfg.metastore_url();
+        let meta = block_on(&rt, async move { Metastore::open(&url).await })?;
+        Ok(Storage {
+            store,
+            meta,
+            rt: StorageRuntime(Some(rt)),
+        })
+    }
+
+    /// Runs `fut` on the storage runtime and waits for it. Safe to call from any thread, including from
+    /// inside another runtime (it only blocks the calling thread).
+    pub fn block<F>(&self, fut: F) -> F::Output
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        block_on(self.rt.0.as_ref().expect("storage runtime is running"), fut)
+    }
+}
+
+fn block_on<F>(rt: &tokio::runtime::Runtime, fut: F) -> F::Output
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.recv().expect("storage task finished")
+}
+
+/// Read-only access to the fresh data (active + frozen memtables), for the query service and live tail.
 pub trait Snapshot: Send + Sync {
     fn run(&self, id: RunId, include: Include) -> Option<RunView>;
     fn trace(&self, trace_id: TraceId) -> Option<TraceView>;
@@ -132,15 +261,58 @@ pub trait Snapshot: Send + Sync {
 }
 
 #[derive(Clone)]
-struct StoreReader(Arc<RwLock<RunStore>>);
+struct MemReader(Arc<RwLock<Mem>>);
 
-impl Snapshot for StoreReader {
+/// The newest merged state of a run across the frozen and active memtables.
+fn fresh_state(mem: &Mem, id: &RunId) -> Option<RunState> {
+    let a = mem.active.get(id).cloned();
+    let f = mem.frozen.as_ref().and_then(|f| f.get(id)).cloned();
+    match (f, a) {
+        (Some(f), Some(a)) => merge_versions(vec![f, a]),
+        (f, a) => a.or(f),
+    }
+}
+
+fn child_count(mem: &Mem, id: RunId) -> u32 {
+    mem.active.child_count_of(id) + mem.frozen.as_ref().map_or(0, |f| f.child_count_of(id))
+}
+
+impl Snapshot for MemReader {
     fn run(&self, id: RunId, include: Include) -> Option<RunView> {
-        self.0.read().unwrap().run(id, include)
+        let mem = self.0.read().unwrap();
+        let st = fresh_state(&mem, &id)?;
+        Some(RunView {
+            header: RunHeader::from_state(&st, child_count(&mem, id)),
+            inputs: include.inputs.then(|| st.run.inputs.clone()).flatten(),
+            outputs: include.outputs.then(|| st.run.outputs.clone()).flatten(),
+            events: include.events.then(|| st.run.events.clone()).flatten(),
+        })
     }
+
     fn trace(&self, trace_id: TraceId) -> Option<TraceView> {
-        self.0.read().unwrap().trace(trace_id)
+        let mem = self.0.read().unwrap();
+        let mut ids: Vec<RunId> = mem.active.trace_run_ids(&trace_id).to_vec();
+        if let Some(f) = &mem.frozen {
+            ids.extend_from_slice(f.trace_run_ids(&trace_id));
+        }
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            return None;
+        }
+        let mut runs: Vec<RunHeader> = ids
+            .iter()
+            .filter_map(|id| fresh_state(&mem, id).map(|st| RunHeader::from_state(&st, child_count(&mem, *id))))
+            .collect();
+        runs.sort_by(|a, b| a.dotted_order.cmp(&b.dotted_order));
+        Some(TraceView {
+            root: runs.iter().find(|r| r.is_root).cloned(),
+            run_count: runs.len(),
+            has_running: runs.iter().any(|r| r.status == Status::Running),
+            runs,
+        })
     }
+
     fn roots(
         &self,
         project: Option<&str>,
@@ -148,13 +320,50 @@ impl Snapshot for StoreReader {
         after: Option<RootKey>,
         limit: usize,
     ) -> (Vec<RunHeader>, Option<RootKey>) {
-        self.0.read().unwrap().roots(project, status, after, limit)
+        let mem = self.0.read().unwrap();
+        // Candidates from both memtables; a run in both is merged, then filtered and ordered again.
+        let mut cands: Vec<RunHeader> = mem.active.roots(project, None, after, usize::MAX / 2).0;
+        if let Some(f) = &mem.frozen {
+            cands.extend(f.roots(project, None, after, usize::MAX / 2).0);
+        }
+        let mut seen = HashSet::new();
+        let mut rows: Vec<(RootKey, RunHeader)> = cands
+            .into_iter()
+            .filter(|h| seen.insert(h.run_id))
+            .filter_map(|h| fresh_state(&mem, &h.run_id))
+            .filter(|st| st.is_listed_root() && status.is_none_or(|s| st.run.status == s))
+            .filter_map(|st| {
+                let key = RootKey {
+                    start_time: st.run.start_time?,
+                    run_id: st.run.run_id,
+                };
+                Some((key, RunHeader::from_state(&st, child_count(&mem, st.run.run_id))))
+            })
+            .collect();
+        rows.sort_by_key(|r| (std::cmp::Reverse(r.0.start_time), r.0.run_id));
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        let next = if more { rows.last().map(|r| r.0) } else { None };
+        (rows.into_iter().map(|r| r.1).collect(), next)
     }
+
     fn projects(&self) -> Vec<(String, usize)> {
-        self.0.read().unwrap().projects()
+        let mem = self.0.read().unwrap();
+        let mut counts: std::collections::BTreeMap<String, usize> = mem.active.projects().into_iter().collect();
+        if let Some(f) = &mem.frozen {
+            for (p, n) in f.projects() {
+                *counts.entry(p).or_default() += n;
+            }
+        }
+        counts.into_iter().collect()
     }
+
     fn last_seq(&self) -> u64 {
-        self.0.read().unwrap().last_seq()
+        let mem = self.0.read().unwrap();
+        mem.active
+            .last_seq()
+            .max(mem.frozen.as_ref().map_or(0, |f| f.last_seq()))
+            .max(mem.version.flushed_seq)
     }
 }
 
@@ -163,14 +372,19 @@ struct Inner {
     thread: Mutex<Option<JoinHandle<()>>>,
     permits: Arc<Semaphore>,
     queue_events: usize,
-    store: Arc<RwLock<RunStore>>,
+    mem: Arc<RwLock<Mem>>,
+    mvset: Arc<RwLock<HashSet<RunId>>>,
     hub: Hub,
-    budget: Budget,
     health: Arc<Mutex<Option<String>>>,
+    flush_health: Arc<Mutex<FlushHealth>>,
+    counters: Arc<Counters>,
+    storage: Arc<Storage>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        // Stop the writer and wait for it; the flusher ends on its own once the writer is gone. Anything not
+        // yet flushed stays in the WAL and is replayed on the next start.
         self.tx.lock().unwrap().take();
         if let Some(t) = self.thread.lock().unwrap().take() {
             let _ = t.join();
@@ -184,43 +398,134 @@ pub struct Ingest {
 }
 
 impl Ingest {
-    /// Replays the WAL into a fresh run store, then starts the writer.
+    /// Opens storage and the catalog, removes orphan files, rebuilds the multi-version set, replays the WAL
+    /// past `flushed_seq` into the active memtable, then starts the writer and the flusher (design §4.6).
     pub fn open(cfg: IngestConfig) -> Result<(Ingest, OpenStats), OpenError> {
         let started = Instant::now();
-        let mut store = RunStore::new();
-        let mut dedup = Dedup::new(cfg.dedup_window_us);
+        let storage = Arc::new(Storage::open(&cfg)?);
+
+        let (store, meta) = (storage.store.clone(), storage.meta.clone());
+        let (flushed_seq, segments, field_stats, objects) = storage.block(async move {
+            Ok::<_, StorageError>((
+                meta.flushed_seq().await?,
+                meta.active_segments().await?,
+                meta.field_stats().await?,
+                store.list().await?,
+            ))
+        })?;
+
+        // Files written by a flush that crashed before its catalog commit were never registered.
+        let registered: HashSet<&str> = segments
+            .iter()
+            .flat_map(|s| [s.core_path.as_str(), s.payload_path.as_str()])
+            .collect();
+        let orphans: Vec<String> = objects
+            .into_iter()
+            .filter(|p| p.ends_with(".parquet") && !registered.contains(p.as_str()))
+            .collect();
+        let orphans_removed = orphans.len();
+        if !orphans.is_empty() {
+            let store = storage.store.clone();
+            storage.block(async move {
+                for o in orphans {
+                    tracing::warn!(file = %o, "removing an unregistered data file (left by a crash mid-flush)");
+                    store.delete(&o).await?;
+                }
+                Ok::<_, StorageError>(())
+            })?;
+        }
+
+        let mut mvset: HashSet<RunId> = HashSet::new();
+        for s in segments.iter().filter(|s| s.needs_merge_rows > 0) {
+            let (store, path) = (storage.store.clone(), s.core_path.clone());
+            let bytes = storage.block(async move { store.get(&path).await })?;
+            mvset.extend(tracedb_storage::segment::needs_merge_ids(bytes)?);
+        }
+
+        let mut active = RunStore::new();
+        let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
         let now = Ts::now();
-        let mut replay_rejected = 0;
-        let (wal, stats): (Wal, ReplayStats) = Wal::open(&cfg.data_dir.join("wal"), cfg.wal_roll_bytes, |ev| {
+        let (mut replay_rejected, mut skipped, mut unflushed) = (0, 0, 0u64);
+        let (wal, stats) = Wal::open(&cfg.data_dir.join("wal"), cfg.wal_roll_bytes, |ev| {
             if let Some(id) = ev.fields.id
                 && dedup.in_window(ev.received_at, now)
             {
                 dedup.insert((id, ev.op, ev.body_hash), ev.received_at);
             }
-            if store.apply(&ev).is_err() {
-                replay_rejected += 1;
+            if ev.event_seq <= flushed_seq {
+                skipped += 1;
+                return;
+            }
+            unflushed += json_size(&ev.fields) + 34;
+            match active.apply(&ev) {
+                Ok(c) if c.created && ev.op == Op::Patch => {
+                    mvset.insert(c.header.run_id);
+                }
+                Ok(_) => {}
+                Err(_) => replay_rejected += 1,
             }
         })?;
+        let version = Version {
+            id: 0,
+            segments: segments.iter().cloned().map(Arc::new).collect(),
+            field_stats: field_stats.into_iter().map(Arc::new).collect(),
+            flushed_seq,
+        };
         let open_stats = OpenStats {
-            replayed_events: stats.records,
+            replayed_events: stats.records - skipped,
+            skipped_flushed: skipped,
             replay_rejected,
             wal_files: stats.files,
             truncated_bytes: stats.truncated_bytes,
-            runs: store.len(),
+            runs: active.len(),
+            segments: segments.len(),
+            orphans_removed,
+            multi_version_runs: mvset.len(),
+            flushed_seq,
             replay_ms: started.elapsed().as_millis() as u64,
         };
 
-        let store = Arc::new(RwLock::new(store));
+        let mem = Arc::new(RwLock::new(Mem {
+            active,
+            frozen: None,
+            version: Arc::new(version),
+        }));
+        let mvset = Arc::new(RwLock::new(mvset));
+        let counters = Arc::new(Counters {
+            unflushed_wal: AtomicU64::new(unflushed),
+            flushed_seq: AtomicU64::new(flushed_seq),
+        });
+        let flush_health = Arc::new(Mutex::new(FlushHealth::default()));
         let hub = Hub::new(cfg.hub_capacity);
         let health = Arc::new(Mutex::new(None));
+
+        let (flush_tx, flush_rx) = mpsc::channel();
+        let flusher = flush::Flusher {
+            mem: mem.clone(),
+            mvset: mvset.clone(),
+            storage: storage.clone(),
+            counters: counters.clone(),
+            flush_health: flush_health.clone(),
+            wal_dir: cfg.data_dir.join("wal"),
+            dedup_window: Duration::from_micros(cfg.limits.dedup_window_us.max(0) as u64),
+            test_delay: cfg.test_flush_delay,
+        };
+        std::thread::Builder::new()
+            .name("tracedb-flusher".into())
+            .spawn(move || flusher.run(flush_rx))
+            .map_err(OpenError::Thread)?;
+
         let (tx, rx) = mpsc::channel();
         let shared = writer::Shared {
-            store: store.clone(),
+            mem: mem.clone(),
             hub: hub.clone(),
-            budget: cfg.budget,
             health: health.clone(),
+            mvset: mvset.clone(),
+            counters: counters.clone(),
+            limits: cfg.limits,
+            flush_tx,
         };
-        let last_seq = stats.last_seq;
+        let last_seq = stats.last_seq.max(flushed_seq);
         let thread = std::thread::Builder::new()
             .name("tracedb-writer".into())
             .spawn(move || writer::run(rx, wal, dedup, last_seq, shared))
@@ -231,10 +536,13 @@ impl Ingest {
             thread: Mutex::new(Some(thread)),
             permits: Arc::new(Semaphore::new(cfg.queue_events)),
             queue_events: cfg.queue_events,
-            store,
+            mem,
+            mvset,
             hub,
-            budget: cfg.budget,
             health,
+            flush_health,
+            counters,
+            storage,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
     }
@@ -290,8 +598,22 @@ impl Ingest {
         Ok(result)
     }
 
+    /// Fresh data only (active + frozen memtables); the query service adds files.
     pub fn snapshot(&self) -> Arc<dyn Snapshot> {
-        Arc::new(StoreReader(self.inner.store.clone()))
+        Arc::new(MemReader(self.inner.mem.clone()))
+    }
+
+    /// Memtables and the pinned file set, for the query service (design §4.3).
+    pub fn mem(&self) -> Arc<RwLock<Mem>> {
+        self.inner.mem.clone()
+    }
+
+    pub fn multi_version(&self) -> Arc<RwLock<HashSet<RunId>>> {
+        self.inner.mvset.clone()
+    }
+
+    pub fn storage(&self) -> Arc<Storage> {
+        self.inner.storage.clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Change> {
@@ -300,15 +622,22 @@ impl Ingest {
 
     pub fn health(&self) -> Health {
         let error = self.inner.health.lock().unwrap().clone();
-        let store = self.inner.store.read().unwrap();
+        let fh = self.inner.flush_health.lock().unwrap().clone();
+        let mem = self.inner.mem.read().unwrap();
         Health {
-            ok: error.is_none(),
+            ok: error.is_none() && fh.error.is_none(),
             wal_ok: error.is_none(),
+            flush_ok: fh.error.is_none(),
             error,
-            runs: store.len(),
-            memory_bytes: store.bytes(),
-            capacity_bytes: self.inner.budget.max_bytes,
-            max_runs: self.inner.budget.max_runs,
+            flush_error: fh.error,
+            runs: mem.active.len() + mem.frozen.as_ref().map_or(0, |f| f.len()),
+            memtable_bytes: mem.active.bytes(),
+            frozen: mem.frozen.is_some(),
+            unflushed_wal_bytes: self.inner.counters.unflushed_wal.load(Ordering::Relaxed),
+            segments: mem.version.segments.len(),
+            flushed_seq: mem.version.flushed_seq,
+            flushes: fh.flushes,
+            last_flush_at: fh.last_flush_at,
         }
     }
 }

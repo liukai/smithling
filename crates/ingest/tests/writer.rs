@@ -6,8 +6,8 @@ use std::path::Path;
 use common::*;
 use tracedb_ingest::store::Include;
 use tracedb_ingest::wal::{DEFAULT_ROLL_BYTES, Wal};
-use tracedb_ingest::{AcceptError, Budget, Ingest, IngestConfig};
-use tracedb_model::{Reason, Status};
+use tracedb_ingest::{AcceptError, Ingest, IngestConfig};
+use tracedb_model::Reason;
 
 fn open(dir: &Path) -> Ingest {
     Ingest::open(IngestConfig::new(dir)).unwrap().0
@@ -101,45 +101,6 @@ async fn bad_items_are_rejected_one_by_one() {
     reasons.sort_by_key(|r| format!("{r:?}"));
     assert_eq!(reasons, vec![Reason::IdentityConflict, Reason::MissingField]);
     assert_eq!(ingest.health().runs, 2);
-}
-
-#[tokio::test]
-async fn full_budget_refuses_new_runs_but_accepts_updates() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = IngestConfig::new(dir.path());
-    cfg.budget = Budget {
-        max_bytes: u64::MAX,
-        max_runs: 2,
-    };
-    let (ingest, _) = Ingest::open(cfg).unwrap();
-    let (a, b) = (uuid(1), uuid(2));
-    ingest
-        .accept(vec![
-            post(root(a, "2026-11-05T02:00:00Z", "a")),
-            post(root(b, "2026-11-05T02:00:00Z", "b")),
-        ])
-        .await
-        .unwrap();
-
-    let mut end = root(a, "2026-11-05T02:00:00Z", "a");
-    end.end_time = Some(tracedb_model::Ts::parse("2026-11-05T02:05:00Z").unwrap());
-    let err = ingest
-        .accept(vec![
-            post(root(uuid(3), "2026-11-05T02:00:00Z", "c")),
-            patch(end.clone()),
-        ])
-        .await
-        .unwrap_err();
-    assert_eq!(err, AcceptError::Capacity);
-    let snap = ingest.snapshot();
-    assert_eq!(
-        snap.run(a, Include::default()).unwrap().header.status,
-        Status::Running,
-        "nothing in a refused batch is applied"
-    );
-
-    assert_eq!(ingest.accept(vec![patch(end)]).await.unwrap().accepted, 1);
-    assert_eq!(snap.run(a, Include::default()).unwrap().header.status, Status::Ok);
 }
 
 #[tokio::test]

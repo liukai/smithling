@@ -4,8 +4,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use tracedb::{ServeConfig, serve};
-use tracedb_ingest::Budget;
-use tracedb_ingest::budget::{DEFAULT_MAX_RUNS, parse_bytes};
+use tracedb_ingest::Limits;
+use tracedb_ingest::budget::parse_bytes;
 
 #[derive(Parser)]
 #[command(name = "tracedb", version, about = "Local trace store and viewer for AI agents")]
@@ -24,11 +24,27 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         bind: IpAddr,
-        /// Memory budget for runs held in memory (M1 keeps everything in memory), e.g. 2GB.
-        #[arg(long, default_value = "2GB", value_parser = parse_size)]
-        max_memory: u64,
-        #[arg(long, default_value_t = DEFAULT_MAX_RUNS)]
-        max_runs: usize,
+        /// Where data files go: a folder or `s3://bucket/prefix` (S3 settings from `AWS_*`). Default: <data>/data.
+        #[arg(long, env = "TRACEDB_STORAGE")]
+        storage: Option<String>,
+        /// The catalog: `sqlite://path` or `postgres://…` (password from the URL or `PGPASSWORD`, never logged).
+        #[arg(long, env = "TRACEDB_METASTORE")]
+        metastore: Option<String>,
+        /// Freeze and flush the in-memory batch at this size.
+        #[arg(long, default_value = "128MB", value_parser = parse_size)]
+        memtable: u64,
+        /// …or when its oldest event is this old.
+        #[arg(long, default_value = "10m", value_parser = parse_duration_us)]
+        flush_age: i64,
+        /// How long an identical retry is recognized as a duplicate.
+        #[arg(long, default_value = "10m", value_parser = parse_duration_us)]
+        dedup_window: i64,
+        /// M1 memory budget; no longer applies (data moves to disk).
+        #[arg(long, hide = true)]
+        max_memory: Option<String>,
+        /// M1 run limit; no longer applies.
+        #[arg(long, hide = true)]
+        max_runs: Option<String>,
         /// Serve UI files from this folder instead of the built-in copy (for UI development).
         #[arg(long, env = "TRACEDB_UI_DIR")]
         ui_dir: Option<PathBuf>,
@@ -45,6 +61,21 @@ enum Cmd {
         #[arg(long)]
         no_delay: bool,
     },
+}
+
+/// `10m`, `30s`, `2h` → microseconds.
+fn parse_duration_us(s: &str) -> Result<i64, String> {
+    let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: i64 = n
+        .parse()
+        .map_err(|_| format!("invalid duration {s:?}; use e.g. 30s, 10m or 2h"))?;
+    let us = match unit {
+        "s" => 1_000_000,
+        "m" => 60_000_000,
+        "h" => 3_600_000_000,
+        _ => return Err(format!("invalid duration {s:?}; use e.g. 30s, 10m or 2h")),
+    };
+    Ok(n * us)
 }
 
 fn parse_size(s: &str) -> Result<u64, String> {
@@ -64,16 +95,28 @@ async fn main() -> ExitCode {
             data,
             port,
             bind,
+            storage,
+            metastore,
+            memtable,
+            flush_age,
+            dedup_window,
             max_memory,
             max_runs,
             ui_dir,
         } => {
+            if max_memory.is_some() || max_runs.is_some() {
+                eprintln!("tracedb: --max-memory and --max-runs no longer apply: data moves to disk (M2)");
+            }
             let cfg = ServeConfig {
                 data_dir: data,
                 addr: SocketAddr::new(bind, port),
-                budget: Budget {
-                    max_bytes: max_memory,
-                    max_runs,
+                storage,
+                metastore,
+                limits: Limits {
+                    memtable_bytes: memtable,
+                    flush_age_us: flush_age,
+                    dedup_window_us: dedup_window,
+                    ..Limits::default()
                 },
                 ui_dir,
             };

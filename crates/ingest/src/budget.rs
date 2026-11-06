@@ -1,28 +1,4 @@
-//! M1 memory budget: past it, batches that would add new runs are refused.
-
-pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-pub const DEFAULT_MAX_RUNS: usize = 500_000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Budget {
-    pub max_bytes: u64,
-    pub max_runs: usize,
-}
-
-impl Default for Budget {
-    fn default() -> Budget {
-        Budget {
-            max_bytes: DEFAULT_MAX_BYTES,
-            max_runs: DEFAULT_MAX_RUNS,
-        }
-    }
-}
-
-impl Budget {
-    pub fn is_full(&self, bytes: u64, runs: usize) -> bool {
-        bytes >= self.max_bytes || runs >= self.max_runs
-    }
-}
+//! Size parsing for command-line limits (`128MB`, `1GB`).
 
 /// Parses sizes like `2GB`, `512MB`, `1048576`.
 pub fn parse_bytes(s: &str) -> Option<u64> {

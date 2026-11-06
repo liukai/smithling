@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use tracedb_ingest::{Budget, Health, Ingest, IngestConfig, OpenStats};
+use tracedb_ingest::{Health, Ingest, IngestConfig, Limits, OpenStats};
 use tracedb_query::Query;
 
 pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
@@ -43,7 +43,11 @@ impl AppState {
 pub struct ServeConfig {
     pub data_dir: PathBuf,
     pub addr: SocketAddr,
-    pub budget: Budget,
+    /// Data files: a folder or `s3://bucket/prefix` (default `<data>/data`).
+    pub storage: Option<String>,
+    /// Catalog: `sqlite://…` or `postgres://…` (default `<data>/meta.sqlite`).
+    pub metastore: Option<String>,
+    pub limits: Limits,
     pub ui_dir: Option<PathBuf>,
 }
 
@@ -75,7 +79,9 @@ async fn healthz(State(st): State<AppState>) -> Json<Health> {
 /// Opens the data folder (replaying the WAL) before binding, so the port only opens when ready.
 pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     let mut icfg = IngestConfig::new(&cfg.data_dir);
-    icfg.budget = cfg.budget;
+    icfg.storage = cfg.storage.clone();
+    icfg.metastore = cfg.metastore.clone();
+    icfg.limits = cfg.limits;
     let (ingest, stats) = Ingest::open(icfg)?;
     Ok((AppState::new(ingest).with_ui_dir(cfg.ui_dir.clone()), stats))
 }
@@ -92,7 +98,10 @@ pub async fn serve(
     tracing::info!(
         data = %data_dir.display(),
         runs = stats.runs,
+        segments = stats.segments,
+        flushed_seq = stats.flushed_seq,
         replayed = stats.replayed_events,
+        orphans_removed = stats.orphans_removed,
         replay_ms = stats.replay_ms,
         truncated_bytes = stats.truncated_bytes,
         "data folder ready"

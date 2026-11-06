@@ -5,7 +5,7 @@ mod common;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tracedb::routes::errors::accept_error;
-use tracedb_ingest::{AcceptError, Budget};
+use tracedb_ingest::AcceptError;
 
 fn root(n: u32, project: &str) -> Value {
     let id = format!("00000000-0000-4000-8000-{n:012}");
@@ -19,7 +19,6 @@ fn root(n: u32, project: &str) -> Value {
 fn accept_errors_map_to_retryable_or_final_codes() {
     let cases = [
         (AcceptError::Busy, StatusCode::TOO_MANY_REQUESTS, Some("1")),
-        (AcceptError::Capacity, StatusCode::INSUFFICIENT_STORAGE, None),
         (
             AcceptError::Storage("disk full".into()),
             StatusCode::SERVICE_UNAVAILABLE,
@@ -35,33 +34,6 @@ fn accept_errors_map_to_retryable_or_final_codes() {
             "{err}"
         );
     }
-}
-
-#[tokio::test]
-async fn full_budget_is_507_and_nothing_applied() {
-    let server = common::start_with(|c| {
-        c.budget = Budget {
-            max_bytes: u64::MAX,
-            max_runs: 1,
-        }
-    })
-    .await;
-    let http = reqwest::Client::new();
-    let ok = http
-        .post(server.url("/runs/batch"))
-        .json(&json!({"post": [root(1, "p")]}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(ok.status(), 202);
-    let full = http
-        .post(server.url("/runs/batch"))
-        .json(&json!({"post": [root(2, "p")]}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(full.status(), 507);
-    assert_eq!(server.state.ingest.health().runs, 1);
 }
 
 #[tokio::test]

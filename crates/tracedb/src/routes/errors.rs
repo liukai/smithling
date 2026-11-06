@@ -23,7 +23,6 @@ fn with_retry_after(mut r: Response, secs: u32) -> Response {
 pub fn accept_error(e: &AcceptError) -> Response {
     match e {
         AcceptError::Busy => with_retry_after(error(StatusCode::TOO_MANY_REQUESTS, "busy", e.to_string()), 1),
-        AcceptError::Capacity => error(StatusCode::INSUFFICIENT_STORAGE, "capacity", e.to_string()),
         AcceptError::Storage(_) => {
             with_retry_after(error(StatusCode::SERVICE_UNAVAILABLE, "storage", e.to_string()), 5)
         }

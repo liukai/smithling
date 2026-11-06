@@ -65,6 +65,8 @@ pub struct Wal {
     /// Size of the current file including buffered bytes; decides when to roll.
     file_len: u64,
     roll_bytes: u64,
+    /// Bytes appended since this `Wal` was opened (for the unflushed-WAL limit).
+    appended: u64,
 }
 
 impl Wal {
@@ -120,6 +122,7 @@ impl Wal {
                 out,
                 file_len,
                 roll_bytes,
+                appended: 0,
             },
             stats,
         ))
@@ -134,6 +137,7 @@ impl Wal {
         }
         self.out.write_all(&rec)?;
         self.file_len += rec.len() as u64;
+        self.appended += rec.len() as u64;
         Ok(())
     }
 
@@ -145,6 +149,20 @@ impl Wal {
         Ok(())
     }
 
+    pub fn appended_bytes(&self) -> u64 {
+        self.appended
+    }
+
+    /// Starts a new file at `next_seq` (if the current one has records), so the files before it hold only
+    /// events `< next_seq`. Called when a memtable is frozen, so every file belongs to one memtable and can
+    /// be deleted whole once that memtable is flushed.
+    pub fn roll_at(&mut self, next_seq: u64) -> Result<(), WalError> {
+        if self.file_len > FILE_HEADER_LEN {
+            self.roll(next_seq)?;
+        }
+        Ok(())
+    }
+
     /// Syncs and closes the current file, then starts a new one named after the next record's seq.
     fn roll(&mut self, first_seq: u64) -> Result<(), WalError> {
         self.sync()?;
@@ -152,6 +170,32 @@ impl Wal {
         self.file_len = FILE_HEADER_LEN;
         Ok(())
     }
+}
+
+/// Deletes WAL files whose events are all `≤ flushed_seq` (they're in registered segments) and that were
+/// last written before `keep_since` (kept a while so a restart can rebuild the dedup window). The last file
+/// is never deleted. Returns how many files were removed.
+pub fn trim(dir: &Path, flushed_seq: u64, keep_since: std::time::SystemTime) -> io::Result<usize> {
+    let files = wal_files(dir)?;
+    let first = |p: &Path| -> Option<u64> { p.file_stem()?.to_str()?.parse().ok() };
+    let mut removed = 0;
+    for pair in files.windows(2) {
+        let (this, next) = (&pair[0], &pair[1]);
+        let Some(next_first) = first(next) else { continue };
+        // Every record in `this` is < next_first.
+        if next_first > flushed_seq + 1 {
+            break;
+        }
+        let modified = fs::metadata(this)?.modified()?;
+        if modified < keep_since {
+            fs::remove_file(this)?;
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        File::open(dir)?.sync_all()?;
+    }
+    Ok(removed)
 }
 
 fn file_name(first_seq: u64) -> String {
