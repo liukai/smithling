@@ -1,7 +1,7 @@
 # M1 code starter guide
 
 How to read the M1 code: the big picture, the critical parts, and one agent step traced through the code with
-line numbers. Line numbers are as of commit `767c604`; if they drift, search for the function name.
+line numbers. Line numbers are as of commit `3a3f290`; if they drift, search for the function name.
 
 For *why* it is built this way, see [design.md](design.md). This guide is about *where* it lives.
 
