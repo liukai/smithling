@@ -42,6 +42,15 @@ pub struct Change {
     pub header: Arc<RunHeader>,
     /// The event created this memtable's first state for the run.
     pub created: bool,
+    /// The run has (or may have) another version in the frozen memtable or files. Set by the writer.
+    pub elsewhere: bool,
+}
+
+impl Change {
+    /// The run first appeared with this change (no earlier version anywhere).
+    pub fn is_new(&self) -> bool {
+        self.created && !self.elsewhere
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,7 +127,12 @@ impl RunStore {
         let header = Arc::new(RunHeader::from_state(&st, self.child_count(id)));
         self.attrs.insert(id, promote(&st.run));
         self.runs.insert(id, st);
-        Ok(Change { kind, header, created })
+        Ok(Change {
+            kind,
+            header,
+            created,
+            elsewhere: false,
+        })
     }
 
     pub fn get(&self, id: &RunId) -> Option<&RunState> {

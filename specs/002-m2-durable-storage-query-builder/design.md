@@ -253,6 +253,9 @@ tail(Q):                                   # lives in the query service now (M2-
   ok, some child errored") work live without a second evaluator.
 - **Cheap.** Changed traces are almost always in the memtable; their files, if any, are found by the bloom filter.
 - **Bounded.** Per tab: at most one small query per 100 ms tick; remembers the last 5,000 sent run ids for `Left`.
+- **No repeats.** Without trace or tree conditions, a run unchanged since `Hello` matched when the tab loaded, so it
+  isn't resent; `Left` also covers runs the tab loaded itself (changed runs that existed at `Hello`). Filters
+  relative to now ("started over 5 min ago") are re-checked only when the trace changes.
 
 ### 4.6 Start and restart
 

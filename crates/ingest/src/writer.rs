@@ -225,7 +225,7 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
             let Ok(result) = &mut out.result else { continue };
             for ev in &out.events {
                 match mem.active.apply(ev) {
-                    Ok(change) => {
+                    Ok(mut change) => {
                         let id = change.header.run_id;
                         // A new state started by an update, or a run whose earlier part is frozen, has (or
                         // may have) another version elsewhere: reads must merge it (design §4.3).
@@ -233,6 +233,7 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
                             && (ev.op == Op::Patch || mem.frozen.as_ref().is_some_and(|f| f.contains(&id)))
                         {
                             mvset.insert(id);
+                            change.elsewhere = true;
                         }
                         result.accepted += 1;
                         changes.push(change);

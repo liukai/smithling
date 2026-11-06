@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod fields;
 pub mod pushdown;
 pub mod scan;
+pub mod tail;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -24,6 +25,7 @@ use xxhash_rust::xxh64::xxh64;
 pub use cursor::Key;
 pub use fields::{FieldInfo, Fields, TypeCount, ValueCount, Values};
 pub use scan::{Merged, ScanStats, Scope};
+pub use tail::TailMsg;
 
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 200;
@@ -234,6 +236,11 @@ impl Query {
 
     /// Runs one query: scope → scan → merge → filter → root/tree conditions → order → page.
     pub async fn query(&self, q: &QuerySpec) -> Result<Page, QueryError> {
+        self.select(q, q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
+            .await
+    }
+
+    async fn select(&self, q: &QuerySpec, limit: usize) -> Result<Page, QueryError> {
         let started = Instant::now();
         let now = Ts::now();
         let hash = q.hash();
@@ -241,7 +248,6 @@ impl Query {
             Some(c) => Some(cursor::decode(c, hash).ok_or(QueryError::BadCursor)?),
             None => None,
         };
-        let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let mut scope = self.scope(q, now);
         // Later pages only need runs at or before the cursor (ties are settled below).
         if let (Some(a), OrderBy::StartTime) = (after, q.order) {

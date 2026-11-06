@@ -116,6 +116,18 @@ async fn changes_are_published_before_confirmation() {
     let change = rx.try_recv().expect("published by the time accept returns");
     assert_eq!(change.header.run_id, t);
     assert_eq!(change.kind, tracedb_model::ChangeKind::NewRoot);
+    assert!(change.is_new());
+
+    let u = uuid(2);
+    ingest
+        .accept(vec![patch(root(u, "2026-11-05T02:00:00Z", "r"))])
+        .await
+        .unwrap();
+    let change = rx.try_recv().unwrap();
+    assert!(
+        !change.is_new(),
+        "a run first seen through an update may exist elsewhere"
+    );
 }
 
 #[tokio::test]

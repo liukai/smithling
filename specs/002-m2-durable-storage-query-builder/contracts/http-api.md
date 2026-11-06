@@ -72,13 +72,14 @@ Errors:
 
 ### Live views
 
-`GET /api/tail?q=<url-encoded query JSON>` (SSE). Also accepts M1's `?project=` and `?trace=`.
+`GET /api/tail?q=<url-encoded query JSON>` (SSE; `q` is the `POST /api/query` body). Also accepts M1's `?project=`
+and `?trace=`, alone or narrowing `q`.
 
 | Event | Data |
 |---|---|
 | `hello` | `{server_seq}`, first; the browser loads its view after it |
 | `runs` | `[RunHeader]`: runs that match now, newest version each (≤ 10 messages/s) |
-| `left` | `[run_id]`: runs sent earlier that no longer match |
+| `left` | `[run_id]`: runs that may be in the view (sent earlier, or there when it loaded) and no longer match; ids the view doesn't show can be ignored |
 | `resync` | `{}`: reload the view |
 
 ### Health

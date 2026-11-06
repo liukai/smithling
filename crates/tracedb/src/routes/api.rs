@@ -189,23 +189,26 @@ pub fn parse_status(s: &str) -> Option<&'static str> {
     ["running", "ok", "error"].into_iter().find(|v| *v == s)
 }
 
-/// M1's root list, answered as a query (`is_root`, optional status) so old clients keep working. Only roots
-/// whose start arrived are listed (M1 behaviour), as part of the filter so pages are never short.
+/// M1's runs list as a query: roots whose start arrived, as part of the filter so pages are never short.
+pub fn listed_roots() -> QuerySpec {
+    let known = |f| Expr::Cmp {
+        op: CmpOp::Neq,
+        path: FPath::Field(f),
+        value: Value::Null,
+    };
+    QuerySpec {
+        filter: Some(Expr::And(vec![known(Field::StartTime), known(Field::Name)])),
+        is_root: Some(true),
+        ..QuerySpec::default()
+    }
+}
+
+/// M1's root list, answered as a query (optional status) so old clients keep working.
 pub async fn roots(State(st): State<AppState>, Q(q): Q<RootsQs>) -> Response {
-    let listed = vec![
-        Expr::Cmp {
-            op: CmpOp::Neq,
-            path: FPath::Field(Field::StartTime),
-            value: Value::Null,
-        },
-        Expr::Cmp {
-            op: CmpOp::Neq,
-            path: FPath::Field(Field::Name),
-            value: Value::Null,
-        },
-    ];
-    let mut all = listed;
-    if let Some(s) = q.status.as_deref().filter(|s| !s.is_empty()) {
+    let mut spec = listed_roots();
+    if let Some(s) = q.status.as_deref().filter(|s| !s.is_empty())
+        && let Some(Expr::And(all)) = &mut spec.filter
+    {
         match parse_status(s) {
             Some(v) => all.push(Expr::Cmp {
                 op: CmpOp::Eq,
@@ -215,14 +218,9 @@ pub async fn roots(State(st): State<AppState>, Q(q): Q<RootsQs>) -> Response {
             None => return error(StatusCode::BAD_REQUEST, "bad_status", format!("unknown status {s:?}")),
         }
     }
-    let spec = QuerySpec {
-        project: q.project.filter(|p| !p.is_empty()),
-        filter: Some(Expr::And(all)),
-        is_root: Some(true),
-        limit: q.limit,
-        cursor: q.cursor,
-        ..QuerySpec::default()
-    };
+    spec.project = q.project.filter(|p| !p.is_empty());
+    spec.limit = q.limit;
+    spec.cursor = q.cursor;
     match st.query.query(&spec).await {
         Ok(page) => {
             let runs: Vec<_> = page.runs.into_iter().map(|r| r.header).collect();

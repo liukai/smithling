@@ -175,13 +175,13 @@ status → three chips; results match (spec Story 2).
 
 ### Tests for User Story 4
 
-- [ ] T059 [P] [US4] Live tests `crates/tracedb/tests/e2e_live.rs`: matching runs within 1 s, non-matching ignored; `left` when a run stops matching; quiet-failures live view gets the root when a child errors after the root finished; `resync` past 5,000 changed traces; M1 `?project=`/`?trace=` tails still work (reuse M1 `e2e_tail.rs` assertions)
+- [X] T059 [P] [US4] Live tests `crates/tracedb/tests/e2e_live.rs`: matching runs within 1 s, non-matching ignored; `left` when a run stops matching; quiet-failures live view gets the root when a child errors after the root finished; `resync` past 5,000 changed traces; M1 `?project=`/`?trace=` tails still work (reuse M1 `e2e_tail.rs` assertions) — M1 tails stay in `e2e_tail.rs` (unchanged, passing); also a bad `?q=` → 400; the quiet-failure case covers a root loaded before the view opened
 
 ### Implementation for User Story 4
 
-- [ ] T060 [US4] `query::tail(Query) -> Stream<TailMsg>` in `crates/query/src/tail.rs` per design §4.5: subscribe first, then `Hello{server_seq}`; collect changed `trace_id`s; first change after a quiet spell at once, then every 100 ms run `query(Q ∧ trace_id ∈ changed)`; emit `Runs`, `Left` (last 5,000 sent ids), `Resync` on lag or > 5,000 changed traces
-- [ ] T061 [US4] `Change` gains `trace_id` in `crates/ingest/src/hub.rs` / `crates/ingest/src/memtable.rs`
-- [ ] T062 [US4] Reduce `crates/tracedb/src/routes/tail.rs` to SSE framing of `TailMsg` (`hello`, `runs`, `left`, `resync`; 15 s keep-alive); parse `?q=` (URL-encoded query JSON) and M1 `?project=` / `?trace=` (M2-FR-26)
+- [X] T060 [US4] `query::tail(Query) -> Stream<TailMsg>` in `crates/query/src/tail.rs` per design §4.5: subscribe first, then `Hello{server_seq}`; collect changed `trace_id`s; first change after a quiet spell at once, then every 100 ms run `query(Q ∧ trace_id ∈ changed)`; emit `Runs`, `Left` (last 5,000 sent ids), `Resync` on lag or > 5,000 changed traces — runs unchanged since `Hello` are not resent unless the query has trace/tree conditions; `Left` = changed runs the tab may have loaded (not new since `Hello`) ∪ sent runs of changed traces, minus matches; changes keep draining while a query runs; a failed query sends `Resync` with backoff; `Sent` bookkeeping is property-tested; live headers carry `child_count = 0` like query pages
+- [X] T061 [US4] `Change` gains `trace_id` in `crates/ingest/src/hub.rs` / `crates/ingest/src/memtable.rs` — `Change.header` already carries `trace_id`, `run_id`, `last_seq`; `Change` gains `elsewhere` (set by the writer with the multi-version set) and `is_new()`, so `Left` skips runs new since `Hello` that were never sent
+- [X] T062 [US4] Reduce `crates/tracedb/src/routes/tail.rs` to SSE framing of `TailMsg` (`hello`, `runs`, `left`, `resync`; 15 s keep-alive); parse `?q=` (URL-encoded query JSON) and M1 `?project=` / `?trace=` (M2-FR-26) — `?q=` is the `POST /api/query` body as JSON; `?project=` maps to the same `listed_roots()` query as `/api/roots`, `?trace=` to `traces = {id}`; both also narrow `?q=`
 - [ ] T063 [US4] UI live toggle in `ui/src/live.ts` + `ui/src/views/Samples.tsx`: subscribe with the current query; mark `left` runs "no longer matching"; reload on `resync`
 
 **Checkpoint (demo)**: quickstart step 5.
