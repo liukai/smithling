@@ -32,6 +32,8 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05 (standing approval): **proceed through M1 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
 - 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted.
 - 2026-11-06: **Milestones numbered from 1**: M0–M4 renamed M1–M5 everywhere (docs, code comments, messages, phase folder `001-m1-…`, branch). Commit messages before this keep the old labels.
+- 2026-11-06: **Every phase ends with a code starter guide** (`starter-guide.md` in the phase folder): reading order, one run traced through the code with line-level links. Planning includes a pre-code version (Appendix A of the plan) with pseudo-flows.
+- 2026-11-06: **Diagrams read top to bottom**: prefer vertical (`flowchart TB`) charts with short labels and few nodes per chart; no wide horizontal chains.
 
 **STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
 M1 is **built** on branch `001-m1-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
@@ -41,14 +43,14 @@ screens covered by component tests), and the no-outbound + clean-container check
 
 **Blocked on**: nothing. Waiting on the user to look at the UI in a browser.
 
-**NEXT**: 1) User opens http://localhost:7070 after `tracedb seed` and the example agent, and reviews the screens. 2) Push to a remote so CI runs the no-outbound and container checks; then mark M1 ✅. 3) Write the M2 spec (`specs/002-…`), folding in R-2 and R-7–R-10.
+**NEXT**: 1) User reviews the M2 plan (`specs/002-m2-durable-storage-query-builder/`: spec, design §8 open questions, plan, Appendix A starter guide). 2) `/speckit-tasks` for M2. 3) Still open from M1: user reviews the UI in a browser; push to a remote so CI runs the no-outbound and container checks, then mark M1 ✅.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
-| M2 Durable storage + query builder | — | not started | — | — |
+| M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | spec + plan drafted, in review | — | — |
 | M3 Core demo | — | not started | — | — |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |

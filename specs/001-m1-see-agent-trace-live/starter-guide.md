@@ -8,24 +8,27 @@ For *why* it is built this way, see [design.md](design.md). This guide is about 
 ## 1. The system in one picture
 
 ```mermaid
-flowchart LR
-    SDK["Agent + LangSmith SDK"] -->|"POST /runs/batch"| R["routes/ingest.rs"]
-    R --> M["langsmith_map.rs<br/>wire → RunFields"]
-    M --> A["Ingest::accept<br/>validate, permit"]
+flowchart TB
+    SDK["Agent + LangSmith SDK"]
+    H["HTTP routes<br/>routes/ingest.rs · langsmith_map.rs"]
+    A["Ingest::accept<br/>validate · take permit"]
+    W["writer thread (the only writer)<br/>see Scene 2"]
+    WAL[(".tracedb/wal/*.wal")]
+    ST["RunStore<br/>(in memory)"]
+    Q["Query → routes/api.rs"]
+    T["routes/tail.rs<br/>SSE, every 100 ms"]
+    UI["Browser"]
+
+    SDK -->|"POST /runs/batch"| H
+    H --> A
     A -->|"mpsc channel"| W
-
-    subgraph W["writer thread (the only writer)"]
-        direction TB
-        D["dedup"] --> S["assign event_seq"] --> L["WAL append"] --> F["fsync"] --> AP["store.apply → merge()"] --> P["hub.publish"] --> Y["reply"]
-    end
-
-    L -.-> DISK[(".tracedb/wal/*.wal")]
-    AP --> ST["RunStore<br/>(in memory)"]
-    P -->|"broadcast"| T["routes/tail.rs<br/>SSE, coalesce 100 ms"]
-    ST -->|"Snapshot (read lock)"| Q["Query"] --> API["routes/api.rs"]
-    API --> UI["Browser UI"]
+    W -->|"1 append + fsync"| WAL
+    W -->|"2 apply"| ST
+    W -->|"3 broadcast"| T
+    W -.->|"4 reply 202"| SDK
+    ST -->|"read lock"| Q
+    Q --> UI
     T --> UI
-    Y -->|"202 after fsync"| SDK
 ```
 
 Four ideas carry the whole system:
@@ -136,17 +139,20 @@ can't go out until the writer replies, and the writer replies only after fsync.
 
 ```mermaid
 flowchart TB
-    R["rx.recv() — block for 1st request"] --> G["try_recv() more until empty or 1 MB<br/>(group commit, no timer)"]
-    G --> H{"storage already failed?"}
-    H -->|yes| E503["reply Storage → 503"]
-    H -->|no| B{"batch adds a new run<br/>and budget full?"}
-    B -->|yes| E507["this request: Capacity → 507"]
-    B -->|no| DD{"(run_id, op, body_hash)<br/>seen in 24 h?"}
-    DD -->|yes| ACK["count accepted, skip"]
-    DD -->|no| SEQ["event_seq += 1"] --> AP["wal.append (buffered)"]
-    AP --> SY["wal.sync — ONE fsync for the group"]
-    SY -->|error| SICK["mark unhealthy, all → 503"]
-    SY -->|ok| APPLY["store.apply under write lock"] --> PUB["hub.publish"] --> REP["reply → 202"]
+    R["wait for a request"] --> G["take all others waiting<br/>(up to 1 MB) = one group"]
+    G --> H{"storage failed<br/>earlier?"}
+    H -->|yes| E503["all → 503"]
+    H -->|no| B{"new run and<br/>budget full?"}
+    B -->|yes| E507["this request → 507"]
+    B -->|no| DD{"seen in<br/>last 24 h?"}
+    DD -->|yes| ACK["count as accepted,<br/>skip"]
+    DD -->|no| SEQ["event_seq += 1"]
+    SEQ --> AP["WAL append<br/>(buffered)"]
+    AP --> SY["one fsync<br/>for the group"]
+    SY -->|error| SICK["unhealthy,<br/>all → 503"]
+    SY -->|ok| APPLY["apply to store"]
+    APPLY --> PUB["publish"]
+    PUB --> REP["reply 202"]
 ```
 
 | Step | Code |
@@ -169,9 +175,17 @@ confirmed. A kill after it means replay restores the event.
 #### The WAL record
 
 ```
-file:   [ "TDBW" ][ u32 version = 1 ][ record ][ record ] …
-record: [ u32 len ][ u32 crc32 ][ u64 seq ][ u64 received_us ][ u8 op ][ u8 source ][ u64 body_hash ][ JSON fields … ]
-        └─ header, 8 B ────────┘└──────────────────── "rest" = len bytes, covered by crc32 ──────────────────────┘
+file header     "TDBW" (4 B), then u32 version = 1
+then records, one after another:
+
+  ┌ u32 len           ┐  header, 8 B
+  └ u32 crc32         ┘
+  ┌ u64 seq           ┐
+  │ u64 received_us   │
+  │ u8  op            │  "rest" = len bytes,
+  │ u8  source        │  covered by crc32
+  │ u64 body_hash     │
+  └ JSON fields …     ┘
 ```
 
 Files are named `<first_seq:020>.wal` and roll at about 64 MB. The format is documented at
@@ -191,13 +205,13 @@ Files are named `<first_seq:020>.wal` and roll at about 64 MB. The format is doc
 What the store holds ([store.rs:51-58](../../crates/ingest/src/store.rs#L51)):
 
 ```mermaid
-flowchart LR
-    runs["runs: HashMap&lt;RunId, RunState&gt;<br/>(the merged runs, with payloads)"]
-    bt["by_trace: HashMap&lt;TraceId, Vec&lt;RunId&gt;&gt;<br/>→ trace view"]
-    ro["roots: HashMap&lt;project, BTreeSet&lt;(Reverse(start), run_id)&gt;&gt;<br/>→ runs list, keyset paging"]
-    ch["children: HashMap&lt;RunId, u32&gt;<br/>→ child_count in headers"]
-    bt --> runs
+flowchart TB
+    ro["roots<br/>per project: newest-first set<br/>→ runs list, paging"]
+    bt["by_trace<br/>trace id → run ids<br/>→ trace view"]
+    ch["children<br/>run id → count<br/>→ child_count"]
+    runs["runs<br/>run id → merged RunState<br/>(with payloads)"]
     ro --> runs
+    bt --> runs
     ch --> runs
 ```
 
