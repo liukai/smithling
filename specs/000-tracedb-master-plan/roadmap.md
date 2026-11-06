@@ -24,44 +24,45 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05: **Hot-data cache stays in memory locally**, behind a `Cache` interface.
 - 2026-11-05: **UI querying is Scuba/Honeycomb-style** (spec.md FR-029–032).
 - 2026-11-05: **Each phase is its own spec**. `000-tracedb-master-plan` is the master (requirements, architecture, roadmap), with no code tasks. Phase specs are numbered from 001.
-- 2026-11-05: **Phase details live in the phase folder.** Any new change to M0 goes into `specs/001-m0-see-agent-trace-live/`; this roadmap only links to it and tracks status.
-- 2026-11-05: **LangSmith JSON ingest is in M0** (`/info`, `/runs/batch`, `POST/PATCH /runs`), so the M0 demo uses a real agent. Multipart stays in M2.
+- 2026-11-05: **Phase details live in the phase folder.** Any new change to M1 goes into `specs/001-m1-see-agent-trace-live/`; this roadmap only links to it and tracks status.
+- 2026-11-05: **LangSmith JSON ingest is in M1** (`/info`, `/runs/batch`, `POST/PATCH /runs`), so the M1 demo uses a real agent. Multipart stays in M3.
 - 2026-11-05: **Merge rule**: the latest value wins for every field; nothing appends (research R1, because the SDK re-sends full values).
 - 2026-11-05: **Constitution v1.1.0**: SmithDB is the target reached in stages; "deliberately staged" is an allowed reason (Principle II (c)). No Simplicity principle; simplicity stays a standing preference.
-- 2026-11-05: **M0 reconciliation with SDK 0.14** (tasks T066–T069): `address` in the model; overload codes `429`+`Retry-After` (queue full), `507` (memory budget, whole request), `503`+`Retry-After` (storage); `POST /feedback` → `501`; `/info.version` empty.
-- 2026-11-05 (standing approval): **proceed through M0 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
+- 2026-11-05: **M1 reconciliation with SDK 0.14** (tasks T066–T069): `address` in the model; overload codes `429`+`Retry-After` (queue full), `507` (memory budget, whole request), `503`+`Retry-After` (storage); `POST /feedback` → `501`; `/info.version` empty.
+- 2026-11-05 (standing approval): **proceed through M1 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
 - 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted.
+- 2026-11-06: **Milestones numbered from 1**: M0–M4 renamed M1–M5 everywhere (docs, code comments, messages, phase folder `001-m1-…`, branch). Commit messages before this keep the old labels.
 
 **STATE as of 2026-11-05** (verified by `git log`, `cargo test --workspace`, `npm test`, and the slow tests run locally):
-M0 is **built** on branch `001-m0-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
+M1 is **built** on branch `001-m1-see-agent-trace-live` (PR1–PR7, 69/69 tasks). Verified locally: an unmodified LangGraph
 agent (SDK 0.14.17) traces in live; contract fixtures for SDK 0.14.17 and 0.8.18; crash harness 10/10; restart at 500k
 runs 0.83 s; 74k events/s sustained. **Not yet verified**: the UI by eye (headless Chrome can't run in this sandbox;
 screens covered by component tests), and the no-outbound + clean-container checks (CI-only; no remote CI yet).
 
 **Blocked on**: nothing. Waiting on the user to look at the UI in a browser.
 
-**NEXT**: 1) User opens http://localhost:7070 after `tracedb seed` and the example agent, and reviews the screens. 2) Push to a remote so CI runs the no-outbound and container checks; then mark M0 ✅. 3) Write the M1 spec (`specs/002-…`), folding in R-2 and R-7–R-10.
+**NEXT**: 1) User opens http://localhost:7070 after `tracedb seed` and the example agent, and reviews the screens. 2) Push to a remote so CI runs the no-outbound and container checks; then mark M1 ✅. 3) Write the M2 spec (`specs/002-…`), folding in R-2 and R-7–R-10.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
-| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
-| M1 Durable storage + query builder | — | not started | — | — |
-| M2 Core demo | — | not started | — | — |
-| M3 Follow-through | — | not started | — | — |
-| M4 Zero instrumentation + agents | — | not started | — | — |
+| M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
+| M2 Durable storage + query builder | — | not started | — | — |
+| M3 Core demo | — | not started | — | — |
+| M4 Follow-through | — | not started | — | — |
+| M5 Zero instrumentation + agents | — | not started | — | — |
 
 "Tasks done" counts `[X]` in each phase's `tasks.md`. A phase is **done** only when its exit check passes, not when its PRs merge.
 
 ## Phases
 
-### M0: See agent trace live
+### M1: See agent trace live
 
-> Details of record: [`specs/001-m0-see-agent-trace-live/`](../001-m0-see-agent-trace-live/spec.md). The summary below is the original scope; the phase folder wins if they differ.
+> Details of record: [`specs/001-m1-see-agent-trace-live/`](../001-m1-see-agent-trace-live/spec.md). The summary below is the original scope; the phase folder wins if they differ.
 
 **Goal and why**: prove the whole path (agent → ingest → durable log → query → browser) works end to end, thinly.
-It **unblocks** every later phase: M1 puts storage under the same API, and M2 hardens the same ingest. It also gives
+It **unblocks** every later phase: M2 puts storage under the same API, and M3 hardens the same ingest. It also gives
 the UI a real data source from day one (UI first).
 
 **End state** (capability first; *Example* = the scenario we prove it with):
@@ -80,18 +81,18 @@ the UI a real data source from day one (UI first).
 | Work | Contribution |
 |---|---|
 | Workspace + `model` crate (events, runs, merge rule, `dotted_order`, derived status/latency) | Direct: what the browser shows is the merged run. Indirect: shared by every service in every phase |
-| WAL with group commit + memtable + replay | Direct: the kill -9 check. Indirect: M1 flushes this memtable to disk |
+| WAL with group commit + memtable + replay | Direct: the kill -9 check. Indirect: M2 flushes this memtable to disk |
 | Ingest: `/v1/events`, `/info` (advertises no multipart), `/runs/batch`, `POST/PATCH /runs` | Direct: an unmodified agent traces in (the headline demo) |
-| Query: trace tree, single run, root-runs list with cursor, live tail | Direct: the runs list and trace view have data. Indirect: M1 swaps in DataFusion behind the same API |
+| Query: trace tree, single run, root-runs list with cursor, live tail | Direct: the runs list and trace view have data. Indirect: M2 swaps in DataFusion behind the same API |
 | UI: runs list (live), trace tree + waterfall, run panel, empty state, shareable URLs | Direct: the demo is in the browser |
-| `tracedb seed` (deep trees, late ends, big payloads) | Direct: the 250-run demo. Indirect: realistic data for UI work and M1 scale tests |
-| Crash test, no-outbound check, SDK contract test in CI | Durable: keeps the end state true after M0 |
+| `tracedb seed` (deep trees, late ends, big payloads) | Direct: the 250-run demo. Indirect: realistic data for UI work and M2 scale tests |
+| Crash test, no-outbound check, SDK contract test in CI | Durable: keeps the end state true after M1 |
 
 **Delivers**: FR-001 (JSON path), FR-002–007, FR-012 (basic), FR-022 (list + trace), FR-025, FR-027 (partial); QR-001, QR-002, QR-003.
 
-### M1: Durable storage + query builder
+### M2: Durable storage + query builder
 
-**Goal and why**: hold real volumes on disk and let people find things by clicking. This **unblocks** M2's speed and
+**Goal and why**: hold real volumes on disk and let people find things by clicking. This **unblocks** M3's speed and
 search work, and delivers the first half of morning triage (scenario steps 4, 5, 8).
 
 **End state** (capability first; *Example* = the scenario we prove it with):
@@ -118,7 +119,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 **Delivers**: FR-008–010, FR-012, FR-013, FR-026, FR-029–031 (partial); QR-007.
 
-### M2: Core demo
+### M3: Core demo
 
 **Goal and why**: finish what the overnight-eval story needs (steps 1–9) at full speed. This is **the v0 headline**
 ("is this a pattern? how bad?").
@@ -146,7 +147,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 **Delivers**: FR-001 (full), FR-011, FR-014, FR-015, FR-023, FR-024, FR-031; QR-004, QR-005, QR-006, QR-008.
 
-### M3: Follow-through
+### M4: Follow-through
 
 **Goal and why**: close the loop (steps 10, 11, 13) and keep old data cheap. It moves the scenario from "found it" to
 "fixed it and prevented it".
@@ -165,13 +166,13 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 **Work needed → how it gets us there**:
 | Work | Contribution |
 |---|---|
-| Compaction tiers + atomic swap | Direct: late-end correctness after compaction. Indirect: keeps M2 speeds as data grows |
+| Compaction tiers + atomic swap | Direct: late-end correctness after compaction. Indirect: keeps M3 speeds as data grows |
 | Threads view; export; feedback write | Direct: steps 10, 11 and feedback filters |
 | Find-what-stands-out | Direct: Story 12 |
 
 **Delivers**: FR-016, FR-017, FR-020, FR-032.
 
-### M4: Zero instrumentation + agents
+### M5: Zero instrumentation + agents
 
 **Goal and why**: reach the second audience (Claude Code users) and the long-term goal: agents debugging agents.
 
@@ -195,33 +196,33 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 | Requirement | Phase | Done |
 |---|---|---|
-| FR-001 | M0 (JSON), M2 (multipart) | JSON path verified (contract fixtures) |
-| FR-002–007 | M0 | built, verified locally |
-| FR-008–010, 012, 013 | M1 | |
-| FR-011, 014, 015 | M2 | |
-| FR-016, 017, 020 | M3 | |
-| FR-021, 028 | M4 | |
-| FR-022–027 | M0 → M2 (grows each phase) | |
-| FR-029–031 | M1 (builder, Samples, Table) → M2 (charts, compare) | |
-| FR-032 | M3 | |
-| QR-001–003 | M0 | QR-003 verified (crash 10/10); QR-001/002 CI-only |
-| QR-004–006, 008 | M2 | |
-| QR-007 | M1 | |
+| FR-001 | M1 (JSON), M3 (multipart) | JSON path verified (contract fixtures) |
+| FR-002–007 | M1 | built, verified locally |
+| FR-008–010, 012, 013 | M2 | |
+| FR-011, 014, 015 | M3 | |
+| FR-016, 017, 020 | M4 | |
+| FR-021, 028 | M5 | |
+| FR-022–027 | M1 → M3 (grows each phase) | |
+| FR-029–031 | M2 (builder, Samples, Table) → M3 (charts, compare) | |
+| FR-032 | M4 | |
+| QR-001–003 | M1 | QR-003 verified (crash 10/10); QR-001/002 CI-only |
+| QR-004–006, 008 | M3 | |
+| QR-007 | M2 | |
 
 Mark ✅ only after the phase's exit check passes.
 
 ## Backlog: SmithDB reconciliation (found 2026-11-05)
 
 From checking spec 000 against the SmithDB post, the LangSmith self-hosted docs, and `langsmith` SDK 0.8.18 vs 0.14.17.
-First reconciliation round applied to the docs on 2026-11-05 (source read from `/tmp/lsdiff/`); the code changes are proposed as M0 tasks.
+First reconciliation round applied to the docs on 2026-11-05 (source read from `/tmp/lsdiff/`); the code changes are proposed as M1 tasks.
 **Local** = does the laptop version need it.
 
 | # | Item | Local? | When | Status (2026-11-05) |
 |---|---|---|---|---|
-| R-1 | Re-pin the SDK to Python **0.14.17** (keep 0.8.18 as a second fixture set). Accept the new `address` field (`lrn:agents/<id>/environments/<env>`); when no project is named the SDK drops `session_name`, so derive the project from the address | **Yes** | M0 | **Docs updated** (000 spec, design-notes §4, research R2, data-model; 001 spec, data-model, design §6/§9, research, tasks T030/T031/T034/T061). Verified in SDK source. Code: proposed tasks |
-| R-2 | ~~Replace the `eq()/and()` grammar with `field:value`~~. **Corrected:** SDK 0.14.17 still documents `eq()/and()/has()` for `filter`, so it stays canonical. A `field:value` search-bar form is a possible M1 add-on once confirmed in LangSmith's UI docs | Maybe | M1 | **Docs updated** (design-notes §5.2). `field:value` unverified offline |
+| R-1 | Re-pin the SDK to Python **0.14.17** (keep 0.8.18 as a second fixture set). Accept the new `address` field (`lrn:agents/<id>/environments/<env>`); when no project is named the SDK drops `session_name`, so derive the project from the address | **Yes** | M1 | **Docs updated** (000 spec, design-notes §4, research R2, data-model; 001 spec, data-model, design §6/§9, research, tasks T030/T031/T034/T061). Verified in SDK source. Code: proposed tasks |
+| R-2 | ~~Replace the `eq()/and()` grammar with `field:value`~~. **Corrected:** SDK 0.14.17 still documents `eq()/and()/has()` for `filter`, so it stays canonical. A `field:value` search-bar form is a possible M2 add-on once confirmed in LangSmith's UI docs | Maybe | M2 | **Docs updated** (design-notes §5.2). `field:value` unverified offline |
 | R-3 | design-notes §6 wording (term zones; postings/positions chunked apart from the term dictionary) and SmithDB ingest numbers (P50 630 ms / P99 1.47 s) in §2 | Doc only | Anytime | **Docs updated**, from the earlier reconciliation note; the SmithDB post was not re-read in this session |
-| R-4 | Pin `object_store` to 0.13 (`vortex-datafusion` 0.91 needs 0.13.2; latest is 0.14.2); Vortex reason → "pre-1.0, not benchmarked by us; supports DataFusion 55" | Cheap | M1 (when crates are added) | **Docs updated** (plan, research R4, design-notes §12). Verified on crates.io. `Cargo.toml` pin when `object_store` is added |
+| R-4 | Pin `object_store` to 0.13 (`vortex-datafusion` 0.91 needs 0.13.2; latest is 0.14.2); Vortex reason → "pre-1.0, not benchmarked by us; supports DataFusion 55" | Cheap | M2 (when crates are added) | **Docs updated** (plan, research R4, design-notes §12). Verified on crates.io. `Cargo.toml` pin when `object_store` is added |
 | R-5 | If we add LangSmith *read* compatibility, copy the v2 API (`/api/v2/runs/query`, `/api/v2/threads/query`, project UUIDs, no child runs in run queries); v1 is removed on Cloud 2027-01-31 | No: compat is ingest-only | Deprioritized | No change |
 | R-6 | Cloud path: Compaction → one scheduler + scalable workers; cluster manager as its own service (self-hosted SmithDB runs 5 services) | No | Cloud | **Docs updated** (design-notes §2.1) |
 
@@ -239,4 +240,4 @@ Not adopted: compaction I/O rate limit, payload-file GC (BlobDB-style), checkpoi
 ## History
 
 - 2026-11-05: product spec, primer, design notes, constitution v1.0.0, plan + Phase 1 artifacts written; the original SPEC.md and REQUIREMENTS.md were folded in and deleted.
-- 2026-11-05: M0 implemented (PR1–PR7). Found by recording real SDK traffic: `/info` must send every `batch_ingest_config` key (the SDK reads them without defaults), and an invalid `LANGSMITH_AGENT_ENVIRONMENT` makes the SDK skip tracing silently.
+- 2026-11-05: M1 implemented (PR1–PR7). Found by recording real SDK traffic: `/info` must send every `batch_ingest_config` key (the SDK reads them without defaults), and an invalid `LANGSMITH_AGENT_ENVIRONMENT` makes the SDK skip tracing silently.

@@ -52,7 +52,7 @@ pub struct RunFields {
     pub outputs: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<Value>>,
-    /// Fields tracedb received but does not store in M0 (e.g. `serialized`, attachments), with their sizes.
+    /// Fields tracedb received but does not store in M1 (e.g. `serialized`, attachments), with their sizes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped: Option<BTreeMap<String, u64>>,
 }

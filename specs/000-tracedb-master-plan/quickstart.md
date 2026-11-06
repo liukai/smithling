@@ -16,7 +16,7 @@ cargo build --release
 Expected: it prints `listening on http://localhost:7070`, and the browser shows the empty runs list with
 "point an agent here" instructions.
 
-## 2. M0: see a trace in the browser
+## 2. M1: see a trace in the browser
 ```bash
 curl -s localhost:7070/v1/events -d @tests/fixtures/one-trace.json
 ```
@@ -43,8 +43,8 @@ Expected: every check reports PASS, and the command exits with 0.
 | search `"429 Too Many Requests"` | 31, all `fetch_url` |
 | `fetch_url` error rate / p95 | 14% / 31 s |
 | batch a cost | $4.12 |
-| thread size (M3) | 6 |
-| exported bad roots (M3) | 37 |
+| thread size (M4) | 6 |
+| exported bad roots (M4) | 37 |
 
 Then open the browser and repeat the checks by clicking (SC-008).
 

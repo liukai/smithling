@@ -24,7 +24,7 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         bind: IpAddr,
-        /// Memory budget for runs held in memory (M0 keeps everything in memory), e.g. 2GB.
+        /// Memory budget for runs held in memory (M1 keeps everything in memory), e.g. 2GB.
         #[arg(long, default_value = "2GB", value_parser = parse_size)]
         max_memory: u64,
         #[arg(long, default_value_t = DEFAULT_MAX_RUNS)]

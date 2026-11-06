@@ -38,7 +38,7 @@ Acknowledgment (`202`) is sent only after the WAL fsync (R7). The API key header
 `RunHeader` = every Run field except inputs, outputs and events, plus `has_payload` sizes. Filter strings use the grammar
 in [filter-dsl.md](filter-dsl.md).
 
-## Agent tools (FR-028, M4)
+## Agent tools (FR-028, M5)
 `GET /api/traces/{id}/outline`, `GET /api/traces/{id}/error-path`, `GET /api/payload/{handle}?path=&range=` (size cap
 16 KB), `POST /api/runs/clusters`, `POST /api/diff`, `POST /api/annotate`. Every response includes `ui_url`. These are
 also exposed through `tracedb mcp` (stdio MCP server).

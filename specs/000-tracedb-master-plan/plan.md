@@ -52,7 +52,7 @@ All unknowns resolved in [research.md](research.md); no NEEDS CLARIFICATION rema
 | I. Rust, one binary | Rust workspace → one `tracedb` binary; UI embedded; SQLite in-process | PASS | PASS |
 | II. SmithDB is the reference | Every component mapped (design-notes §2, §2.1); differences listed below with reasons, each behind an interface | PASS | PASS |
 | III. Local and private | No outbound calls; localhost default; all state under `--data` dir; UI assets embedded (no CDN) | PASS | PASS |
-| IV. UI first | Each phase below ships its UI view; M0 demo is in the browser | PASS | PASS |
+| IV. UI first | Each phase below ships its UI view; M1 demo is in the browser | PASS | PASS |
 | V. Cloud-portable storage | All I/O via `ObjectStore` + `Metastore`; segments immutable; MinIO + Postgres CI job | PASS | PASS |
 | VI. Done is measured | `tracedb demo` asserts scenario numbers; `bench` P50/P99; crash test in CI | PASS | PASS |
 
@@ -108,14 +108,14 @@ Each phase ends with a browser demo and its automated checks. Details: design-no
 
 | Phase | Delivers (stories) | Demo / exit check |
 |---|---|---|
-| **M0 See agent trace live** | Native + LangSmith JSON ingest (`/info`, `/runs/batch`, `POST/PATCH /runs`), WAL + memtable, trace tree from memory; UI shell: runs list (live), trace tree + waterfall, run panel (S1 partial, S2) | Send a trace, watch it appear, open its tree. Crash test green. |
-| **M1 Durable storage + filtering** | Flush to segments, metastore, DataFusion scans with pruning, merge-on-read, filter DSL, cursor paging, field catalog; UI **query builder** (panel ↔ text, chips), field browser with suggestions, Samples + Table views, click-to-filter, shareable URLs (S3) | `tracedb seed` → 14 failing roots and 23 quiet failures found in the browser |
-| **M2 Core demo** | LangSmith `/runs/multipart` + feedback parts; payload split + late materialization; progressive query; text search (scan + bloom); stats; Time series + Distribution views with comparison overlay; `bench` (S1, S4, S5) | `tracedb demo` passes steps 1–9 + QR-004/005 timings; unmodified LangGraph agent traces in |
-| **M3 Follow-through** | Compaction tiers; threads; export; feedback write; find-what-stands-out (S6, S7, S9, S12) | demo steps 10, 11, 13 pass; late `end` correct before and after compaction |
-| **M4 Zero-instrumentation + agents** | Claude Code importer; agent tools: outline, error path, sliced payloads, clusters, diff, annotate (S10, S11) | agent names the 429 cause with 31 cited runs |
+| **M1 See agent trace live** | Native + LangSmith JSON ingest (`/info`, `/runs/batch`, `POST/PATCH /runs`), WAL + memtable, trace tree from memory; UI shell: runs list (live), trace tree + waterfall, run panel (S1 partial, S2) | Send a trace, watch it appear, open its tree. Crash test green. |
+| **M2 Durable storage + filtering** | Flush to segments, metastore, DataFusion scans with pruning, merge-on-read, filter DSL, cursor paging, field catalog; UI **query builder** (panel ↔ text, chips), field browser with suggestions, Samples + Table views, click-to-filter, shareable URLs (S3) | `tracedb seed` → 14 failing roots and 23 quiet failures found in the browser |
+| **M3 Core demo** | LangSmith `/runs/multipart` + feedback parts; payload split + late materialization; progressive query; text search (scan + bloom); stats; Time series + Distribution views with comparison overlay; `bench` (S1, S4, S5) | `tracedb demo` passes steps 1–9 + QR-004/005 timings; unmodified LangGraph agent traces in |
+| **M4 Follow-through** | Compaction tiers; threads; export; feedback write; find-what-stands-out (S6, S7, S9, S12) | demo steps 10, 11, 13 pass; late `end` correct before and after compaction |
+| **M5 Zero-instrumentation + agents** | Claude Code importer; agent tools: outline, error path, sliced payloads, clusters, diff, annotate (S10, S11) | agent names the 429 cause with 31 cited runs |
 | **Backlog** | Delete + retention (B1), Vortex `SegmentFormat`, custom `TextIndex`, OTLP ingest, cloud deployment split | — |
 
-Cross-cutting from M0: crash test, zero-outbound check, P50/P99 bench harness, MinIO + Postgres CI job from M1.
+Cross-cutting from M1: crash test, zero-outbound check, P50/P99 bench harness, MinIO + Postgres CI job from M2.
 
 ## Complexity Tracking
 

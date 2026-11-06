@@ -18,7 +18,7 @@ pub enum Dialect {
     Native,
 }
 
-/// Received but not stored in M0; their sizes are recorded in `dropped`.
+/// Received but not stored in M1; their sizes are recorded in `dropped`.
 const DROPPED: [&str; 6] = [
     "serialized",
     "attachments",

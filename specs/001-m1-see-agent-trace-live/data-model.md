@@ -1,9 +1,9 @@
-# Data Model: M0 — See agent trace live
+# Data Model: M1 — See agent trace live
 
-Everything M0 stores, how each field arrives, how it merges, and how it's held. The master model
-([000 data-model](../000-tracedb-master-plan/data-model.md)) covers all phases; this file is the M0 detail of record.
+Everything M1 stores, how each field arrives, how it merges, and how it's held. The master model
+([000 data-model](../000-tracedb-master-plan/data-model.md)) covers all phases; this file is the M1 detail of record.
 Field sources were checked against `langsmith` SDK 0.8.18 and 0.14.17 source on 2026-11-05 and are pinned by contract fixtures
-(research M0-R5).
+(research M1-R5).
 
 ## 1. The entities and how they relate
 
@@ -56,7 +56,7 @@ every merge, never sent.
 | `tags` | [string] | `tags` | no | R | whole list replaced (the SDK re-sends the full list); ≤ 100 tags, each ≤ 256 chars |
 | `metadata` | JSON object | `extra.metadata` | no | R | whole object replaced; ≤ 1 MB |
 | `extra` | JSON object | `extra` minus `metadata` | no | R | kept as is (runtime, invocation params) |
-| `thread_id` | string? | — | — | D | first present of `metadata.thread_id`, `metadata.session_id`, `metadata.conversation_id`; stored for M3 |
+| `thread_id` | string? | — | — | D | first present of `metadata.thread_id`, `metadata.session_id`, `metadata.conversation_id`; stored for M4 |
 
 ### 3.3 What kind of step
 | Field | Type | LangSmith source | Req | Merge | Validation and meaning |
@@ -80,7 +80,7 @@ every merge, never sent.
 | `input_tokens` | u64? | — | — | D | `outputs.usage_metadata.input_tokens`, else `metadata.usage_metadata.input_tokens` |
 | `output_tokens` | u64? | — | — | D | same, `output_tokens` |
 | `total_tokens` | u64? | — | — | D | `usage_metadata.total_tokens`, else `input + output`, else empty |
-| `cost_usd` | — | — | — | — | not in M0 (needs the price table, M2); shown as `—` |
+| `cost_usd` | — | — | — | — | not in M1 (needs the price table, M3); shown as `—` |
 
 ### 3.6 Payload (loaded only when a step is opened)
 | Field | Type | LangSmith source | Req | Merge | Validation and meaning |
@@ -88,7 +88,7 @@ every merge, never sent.
 | `inputs` | JSON? | `inputs` | no | R | ≤ 20 MB |
 | `outputs` | JSON? | `outputs` | no | R | ≤ 20 MB |
 | `events` | JSON array? | `events` | no | R | ≤ 20 MB; the SDK re-sends the full list, so it's replaced, not appended (master R1) |
-| `dropped` | {field → bytes} | `serialized`, attachments | — | R | M0 doesn't store these; it records their sizes so the user can see something was dropped |
+| `dropped` | {field → bytes} | `serialized`, attachments | — | R | M1 doesn't store these; it records their sizes so the user can see something was dropped |
 
 ### 3.7 `dotted_order` format
 ```
@@ -160,7 +160,7 @@ Each rejected item is returned as `{id, reason, detail}`. All other items in the
 | `TraceView` | `{root: RunHeader, runs: [RunHeader] sorted by dotted_order, run_count, has_running}` | trace view |
 | `RootsPage` | `{runs: [RunHeader], next_cursor?}` | runs list |
 
-## 8. How M0 holds it
+## 8. How M1 holds it
 
 **WAL** (`./.tracedb/wal/`)
 - **Files**: `<first_seq>.wal`, rolled at 64 MB. Each file starts with an 8-byte header: magic `TDBW` + version `u32 = 1`.

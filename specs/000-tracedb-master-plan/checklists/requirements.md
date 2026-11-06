@@ -33,6 +33,6 @@
 
 - Named external formats (LangSmith SDK endpoint, Claude Code session files, JSONL export) are user-facing integration contracts, not implementation choices, so they stay. Storage engine, file formats and crates live only in design-notes.md.
 - Tutorial and walkthrough content lives in primer.md; its CLI lines and screen mockups are illustrative, not interface specs. spec.md stays requirements-only.
-- UI first (FR-025 to FR-027, SC-009): every story's Independent Test runs in the browser; design-notes milestones ship a UI view from M0.
+- UI first (FR-025 to FR-027, SC-009): every story's Independent Test runs in the browser; design-notes milestones ship a UI view from M1.
 - The open questions from the original docs are resolved as defaults in Assumptions (audience, merge rule, tree-filter scope, export format, feedback scope). Revisit them with `/speckit-clarify` if any default is wrong.
 - QR-007 (cloud-portable) is the one requirement close to architecture. It is phrased as a configuration-only outcome with a test-suite check.

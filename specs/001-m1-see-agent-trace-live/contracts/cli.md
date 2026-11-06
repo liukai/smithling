@@ -1,4 +1,4 @@
-# CLI contract (M0 subset)
+# CLI contract (M1 subset)
 
 | Command | Purpose |
 |---|---|

@@ -1,13 +1,13 @@
 ---
-description: "Tasks for M0 — See agent trace live"
+description: "Tasks for M1 — See agent trace live"
 ---
 
-# Tasks: M0 — See agent trace live
+# Tasks: M1 — See agent trace live
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [design.md](design.md), [data-model.md](data-model.md),
 [contracts/](contracts/), [research.md](research.md), [quickstart.md](quickstart.md)
 
-**Tests**: included. The spec requires automated checks on every change (M0-FR-13, SC-02..07).
+**Tests**: included. The spec requires automated checks on every change (M1-FR-13, SC-02..07).
 
 **Assumed answers to design §11** (proposed defaults; change before implementing if you disagree):
 1. WAL records are JSON. 2. Memory budget defaults to 2 GB / 500k runs. 3. `cargo build` builds the UI through a build
@@ -81,12 +81,12 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 
 ## Phase 2b: LangSmith SDK 0.14 reconciliation (roadmap R-1, decided 2026-11-05)
 
-**Purpose**: keep M0 correct for the current SDK. T066 runs first (PR1.5, before PR2) because everything builds on the
+**Purpose**: keep M1 correct for the current SDK. T066 runs first (PR1.5, before PR2) because everything builds on the
 model; T067–T069 land with the HTTP layer in PR3.
 
 - [X] T066 Add `address` to the model: `RunFields.address: Option<String>`, `Run.address`, `RunHeader.address` in `crates/model/src/run.rs` and `crates/model/src/views.rs`; validation "≤ 512 chars" → `too_large` in `crates/model/src/validate.rs`; immutable once set (`identity_conflict` if a later event differs) in `crates/model/src/merge.rs`; tests in `crates/model/tests/merge.rs` and `crates/model/tests/validate.rs`
 - [X] T067 Map overload and storage errors to HTTP in `crates/tracedb/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/tracedb/tests/status_codes.rs`
-- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
+- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
 - [X] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
 
 ---
@@ -106,7 +106,7 @@ and see its runs appear within 1 s and update when they finish.
 
 ### Implementation for User Story 1
 - [X] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
-- [X] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}`; accept and ignore API-key headers
+- [X] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M3"}}`; accept and ignore API-key headers
 - [X] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
 - [X] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/tracedb/src/routes/api.rs`
 - [X] T038 [US1] Implement the per-tab tail task in `crates/tracedb/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
@@ -178,10 +178,10 @@ upload; 10 rounds.
 - [X] T059 [P] Throughput test `crates/tracedb/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
 - [X] T060 [P] Clean-container check in CI: build the release binary, run it in a minimal container without Node, `curl /healthz` (QR-002)
 - [X] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.14.17`
-- [X] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M0 limits (memory budget, no filters)
-- [X] T063 Update the spec's restart target to 30 s in `specs/001-m0-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
-- [X] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m0-see-agent-trace-live/quickstart.md` under "Last verified"
-- [X] T065 Update the master roadmap row for M0 in `specs/000-tracedb-master-plan/roadmap.md` (status, tasks done, exit check)
+- [X] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M1 limits (memory budget, no filters)
+- [X] T063 Update the spec's restart target to 30 s in `specs/001-m1-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
+- [X] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m1-see-agent-trace-live/quickstart.md` under "Last verified"
+- [X] T065 Update the master roadmap row for M1 in `specs/000-tracedb-master-plan/roadmap.md` (status, tasks done, exit check)
 
 ---
 

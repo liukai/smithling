@@ -144,7 +144,7 @@ Endpoints (all accept batches):
   zstd is used only for multipart and only if `/info` sets `instance_flags.zstd_compression_enabled`; `RunTree.patch`
   still re-sends full `events`. The SDK retries `408, 425, 429, 500, 502, 503, 504` and honours `Retry-After`.
 - Feedback: multipart part `feedback.{id}` by default; with multipart off, the SDK calls `POST /feedback` instead.
-- The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (M4) is a cheap add-on.
+- The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (M5) is a cheap add-on.
 - Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
 
 Write path: validate → assign `event_seq` → append to WAL → insert into memtable (Arrow builders keyed by project) → ack.
@@ -168,7 +168,7 @@ register in metastore → truncate WAL. Recovery on startup = replay WAL.
 
 This is the `filter` grammar the LangSmith SDK still documents in 0.14.17 (`Client.list_runs`), so it stays canonical for
 the API, CLI and agents. A `field:value` search-bar form, if confirmed in LangSmith's UI docs, could be added later as an
-alternate text form in the M1 query builder (roadmap R-2).
+alternate text form in the M2 query builder (roadmap R-2).
 ```
 filter:       and(eq(run_type,"tool"), gt(latency_ms,2000), has(tags,"prod"), eq(metadata.user,"kai"))
 trace_filter: eq(status,"error")              -- predicate on the ROOT run
@@ -220,7 +220,7 @@ A static SPA embedded in the binary (`rust-embed`) at `http://localhost:7070`:
 3. A real LangGraph example agent runs with `LANGSMITH_ENDPOINT=http://localhost:7070` and its trace appears live in the UI.
 4. `tracedb bench` prints a SmithDB-style P50/P99 table for: tree load, single run, filtering, FTS, threads, ingestion.
 
-**v0 done when** (M2 below), on a laptop with ~2M runs / ~5 GB:
+**v0 done when** (M3 below), on a laptop with ~2M runs / ~5 GB:
 
 - [ ] ingest ≥ 20k run events/s sustained; ingest-to-queryable ≤ 1 s (memtable visibility)
 - [ ] trace tree P50 ≤ 50 ms, filter P50 ≤ 100 ms, FTS P50 ≤ 500 ms
@@ -234,17 +234,17 @@ UI first: every milestone ships its browser view and is demoed in the browser (s
 
 | | Scope | Demo |
 |---|---|---|
-| **M0** | RunEvent model, WAL + memtable, `/v1/events`, `GET /traces/{id}` from memtable only, **UI shell: runs list (live tail) + trace tree/waterfall + run side panel** | send a trace, watch it appear in the browser, open its tree |
-| **M1** | Parquet flush, SQLite metastore, DataFusion scans with pruning, merge-on-read, `/runs/query` + DSL, **UI filter bar (click-to-filter, autocomplete, shareable addresses)** | `tracedb seed`, then triage steps 4–5 in the browser |
-| **M2** | `/runs/batch` LangSmith compat, payload split + late materialization, progressive query, **UI search + stats charts + batch compare**, `bench` | **`make demo` (done-check above)** |
-| **M3** | Compaction tiers, threads, **UI thread view, export** | thread + export demo in the browser |
+| **M1** | RunEvent model, WAL + memtable, `/v1/events`, `GET /traces/{id}` from memtable only, **UI shell: runs list (live tail) + trace tree/waterfall + run side panel** | send a trace, watch it appear in the browser, open its tree |
+| **M2** | Parquet flush, SQLite metastore, DataFusion scans with pruning, merge-on-read, `/runs/query` + DSL, **UI filter bar (click-to-filter, autocomplete, shareable addresses)** | `tracedb seed`, then triage steps 4–5 in the browser |
+| **M3** | `/runs/batch` LangSmith compat, payload split + late materialization, progressive query, **UI search + stats charts + batch compare**, `bench` | **`make demo` (done-check above)** |
+| **M4** | Compaction tiers, threads, **UI thread view, export** | thread + export demo in the browser |
 | **Backlog** | Delete vectors, TTL, **UI delete + retention settings** (spec.md B1); Vortex `SegmentFormat`; custom `TextIndex` (§6) | delete + retention demo; search and scan benchmarks vs v0 |
-| **M4** | OTLP ingest, Claude Code importer | "what did my agent do" with zero instrumentation |
+| **M5** | OTLP ingest, Claude Code importer | "what did my agent do" with zero instrumentation |
 | **Cloud** | S3 `object_store`, Postgres metastore, services as separate deployments, cluster manager + sticky routing | same binary, `--profile cloud` |
 
 ## 12. Crates
 `tokio`, `axum`, `datafusion`, `arrow`, `parquet`, `object_store`, `sqlx` (sqlite + postgres), `serde_json`, `uuid`, `ulid`,
-`roaring`, `moka` (cache), `rust-embed`, `clap`, `opentelemetry-proto` (M4). Backlog: `vortex`.
+`roaring`, `moka` (cache), `rust-embed`, `clap`, `opentelemetry-proto` (M5). Backlog: `vortex`.
 Pin `object_store` to the **0.13** line: `vortex-datafusion` 0.91 (DataFusion 55) needs `object_store` 0.13.2, and the
 latest is 0.14.2. Staying on 0.13 keeps the Vortex swap open (roadmap R-4).
 
@@ -252,9 +252,9 @@ latest is 0.14.2. Staying on 0.13 keeps the Vortex swap open (roadmap R-4).
 
 spec.md's Assumptions set defaults for 1 (compat first), 2 (importer is P2), 3 (last-write-wins per field) and 6 (verify before the core demo). 4 and 5 are left to planning.
 
-1. **Primary ingest for the demo**: LangSmith-compat (great for the LangChain ecosystem) or OTLP-first (vendor neutral)? Spec currently says compat first, OTLP in M4.
-2. **Claude Code importer priority**: pull it into M2 as the "local agent" hook?
+1. **Primary ingest for the demo**: LangSmith-compat (great for the LangChain ecosystem) or OTLP-first (vendor neutral)? Spec currently says compat first, OTLP in M5.
+2. **Claude Code importer priority**: pull it into M3 as the "local agent" hook?
 3. **Merge semantics**: last-write-wins per field vs. append-only fields (e.g. `events`, streamed tokens)?
 4. ~~**FTS**: custom index or tantivy?~~ Decided 2026-11-05: scan + bloom in v0, custom index in backlog; tantivy dropped.
 5. **UI stack**: plain TS + Vite SPA, or reuse an existing OSS trace viewer?
-6. ~~**Exact LangSmith wire format**~~ Checked 2026-11-05 against SDK 0.14.17 (see §4); re-check multipart against the pinned SDK when M2 starts.
+6. ~~**Exact LangSmith wire format**~~ Checked 2026-11-05 against SDK 0.14.17 (see §4); re-check multipart against the pinned SDK when M3 starts.

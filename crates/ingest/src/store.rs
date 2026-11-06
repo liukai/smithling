@@ -1,4 +1,4 @@
-//! The run store: every run, merged, in memory, plus the indexes the M0 reads need.
+//! The run store: every run, merged, in memory, plus the indexes the M1 reads need.
 //! Mutated only by the writer; never persisted (it is rebuilt from the WAL on start).
 
 use std::cmp::Reverse;

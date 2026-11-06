@@ -1,4 +1,4 @@
-//! Append-only write-ahead log. The only state M0 persists.
+//! Append-only write-ahead log. The only state M1 persists.
 //!
 //! Every accepted event is written here *before* the client is told "accepted", so a crash never loses a
 //! confirmed event. On restart, replaying the log rebuilds the in-memory run store exactly.

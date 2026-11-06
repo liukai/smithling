@@ -1,4 +1,4 @@
-//! Restart time at the M0 capacity limit (500k runs): ready within 30 s (design §11.4).
+//! Restart time at the M1 capacity limit (500k runs): ready within 30 s (design §11.4).
 //! Slow, so `#[ignore]`; CI runs it with `--ignored`.
 
 use std::io::{BufRead, BufReader};

@@ -1,5 +1,5 @@
 //! Query service: answers reads from a run-store snapshot. Depends only on the read-only
-//! [`Snapshot`] trait, never on ingest internals, so M1 can put DataFusion behind the same API.
+//! [`Snapshot`] trait, never on ingest internals, so M2 can put DataFusion behind the same API.
 
 pub mod cursor;
 

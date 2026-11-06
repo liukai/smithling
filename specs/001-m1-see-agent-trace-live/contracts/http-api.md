@@ -1,4 +1,4 @@
-# HTTP API contract (M0 subset)
+# HTTP API contract (M1 subset)
 
 This is a subset of the [master contract](../../000-tracedb-master-plan/contracts/http-api.md), and the shapes match it.
 
@@ -10,9 +10,9 @@ This is a subset of the [master contract](../../000-tracedb-master-plan/contract
 | `POST /runs` | one Run → `202` |
 | `PATCH /runs/{run_id}` | partial Run → `202` |
 | `POST /v1/events` | `{events: [RunEvent]}` → same as batch |
-| `POST /runs/multipart` | `415 {error: {code: "unsupported", message: "multipart is supported from M2"}}` |
+| `POST /runs/multipart` | `415 {error: {code: "unsupported", message: "multipart is supported from M3"}}` |
 
-| `POST /feedback` | `501 {error: {code: "unsupported", message: "feedback is supported from M2"}}` (the SDK sends feedback here when multipart is off) |
+| `POST /feedback` | `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` (the SDK sends feedback here when multipart is off) |
 
 `202` is sent only after fsync. Per-item validation failures go in `rejected[]` (the SDK ignores this body, so it holds only
 items that could never succeed). Whole-request failures use status codes the SDK acts on:

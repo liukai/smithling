@@ -1,4 +1,4 @@
-# Specification Quality Checklist: M0 — See agent trace live
+# Specification Quality Checklist: M1 — See agent trace live
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-11-05
@@ -32,5 +32,5 @@
 ## Notes
 
 - The LangSmith SDK, its endpoint setting and "plain JSON batches" are the user-facing integration contract, not implementation choices. Storage words in Assumptions/Out of scope ("durable log", "columnar files") describe the scope boundary only; the design lives in plan.md / design.md.
-- Every M0-FR maps to a master ID (FR-xxx / QR-xxx); master text is not duplicated.
-- M0-sized targets (SC-03, SC-07, capacity limit) are assumptions, flagged so the master targets still apply from M2.
+- Every M1-FR maps to a master ID (FR-xxx / QR-xxx); master text is not duplicated.
+- M1-sized targets (SC-03, SC-07, capacity limit) are assumptions, flagged so the master targets still apply from M3.

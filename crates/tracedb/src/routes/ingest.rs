@@ -67,7 +67,7 @@ pub async fn multipart() -> Response {
     error(
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
         "unsupported",
-        "multipart is supported from M2",
+        "multipart is supported from M3",
     )
 }
 
@@ -75,7 +75,7 @@ pub async fn feedback() -> Response {
     error(
         StatusCode::NOT_IMPLEMENTED,
         "unsupported",
-        "feedback is supported from M2",
+        "feedback is supported from M3",
     )
 }
 

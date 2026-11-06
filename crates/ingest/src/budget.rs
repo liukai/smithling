@@ -1,4 +1,4 @@
-//! M0 memory budget: past it, batches that would add new runs are refused.
+//! M1 memory budget: past it, batches that would add new runs are refused.
 
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_RUNS: usize = 500_000;

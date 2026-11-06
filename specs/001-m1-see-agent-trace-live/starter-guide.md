@@ -1,6 +1,6 @@
-# M0 code starter guide
+# M1 code starter guide
 
-How to read the M0 code: the big picture, the critical parts, and one agent step traced through the code with
+How to read the M1 code: the big picture, the critical parts, and one agent step traced through the code with
 line numbers. Line numbers are as of commit `767c604`; if they drift, search for the function name.
 
 For *why* it is built this way, see [design.md](design.md). This guide is about *where* it lives.
@@ -54,7 +54,7 @@ flowchart TB
 ```
 
 `query` sees ingest only through `trait Snapshot`
-([ingest/src/lib.rs:120](../../crates/ingest/src/lib.rs#L120)). That trait is the boundary where M1 puts
+([ingest/src/lib.rs:120](../../crates/ingest/src/lib.rs#L120)). That trait is the boundary where M2 puts
 segments and DataFusion.
 
 ## 2. Suggested reading order (about 2 hours)

@@ -1,8 +1,8 @@
-# Implementation Plan: M0 — See agent trace live
+# Implementation Plan: M1 — See agent trace live
 
-**Branch**: `001-m0-see-agent-trace-live` | **Date**: 2026-11-05 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md)
+**Branch**: `001-m1-see-agent-trace-live` | **Date**: 2026-11-05 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md)
 
-**Input**: Feature specification from `specs/001-m0-see-agent-trace-live/spec.md`. Master: [000 plan](../000-tracedb-master-plan/plan.md).
+**Input**: Feature specification from `specs/001-m1-see-agent-trace-live/spec.md`. Master: [000 plan](../000-tracedb-master-plan/plan.md).
 
 ## Summary
 
@@ -13,35 +13,35 @@ HTTP path. The full design and its components are in [design.md](design.md).
 
 ## End-state map: where you see each requirement
 
-One row per M0 requirement. "Where you see it" is the screen, command or check to look at; "What you should see" is
+One row per M1 requirement. "Where you see it" is the screen, command or check to look at; "What you should see" is
 the pass condition. Steps refer to [quickstart.md](quickstart.md).
 
 ### Functional (what you can do)
 
 | Req | As a…, I can… | Where you see it | What you should see | Automated check |
 |---|---|---|---|---|
-| M0-FR-01 | As an agent developer, I can trace an unmodified LangSmith SDK agent by changing only its endpoint | Browser → runs list, after quickstart step 2 | the agent's root run appears; no code change | contract test (recorded SDK traffic) |
-| M0-FR-02 | As an agent developer, I can upload a batch with a bad item and still keep the good ones | upload response (`rejected[]`); runs list | good items listed; the bad one rejected with a reason code (data-model §6) | `ingest` validation tests |
-| M0-FR-03 | As an agent developer, I can see one correct state for a step that arrived in pieces | Browser → trace → step panel | after start + update: `error`, 31 s, outputs present | merge unit + property tests |
-| M0-FR-04 | As an agent developer, I can kill tracedb and restart without losing anything it confirmed | `cargo test --test crash` (step 4); the browser after restart | `0 confirmed events missing` × 10 rounds; the same runs listed | crash harness in CI |
-| M0-FR-05 | As an agent developer, I can watch runs arrive and update without refreshing | Browser → runs list with the `● live` indicator | new rows within 1 s; a long root flips `running` → `ok` | e2e tail-latency test (p99 < 1 s) |
-| M0-FR-06 | As an agent developer, I can page through root runs newest first and narrow by project and status | Browser → runs list: project/status pickers, `older ▸` | newest first, no repeats across pages | query cursor tests |
-| M0-FR-07 | As an agent developer, I can open any trace and see its tree and waterfall at once | Browser → click a root run | 250 steps in tree order with aligned bars, in < 1 s | e2e trace-open timing test |
-| M0-FR-08 | As an agent developer, I can read any step's full inputs and outputs | Browser → click a step → right panel | full 40 KB payload, readable JSON | API test for `include=` |
-| M0-FR-09 | As an agent developer, I can share a link to a trace or step | copy the URL, open it in a new tab | the same trace and selected step | UI route test |
-| M0-FR-10 | As a test user, I can generate realistic traces without an agent | `tracedb seed --traces 100` (step 3), then the browser | 100 traces with deep trees, errors, late finishes, big payloads | seed shape test (fixed `--seed`) |
+| M1-FR-01 | As an agent developer, I can trace an unmodified LangSmith SDK agent by changing only its endpoint | Browser → runs list, after quickstart step 2 | the agent's root run appears; no code change | contract test (recorded SDK traffic) |
+| M1-FR-02 | As an agent developer, I can upload a batch with a bad item and still keep the good ones | upload response (`rejected[]`); runs list | good items listed; the bad one rejected with a reason code (data-model §6) | `ingest` validation tests |
+| M1-FR-03 | As an agent developer, I can see one correct state for a step that arrived in pieces | Browser → trace → step panel | after start + update: `error`, 31 s, outputs present | merge unit + property tests |
+| M1-FR-04 | As an agent developer, I can kill tracedb and restart without losing anything it confirmed | `cargo test --test crash` (step 4); the browser after restart | `0 confirmed events missing` × 10 rounds; the same runs listed | crash harness in CI |
+| M1-FR-05 | As an agent developer, I can watch runs arrive and update without refreshing | Browser → runs list with the `● live` indicator | new rows within 1 s; a long root flips `running` → `ok` | e2e tail-latency test (p99 < 1 s) |
+| M1-FR-06 | As an agent developer, I can page through root runs newest first and narrow by project and status | Browser → runs list: project/status pickers, `older ▸` | newest first, no repeats across pages | query cursor tests |
+| M1-FR-07 | As an agent developer, I can open any trace and see its tree and waterfall at once | Browser → click a root run | 250 steps in tree order with aligned bars, in < 1 s | e2e trace-open timing test |
+| M1-FR-08 | As an agent developer, I can read any step's full inputs and outputs | Browser → click a step → right panel | full 40 KB payload, readable JSON | API test for `include=` |
+| M1-FR-09 | As an agent developer, I can share a link to a trace or step | copy the URL, open it in a new tab | the same trace and selected step | UI route test |
+| M1-FR-10 | As a test user, I can generate realistic traces without an agent | `tracedb seed --traces 100` (step 3), then the browser | 100 traces with deep trees, errors, late finishes, big payloads | seed shape test (fixed `--seed`) |
 
 ### Non-functional (how well it does it)
 
 | Req | As a…, I can… | Where you see it | What you should see | Automated check |
 |---|---|---|---|---|
-| M0-FR-11 / QR-001 | As an agent developer, I can trust nothing leaves my laptop | `scripts/no-outbound.sh` (step 5); `--data` folder | 0 non-loopback connections; all files under the data folder | strace check in Linux CI |
-| M0-FR-12 / QR-002 | As a test user, I can run it with nothing else installed | a fresh machine: download the binary → `tracedb serve` | it starts; no Docker, DB or Node needed at runtime | CI runs the release binary in a clean container |
-| QR-003 (via FR-04) | As an agent developer, I can rely on durability | see M0-FR-04 | — | crash harness |
+| M1-FR-11 / QR-001 | As an agent developer, I can trust nothing leaves my laptop | `scripts/no-outbound.sh` (step 5); `--data` folder | 0 non-loopback connections; all files under the data folder | strace check in Linux CI |
+| M1-FR-12 / QR-002 | As a test user, I can run it with nothing else installed | a fresh machine: download the binary → `tracedb serve` | it starts; no Docker, DB or Node needed at runtime | CI runs the release binary in a clean container |
+| QR-003 (via FR-04) | As an agent developer, I can rely on durability | see M1-FR-04 | — | crash harness |
 | SC-02 | As an agent developer, I see my data quickly | e2e test output | p99 confirm → visible < 1 s | e2e tail-latency test |
 | SC-03 | As an agent developer, big traces open fast | e2e test output | 250-step trace < 1 s | e2e trace-open test |
 | SC-07 | As an agent developer, uploads keep up with my agent | `cargo test --test throughput -- --ignored` | ≥ 5,000 events/s sustained | throughput test |
-| M0-FR-13 | As a maintainer, I can trust all of the above stays true | CI on every PR | all checks green | CI workflow |
+| M1-FR-13 | As a maintainer, I can trust all of the above stays true | CI on every PR | all checks green | CI workflow |
 
 ## Technical Context
 
@@ -71,13 +71,13 @@ No NEEDS CLARIFICATION remain; three small design questions are listed in design
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.* Constitution v1.1.0.
 
-| Principle | M0 check | Pre | Post |
+| Principle | M1 check | Pre | Post |
 |---|---|---|---|
 | I. Rust, one binary | Rust workspace → one `tracedb` binary; UI embedded; no external services | PASS | PASS |
-| II. SmithDB is the reference | Ingest service + WAL + memtable + query service mirror SmithDB. Columnar segments and metastore are deferred to M1 under reason (c), deliberately staged (roadmap). Merge on write is staged until segments exist (design §10) | PASS | PASS |
+| II. SmithDB is the reference | Ingest service + WAL + memtable + query service mirror SmithDB. Columnar segments and metastore are deferred to M2 under reason (c), deliberately staged (roadmap). Merge on write is staged until segments exist (design §10) | PASS | PASS |
 | III. Local and private | localhost bind; no outbound (CI strace check); all state under `--data` | PASS | PASS |
-| IV. UI first | runs list, trace view and step panel ship in M0; the demo is in the browser | PASS | PASS |
-| V. Cloud-portable storage | the WAL is local by nature (SmithDB keeps its WAL on the ingestion node's disk); the first object-storage data arrives in M1 | PASS | PASS |
+| IV. UI first | runs list, trace view and step panel ship in M1; the demo is in the browser | PASS | PASS |
+| V. Cloud-portable storage | the WAL is local by nature (SmithDB keeps its WAL on the ingestion node's disk); the first object-storage data arrives in M2 | PASS | PASS |
 | VI. Done is measured | crash test, contract test, no-outbound and latency tests in CI (design §9) | PASS | PASS |
 
 ## Project Structure
@@ -85,14 +85,14 @@ No NEEDS CLARIFICATION remain; three small design questions are listed in design
 ### Documentation (this feature)
 
 ```text
-specs/001-m0-see-agent-trace-live/
+specs/001-m1-see-agent-trace-live/
 ├── spec.md          # what and why
 ├── design.md        # high-level design + core components (review before implementation)
 ├── plan.md          # this file
 ├── research.md      # Phase 0 decisions
-├── data-model.md    # M0 entities (refers to master)
-├── quickstart.md    # how to prove M0 works
-├── contracts/       # http-api.md, cli.md (M0 subset of master)
+├── data-model.md    # M1 entities (refers to master)
+├── quickstart.md    # how to prove M1 works
+├── contracts/       # http-api.md, cli.md (M1 subset of master)
 └── tasks.md         # /speckit-tasks (next)
 ```
 
@@ -113,7 +113,7 @@ tests/
 ```
 
 **Structure Decision**: the existing `src/main.rs` scaffold moves to `crates/tracedb`. Crate boundaries enforce the
-service separation (design §3 boundary rules). `storage` and `compact` crates are not created until M1/M3.
+service separation (design §3 boundary rules). `storage` and `compact` crates are not created until M2/M4.
 
 ## Delivery order (PR-sized, each ends in something visible)
 
@@ -125,7 +125,7 @@ service separation (design §3 boundary rules). `storage` and `compact` crates a
 | 4 | `query` + `/api/traces`, `/api/runs`, `/api/roots`, `/api/tail` (SSE) | As an agent developer, I can fetch a trace tree and watch changes stream |
 | 5 | UI: shell, runs list (live, paged), empty state; embedding | As an agent developer, I can watch my runs arrive in the browser |
 | 6 | UI: trace view (tree + waterfall) + step panel; URL state | As an agent developer, I can open any trace and read any step |
-| 7 | `tracedb seed`; no-outbound check; e2e latency/trace-open tests | As a test user, I can generate traces and explore them; as a maintainer, I can trust the M0 gates |
+| 7 | `tracedb seed`; no-outbound check; e2e latency/trace-open tests | As a test user, I can generate traces and explore them; as a maintainer, I can trust the M1 gates |
 
 ## Complexity Tracking
 

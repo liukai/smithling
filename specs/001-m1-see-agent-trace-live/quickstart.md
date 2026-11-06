@@ -1,4 +1,4 @@
-# Quickstart: prove M0 works
+# Quickstart: prove M1 works
 
 Contracts: [http-api](contracts/http-api.md) · [cli](contracts/cli.md). Design: [design.md](design.md).
 

@@ -79,7 +79,7 @@ pub struct AcceptResult {
 pub enum AcceptError {
     #[error("too many events in flight; retry shortly")]
     Busy,
-    #[error("memory budget reached; new runs are refused until M1 adds disk storage")]
+    #[error("memory budget reached; new runs are refused until M2 adds disk storage")]
     Capacity,
     #[error("storage error: {0}")]
     Storage(String),
