@@ -3927,6 +3927,8 @@ name = "tracedb-query"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "datafusion",
+ "futures-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -3934,6 +3936,8 @@ dependencies = [
  "tokio",
  "tracedb-ingest",
  "tracedb-model",
+ "tracedb-storage",
+ "tracing",
  "uuid",
  "xxhash-rust",
 ]

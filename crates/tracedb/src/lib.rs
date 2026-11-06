@@ -25,7 +25,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(ingest: Ingest) -> AppState {
-        let query = Query::new(ingest.snapshot());
+        let query = Query::new(ingest.clone());
         AppState {
             ingest,
             query,
@@ -62,6 +62,7 @@ pub fn app(state: AppState) -> Router {
         .route("/feedback", post(ing::feedback))
         .route("/v1/events", post(ing::native_events))
         .route("/healthz", get(healthz))
+        .route("/api/query", post(routes::api::query))
         .route("/api/roots", get(routes::api::roots))
         .route("/api/projects", get(routes::api::projects))
         .route("/api/traces/{trace_id}", get(routes::api::trace))

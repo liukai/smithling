@@ -1,34 +1,31 @@
-//! Opaque keyset cursor for the root list: base64 of `{start_time, run_id, filter_hash}`.
-//! The filter hash makes a cursor from one filter unusable with another.
+//! Opaque keyset cursor: base64 of `{key, run_id, query_hash}` (data-model §9). The query hash covers
+//! everything that changes results, so a cursor from one query can't be used with another.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use tracedb_ingest::RootKey;
-use tracedb_model::{RunId, Ts};
+use tracedb_model::RunId;
+
+/// Position in an ordered result: the order value (start key or latency) and the run id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Key {
+    pub value: i64,
+    pub run_id: RunId,
+}
 
 #[derive(Serialize, Deserialize)]
 struct Wire {
-    start_time: i64,
-    run_id: RunId,
-    filter_hash: u64,
+    key: Key,
+    query_hash: u64,
 }
 
-pub fn encode(key: RootKey, filter_hash: u64) -> String {
-    let w = Wire {
-        start_time: key.start_time.0,
-        run_id: key.run_id,
-        filter_hash,
-    };
-    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&w).expect("serializable"))
+pub fn encode(key: Key, query_hash: u64) -> String {
+    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Wire { key, query_hash }).expect("serializable"))
 }
 
-/// Returns `None` for a malformed cursor or one made for a different filter.
-pub fn decode(s: &str, filter_hash: u64) -> Option<RootKey> {
+/// `None` for a malformed cursor or one made for a different query.
+pub fn decode(s: &str, query_hash: u64) -> Option<Key> {
     let bytes = URL_SAFE_NO_PAD.decode(s).ok()?;
     let w: Wire = serde_json::from_slice(&bytes).ok()?;
-    (w.filter_hash == filter_hash).then_some(RootKey {
-        start_time: Ts(w.start_time),
-        run_id: w.run_id,
-    })
+    (w.query_hash == query_hash).then_some(w.key)
 }

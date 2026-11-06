@@ -1,16 +1,181 @@
-//! Read API: root list, projects, trace tree, single run.
+//! Read API: queries, root list (M1), projects, trace tree, single run (contracts/http-api.md).
 
 use axum::Json;
 use axum::extract::{Path, Query as Q, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
+use serde_json::json;
 use tracedb_ingest::Include;
-use tracedb_model::{RunId, Status, TraceId};
-use tracedb_query::RootsParams;
+use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
+use tracedb_model::{RunId, TraceId};
+use tracedb_query::{OrderBy, QueryError, QuerySpec, TimeRange};
 
 use crate::AppState;
 use crate::routes::errors::error;
+
+/// `POST /api/query` body. Filter slots are LangSmith filter text (contracts/filter-language.md).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QueryBody {
+    pub project: Option<String>,
+    pub time: Option<TimeBody>,
+    pub filter: Option<String>,
+    pub trace_filter: Option<String>,
+    pub tree_filter: Option<String>,
+    pub is_root: Option<bool>,
+    pub order: Option<OrderBody>,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TimeBody {
+    /// `"12h"`, `"30m"`, `"7d"`: the last such span.
+    pub last: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderBody {
+    pub by: Option<String>,
+    pub dir: Option<String>,
+}
+
+/// A request error that names what was wrong (and where, for filter text).
+pub struct BadRequest(pub Box<Response>);
+
+fn bad(code: &str, message: impl Into<String>) -> BadRequest {
+    BadRequest(Box::new(error(StatusCode::BAD_REQUEST, code, message)))
+}
+
+fn filter_slot(slot: &str, text: &Option<String>) -> Result<Option<Expr>, BadRequest> {
+    let Some(t) = text.as_deref().filter(|t| !t.trim().is_empty()) else {
+        return Ok(None);
+    };
+    parse_filter(t).map(Some).map_err(|e| {
+        let code = if e.message.contains("supported from") {
+            "unsupported"
+        } else {
+            "bad_filter"
+        };
+        BadRequest(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {
+                    "code": code, "message": e.message, "slot": slot, "start": e.start, "end": e.end,
+                }})),
+            )
+                .into_response(),
+        ))
+    })
+}
+
+fn time_at(field: &str, s: &str) -> Result<TimeAt, BadRequest> {
+    TimeAt::parse(s).ok_or_else(|| {
+        bad(
+            "bad_time",
+            format!("{field}: expected an ISO-8601 time or e.g. \"-12h\""),
+        )
+    })
+}
+
+impl QueryBody {
+    pub fn to_spec(&self) -> Result<QuerySpec, BadRequest> {
+        let mut time = TimeRange::default();
+        if let Some(t) = &self.time {
+            if let Some(last) = &t.last {
+                time.from = Some(time_at("time.last", &format!("-{}", last.trim_start_matches('-')))?);
+            }
+            if let Some(f) = &t.from {
+                time.from = Some(time_at("time.from", f)?);
+            }
+            if let Some(to) = &t.to {
+                time.to = Some(time_at("time.to", to)?);
+            }
+        }
+        let (order, ascending) = match &self.order {
+            None => (OrderBy::StartTime, false),
+            Some(o) => {
+                let by = match o.by.as_deref().unwrap_or("start_time") {
+                    "start_time" => OrderBy::StartTime,
+                    "latency" => OrderBy::Latency,
+                    other => {
+                        return Err(bad(
+                            "bad_order",
+                            format!("order.by {other:?}: use start_time or latency"),
+                        ));
+                    }
+                };
+                let asc = match o.dir.as_deref().unwrap_or("desc") {
+                    "desc" => false,
+                    "asc" => true,
+                    other => return Err(bad("bad_order", format!("order.dir {other:?}: use asc or desc"))),
+                };
+                (by, asc)
+            }
+        };
+        let columns = self
+            .columns
+            .iter()
+            .map(|c| column_path(c).ok_or_else(|| bad("bad_column", format!("unknown column {c:?}"))))
+            .collect::<Result<_, _>>()?;
+        Ok(QuerySpec {
+            project: self.project.clone().filter(|p| !p.is_empty()),
+            time,
+            filter: filter_slot("filter", &self.filter)?,
+            trace_filter: filter_slot("trace_filter", &self.trace_filter)?,
+            tree_filter: filter_slot("tree_filter", &self.tree_filter)?,
+            is_root: self.is_root,
+            order,
+            ascending,
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+            columns,
+            traces: None,
+        })
+    }
+}
+
+fn column_path(c: &str) -> Option<FPath> {
+    if let Some(f) = Field::from_name(c) {
+        return Some(FPath::Field(f));
+    }
+    let probe = format!("eq({c}, null)");
+    match parse_filter(&probe).ok()? {
+        Expr::Cmp { path, .. } => Some(path),
+        _ => None,
+    }
+}
+
+fn query_error(e: QueryError) -> Response {
+    match e {
+        QueryError::BadCursor => error(StatusCode::BAD_REQUEST, "bad_cursor", e.to_string()),
+        other => error(StatusCode::INTERNAL_SERVER_ERROR, "query_failed", other.to_string()),
+    }
+}
+
+pub async fn query(
+    State(st): State<AppState>,
+    body: Result<Json<QueryBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(e) => return error(StatusCode::BAD_REQUEST, "bad_request", e.body_text()),
+    };
+    let spec = match body.to_spec() {
+        Ok(s) => s,
+        Err(BadRequest(r)) => return *r,
+    };
+    match st.query.query(&spec).await {
+        Ok(page) => Json(page).into_response(),
+        Err(e) => query_error(e),
+    }
+}
 
 #[derive(Deserialize)]
 pub struct RootsQs {
@@ -20,46 +185,61 @@ pub struct RootsQs {
     limit: Option<usize>,
 }
 
-pub fn parse_status(s: &str) -> Option<Status> {
-    match s {
-        "running" => Some(Status::Running),
-        "ok" => Some(Status::Ok),
-        "error" => Some(Status::Error),
-        _ => None,
-    }
+pub fn parse_status(s: &str) -> Option<&'static str> {
+    ["running", "ok", "error"].into_iter().find(|v| *v == s)
 }
 
+/// M1's root list, answered as a query (`is_root`, optional status) so old clients keep working.
 pub async fn roots(State(st): State<AppState>, Q(q): Q<RootsQs>) -> Response {
-    let status = match q.status.as_deref().filter(|s| !s.is_empty()) {
+    let filter = match q.status.as_deref().filter(|s| !s.is_empty()) {
         Some(s) => match parse_status(s) {
-            Some(v) => Some(v),
+            Some(v) => Some(Expr::Cmp {
+                op: CmpOp::Eq,
+                path: FPath::Field(Field::Status),
+                value: Value::Str(v.into()),
+            }),
             None => return error(StatusCode::BAD_REQUEST, "bad_status", format!("unknown status {s:?}")),
         },
         None => None,
     };
-    let params = RootsParams {
+    let spec = QuerySpec {
         project: q.project.filter(|p| !p.is_empty()),
-        status,
-        cursor: q.cursor,
+        filter,
+        is_root: Some(true),
         limit: q.limit,
+        cursor: q.cursor,
+        ..QuerySpec::default()
     };
-    match st.query.roots(&params) {
-        Ok(page) => Json(page).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, "bad_cursor", e.to_string()),
+    match st.query.query(&spec).await {
+        Ok(page) => {
+            // Only roots whose start arrived are listed (M1 behaviour).
+            let runs: Vec<_> = page
+                .runs
+                .into_iter()
+                .filter(|r| r.header.start_time.is_some() && r.header.name.is_some())
+                .map(|r| r.header)
+                .collect();
+            Json(json!({"runs": runs, "next_cursor": page.next_cursor})).into_response()
+        }
+        Err(e) => query_error(e),
     }
 }
 
 pub async fn projects(State(st): State<AppState>) -> Response {
-    Json(st.query.projects()).into_response()
+    match st.query.projects().await {
+        Ok(p) => Json(p).into_response(),
+        Err(e) => query_error(e),
+    }
 }
 
 pub async fn trace(State(st): State<AppState>, Path(id): Path<String>) -> Response {
     let Ok(id) = id.parse::<TraceId>() else {
         return error(StatusCode::BAD_REQUEST, "bad_id", "trace id is not a UUID");
     };
-    match st.query.trace(id) {
-        Some(t) => Json(t).into_response(),
-        None => error(StatusCode::NOT_FOUND, "not_found", "no such trace"),
+    match st.query.trace(id).await {
+        Ok(Some(t)) => Json(t).into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "not_found", "no such trace"),
+        Err(e) => query_error(e),
     }
 }
 
@@ -94,8 +274,9 @@ pub async fn run(State(st): State<AppState>, Path(id): Path<String>, Q(q): Q<Run
             }
         }
     }
-    match st.query.run(id, include) {
-        Some(r) => Json(r).into_response(),
-        None => error(StatusCode::NOT_FOUND, "not_found", "no such run"),
+    match st.query.run(id, include).await {
+        Ok(Some(r)) => Json(r).into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "not_found", "no such run"),
+        Err(e) => query_error(e),
     }
 }

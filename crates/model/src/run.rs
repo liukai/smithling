@@ -212,6 +212,55 @@ impl RunState {
         self.run.is_root && self.has_start
     }
 
+    /// A copy without `inputs`, `outputs` and `events` (their `present` bits and sizes are kept), for reads
+    /// that only need headers.
+    pub fn without_payload(&self) -> RunState {
+        let r = &self.run;
+        RunState {
+            run: Run {
+                run_id: r.run_id,
+                trace_id: r.trace_id,
+                parent_run_id: r.parent_run_id,
+                dotted_order: r.dotted_order.clone(),
+                depth: r.depth,
+                is_root: r.is_root,
+                project: r.project.clone(),
+                address: r.address.clone(),
+                tags: r.tags.clone(),
+                metadata: r.metadata.clone(),
+                extra: r.extra.clone(),
+                thread_id: r.thread_id.clone(),
+                name: r.name.clone(),
+                run_type: r.run_type,
+                run_type_raw: r.run_type_raw.clone(),
+                start_time: r.start_time,
+                end_time: r.end_time,
+                error: r.error.clone(),
+                status: r.status,
+                latency_ms: r.latency_ms,
+                model: r.model.clone(),
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
+                total_tokens: r.total_tokens,
+                inputs: None,
+                outputs: None,
+                events: None,
+                dropped: r.dropped.clone(),
+                warnings: r.warnings.clone(),
+            },
+            first_seq: self.first_seq,
+            last_seq: self.last_seq,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            event_count: self.event_count,
+            payload_sizes: self.payload_sizes,
+            has_start: self.has_start,
+            project_set: self.project_set,
+            outputs_usage: self.outputs_usage.clone(),
+            present: self.present,
+        }
+    }
+
     pub fn created_by_patch(&self) -> bool {
         self.present & present::CREATED_BY_PATCH != 0
     }
