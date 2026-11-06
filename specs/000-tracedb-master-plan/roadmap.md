@@ -29,18 +29,19 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05: **Merge rule**: the latest value wins for every field; nothing appends (research R1, because the SDK re-sends full values).
 - 2026-11-05: **Constitution v1.1.0**: SmithDB is the target reached in stages; "deliberately staged" is an allowed reason (Principle II (c)). No Simplicity principle; simplicity stays a standing preference.
 
-**STATE as of 2026-11-05** (verified by listing `specs/` and reading the constitution): product spec, plan, design notes,
-contracts and constitution v1.0.0 are written. No phase spec, branch or code yet. Everything is uncommitted on `master`.
+**STATE as of 2026-11-05** (verified by `git log` and listing `specs/`): the master plan is committed on `master`
+(`5e923fc`). M0 is on branch `001-m0-see-agent-trace-live` (worktree `../rust-001`), with spec, design, plan, research,
+contracts and quickstart drafted and not committed. No code yet.
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) Commit the docs on a branch. 2) `/speckit-specify` for `001-m0-see-agent-trace-live`. 3) Plan and tasks for M0.
+**NEXT**: 1) User reviews M0 [design.md](../001-m0-see-agent-trace-live/design.md) (3 open questions in §11). 2) Commit the M0 docs. 3) `/speckit-tasks` for M0.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
-| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | spec'ing | — | not run |
+| M0 See agent trace live | [`001-m0-see-agent-trace-live`](../001-m0-see-agent-trace-live/spec.md) | spec + design drafted, in review | — | not run |
 | M1 Durable storage + query builder | — | not started | — | — |
 | M2 Core demo | — | not started | — | — |
 | M3 Follow-through | — | not started | — | — |
