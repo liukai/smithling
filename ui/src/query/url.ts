@@ -85,6 +85,6 @@ export function toBody(q: QueryState, cursor?: string | null) {
     order: q.order,
     limit: q.limit,
     cursor: cursor ?? undefined,
-    columns: q.cols.length ? q.cols : undefined,
+    columns: q.view === "table" && q.cols.length ? q.cols : undefined,
   };
 }

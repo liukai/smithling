@@ -67,6 +67,18 @@ export interface QueryPage {
   warnings: QueryWarning[];
 }
 
+export interface FieldInfo {
+  path: string;
+  types: { type: string; count: number }[];
+  complete: boolean;
+}
+
+export interface FieldValues {
+  values: { value: unknown; count: number }[];
+  other_count: number;
+  approximate: boolean;
+}
+
 /** An error response; `bad_filter` carries the slot and UTF-8 byte range it points at. */
 export class ApiError extends Error {
   constructor(
@@ -96,5 +108,19 @@ export const postQuery = (body: object) =>
 
 export const getProjects = () => get<ProjectInfo[]>("/api/projects");
 export const getTrace = (id: string) => get<TraceView>(`/api/traces/${id}`);
+export const getRunHeader = (id: string) => get<RunHeader>(`/api/runs/${id}`);
 export const getRun = (id: string) => get<RunView>(`/api/runs/${id}?include=inputs,outputs,events`);
 
+
+/** The catalog's scope: a project and a span such as `12h`. */
+export interface FieldScope { project?: string; time?: string }
+
+const qs = (p: Record<string, string | undefined>) => {
+  const s = new URLSearchParams(Object.entries(p).filter((e): e is [string, string] => Boolean(e[1]))).toString();
+  return s ? `?${s}` : "";
+};
+
+export const getFields = (s: FieldScope, prefix: string) =>
+  get<{ fields: FieldInfo[]; complete: boolean }>(`/api/fields${qs({ project: s.project, time: s.time, prefix })}`);
+export const getFieldValues = (s: FieldScope, path: string, prefix: string) =>
+  get<FieldValues>(`/api/fields/values${qs({ project: s.project, time: s.time, path, prefix })}`);

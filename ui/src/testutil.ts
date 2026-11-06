@@ -14,13 +14,15 @@ export class FakeEventSource {
   emit(type: string, data: unknown = {}) {
     for (const fn of this.listeners.get(type) ?? []) fn(new MessageEvent(type, { data: JSON.stringify(data) }));
   }
-  close() {}
+  closed = false;
+  readyState = 0;
+  close() { this.closed = true; }
 }
 
 export function header(n: number, over: Partial<RunHeader> = {}): RunHeader {
   const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
   return {
-    run_id: id, trace_id: id, parent_run_id: null, dotted_order: id, depth: 0, is_root: true,
+    run_id: id, trace_id: id, parent_run_id: null, dotted_order: `20261105T02${String(n).padStart(2, "0")}00000000Z${id}`, depth: 0, is_root: true,
     project: "research-agent", address: null, tags: ["batch=a"], metadata: {}, extra: {}, thread_id: null,
     name: `task-${n}`, run_type: "chain", run_type_raw: null,
     start_time: `2026-11-05T02:${String(n).padStart(2, "0")}:00.000000Z`, end_time: null, error: null,
@@ -38,9 +40,12 @@ export function mockFetch(routes: Record<string, (url: URL, body: any) => unknow
     calls.push(url.pathname + url.search);
     const key = Object.keys(routes).find((k) => url.pathname.startsWith(k));
     if (!key) return new Response(JSON.stringify({ error: { message: "not found" } }), { status: 404 });
-    const out = routes[key](url, init?.body ? JSON.parse(String(init.body)) : undefined);
+    const out = await routes[key](url, init?.body ? JSON.parse(String(init.body)) : undefined);
     if (out instanceof Response) return out;
     return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
   }));
   return calls;
 }
+
+export const queryPage = (runs: unknown[], next_cursor: string | null = null) =>
+  ({ runs, next_cursor, warnings: [], stats: { files_total: 0, files_scanned: 0, rows_read: 0, rows_merged: 0, matched: 0, ms: 1 } });

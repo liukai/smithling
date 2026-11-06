@@ -77,3 +77,22 @@ pre.err { color: var(--err); white-space: pre-wrap; margin: 0; }
 .warning { background: #fff6e0; color: #7a5200; padding: 4px 10px; margin-bottom: 6px; border-radius: 4px; font-size: 12px; }
 .clickable { cursor: copy; border: 0; background: none; padding: 0; font: inherit; color: inherit; } .clickable:hover { text-decoration: underline; }
 .tag.clickable { background: #eef0f5; padding: 0 5px; font-size: 11px; }
+.results-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+.tabs button { border: 1px solid var(--line); background: #fff; font: inherit; padding: 2px 10px; cursor: pointer; }
+.tabs button.on { background: #e6ecff; color: var(--accent); border-color: #c8d3ff; }
+.results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.results.with-fields { grid-template-columns: 300px minmax(0, 1fr); }
+.fields { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; align-self: start; max-height: calc(100vh - 120px); overflow: auto; }
+.fields input, .value-list input, .add-column input { font: inherit; padding: 2px 6px; width: 100%; box-sizing: border-box; }
+.fields ul { list-style: none; margin: 4px 0; padding: 0; }
+.field { border-bottom: 1px solid #f3f3f1; padding: 3px 0; }
+.field-head { display: flex; gap: 6px; align-items: baseline; }
+.field-path { border: 0; background: none; font: 12px ui-monospace, Menlo, monospace; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
+.field-types { font-size: 11px; margin-left: auto; white-space: nowrap; }
+.add-col, .col-remove { border: 0; background: none; font: inherit; font-size: 11px; color: var(--muted); cursor: pointer; padding: 0 2px; }
+.value-list { padding: 4px 0 4px 10px; }
+.value { display: flex; gap: 8px; justify-content: space-between; }
+.add-column { min-width: 140px; }
+tr.left { opacity: 0.6; }
+.left-mark { margin-left: 6px; font-size: 11px; color: var(--muted); font-style: italic; }
+.samples-head .live { margin-left: 0; margin-right: auto; }

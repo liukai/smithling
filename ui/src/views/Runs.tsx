@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApiError } from "../api";
+import { FieldBrowser } from "../fields/FieldBrowser";
 import type { Expr } from "../query/ast";
 import { type Rows, chip, chipsOf, rowsOf, textOf } from "../query/chips";
 import { type Mode, Panel } from "../query/Panel";
@@ -10,6 +11,7 @@ import { API_SLOT, type QueryState, SLOTS, type Slot, fromUrl, toUrl } from "../
 import { navigate } from "../route";
 import { Samples } from "./Samples";
 
+const VIEWS: [QueryState["view"], string][] = [["samples", "Samples"], ["table", "Table"]];
 const slotKey = (q: QueryState) => JSON.stringify(SLOTS.map((s) => q[s] ?? ""));
 const textsOf = (q: QueryState) => ({ filter: q.filter ?? "", trace: q.trace ?? "", tree: q.tree ?? "" });
 
@@ -26,6 +28,7 @@ export function RunsPage({ search }: { search: string }) {
   const [mode, setMode] = useState<Mode>(() => (Object.keys(errors).length ? "text" : "panel"));
   const [drafts, setDrafts] = useState(() => textsOf(q));
   const synced = useRef(slotKey(q));
+  const [fieldsOpen, setFieldsOpen] = useState(false);
 
   useEffect(() => { if (m1) navigate(toUrl(q), true); }, [m1, q]);
 
@@ -106,7 +109,23 @@ export function RunsPage({ search }: { search: string }) {
     <div>
       <Panel q={q} rows={rows} mode={mode} drafts={drafts} errors={errors}
         onQuery={(p) => apply(p)} onRows={(r) => apply({}, r, true)} onMode={onMode} onDrafts={setDrafts} onRunText={runText} />
-      <Samples q={q} onFilter={onFilter} onFilterError={onFilterError} />
+      <div className="results-bar">
+        <button className={`toggle-chip${fieldsOpen ? " on" : ""}`} aria-pressed={fieldsOpen} onClick={() => setFieldsOpen(!fieldsOpen)}>fields</button>
+        <span className="tabs">
+          {VIEWS.map(([v, l]) => (
+            <button key={v} className={q.view === v ? "on" : undefined} aria-pressed={q.view === v} onClick={() => apply({ view: v })}>{l}</button>
+          ))}
+        </span>
+        <button className={`toggle-chip${q.live ? " on" : ""}`} aria-label="live" aria-pressed={q.live}
+          title="keep the results live" onClick={() => apply({ live: !q.live })}>live</button>
+      </div>
+      <div className={fieldsOpen ? "results with-fields" : "results"}>
+        {fieldsOpen && (
+          <FieldBrowser scope={{ project: q.project, time: q.time }} onPick={onFilter}
+            onColumn={(c) => apply({ view: "table", cols: q.cols.includes(c) ? q.cols : [...q.cols, c] })} />
+        )}
+        <Samples q={q} onCols={(cols) => apply({ cols })} onFilter={onFilter} onFilterError={onFilterError} />
+      </div>
     </div>
   );
 }
