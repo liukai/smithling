@@ -1,0 +1,67 @@
+# Quickstart: validate tracedb v0
+
+How to prove each milestone works. Contracts: [http-api](contracts/http-api.md), [filter DSL](contracts/filter-dsl.md),
+[CLI](contracts/cli.md).
+
+## Prerequisites
+- Rust 1.99+, and Node 24+ (needed only to build the embedded UI)
+- For step 3: Python 3.12 with `langgraph` and `langsmith` installed
+- For the cloud check: Docker with MinIO and Postgres (only in CI)
+
+## 1. Build and start
+```bash
+cargo build --release
+./target/release/tracedb serve --data /tmp/tracedb-demo
+```
+Expected: it prints `listening on http://localhost:7070`, and the browser shows the empty runs list with
+"point an agent here" instructions.
+
+## 2. M0: see a trace in the browser
+```bash
+curl -s localhost:7070/v1/events -d @tests/fixtures/one-trace.json
+```
+Expected: the trace appears in the runs list within 1 s. Opening it shows the tree and waterfall, and clicking a run
+shows its inputs and outputs.
+
+## 3. Unmodified LangGraph agent (S1)
+```bash
+LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070 LANGSMITH_API_KEY=local \
+  python examples/research_agent.py
+```
+Expected: the trace streams in live. The root shows `running` until the agent finishes.
+
+## 4. The scenario demo (S1–S5; the main done-check)
+```bash
+./target/release/tracedb demo --data /tmp/tracedb-scenario
+```
+Expected: every check reports PASS, and the command exits with 0.
+
+| Check | Expected |
+|---|---|
+| failing roots, batch a, last 12 h | 14 |
+| quiet failures (any tool errored) | 23 |
+| search `"429 Too Many Requests"` | 31, all `fetch_url` |
+| `fetch_url` error rate / p95 | 14% / 31 s |
+| batch a cost | $4.12 |
+| thread size (M3) | 6 |
+| exported bad roots (M3) | 37 |
+
+Then open the browser and repeat the checks by clicking (SC-008).
+
+## 5. Performance (QR-004/005)
+```bash
+./target/release/tracedb seed --traces 20000 --data /tmp/tracedb-bench   # about 2M runs
+./target/release/tracedb bench --data /tmp/tracedb-bench
+```
+Expected: a P50/P99 table within the targets: tree and single run ≤ 50 ms, filter ≤ 100 ms, search ≤ 500 ms,
+thread ≤ 150 ms, P99 ≤ 5× P50, and ingest ≥ 20k events/s.
+
+## 6. Durability (QR-003)
+```bash
+cargo test -p tracedb --test crash -- --ignored    # 10 kill -9 rounds during ingest
+```
+Expected: 0 acknowledged events missing in every round.
+
+## 7. Privacy (QR-001)
+Run step 4 under a network monitor (`nettop` / `ss`), or in CI with outbound traffic blocked.
+Expected: no connections except to localhost.
