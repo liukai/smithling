@@ -10,7 +10,8 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  test:
+  # The UI is built and tested on its own; Rust jobs embed its output (M2-FR-25).
+  ui:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,17 +20,43 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      - run: npm ci && npm test && npm run build
+        working-directory: ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+
+  # The server builds and tests without Node; the UI is a placeholder page here.
+  rust-no-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: "! command -v node"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+
+  test:
+    needs: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: npm ci && npm test
-        working-directory: ui
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - name: crash and restart tests (slow)
+      - name: crash, restart and throughput tests (slow)
         run: cargo test --release -p tracedb --test crash --test restart --test throughput -- --ignored
       - name: no outbound connections
         run: sudo apt-get install -y strace && cargo build --release -p tracedb && scripts/no-outbound.sh target/release/tracedb
@@ -38,4 +65,5 @@ jobs:
           docker run -d --name tdb --network host -v "$PWD/target/release/tracedb:/usr/local/bin/tracedb:ro" ubuntu:24.04 tracedb serve --data /tmp/d --port 7171
           for i in $(seq 50); do curl -sf localhost:7171/healthz && break; sleep 0.2; done
           curl -sf localhost:7171/healthz
+          curl -sf localhost:7171/ | grep -q '<div id="root">'
           docker rm -f tdb

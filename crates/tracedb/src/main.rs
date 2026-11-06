@@ -29,6 +29,9 @@ enum Cmd {
         max_memory: u64,
         #[arg(long, default_value_t = DEFAULT_MAX_RUNS)]
         max_runs: usize,
+        /// Serve UI files from this folder instead of the built-in copy (for UI development).
+        #[arg(long, env = "TRACEDB_UI_DIR")]
+        ui_dir: Option<PathBuf>,
     },
     /// Generate realistic research-agent traces and send them to a running tracedb.
     Seed {
@@ -63,6 +66,7 @@ async fn main() -> ExitCode {
             bind,
             max_memory,
             max_runs,
+            ui_dir,
         } => {
             let cfg = ServeConfig {
                 data_dir: data,
@@ -71,6 +75,7 @@ async fn main() -> ExitCode {
                     max_bytes: max_memory,
                     max_runs,
                 },
+                ui_dir,
             };
             let shutdown = async {
                 let _ = tokio::signal::ctrl_c().await;

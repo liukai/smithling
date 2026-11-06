@@ -186,3 +186,43 @@ async fn too_many_in_flight_is_busy() {
         "with room for one batch in flight, concurrent uploads see Busy"
     );
 }
+
+#[tokio::test]
+async fn a_rejected_retry_is_rejected_again_and_leaves_no_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let ingest = open(dir.path());
+    let t = uuid(1);
+    let mut first = root(t, "2026-11-05T02:00:00Z", "r");
+    first.project = Some("p".into());
+    ingest.accept(vec![post(first)]).await.unwrap();
+    let records = wal_records(dir.path());
+
+    let mut moved = root(t, "2026-11-05T02:00:00Z", "r");
+    moved.project = Some("q".into());
+    for attempt in 0..2 {
+        let r = ingest.accept(vec![patch(moved.clone())]).await.unwrap();
+        assert_eq!(r.accepted, 0, "attempt {attempt}");
+        assert_eq!(r.rejected.len(), 1, "attempt {attempt}");
+        assert_eq!(r.rejected[0].reason, Reason::IdentityConflict, "attempt {attempt}");
+    }
+    assert_eq!(
+        wal_records(dir.path()),
+        records,
+        "rejected items are never written to the log"
+    );
+}
+
+#[tokio::test]
+async fn identity_conflicts_inside_one_batch_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ingest = open(dir.path());
+    let t = uuid(7);
+    let a = root(t, "2026-11-05T02:00:00Z", "r");
+    let mut b = root(t, "2026-11-05T02:00:00Z", "r");
+    b.project = Some("other".into());
+    let mut a2 = a.clone();
+    a2.project = Some("p".into());
+    let r = ingest.accept(vec![post(a2), patch(b)]).await.unwrap();
+    assert_eq!(r.accepted, 1);
+    assert_eq!(r.rejected[0].reason, Reason::IdentityConflict);
+}

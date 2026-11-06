@@ -106,6 +106,10 @@ impl RunStore {
         Ok(Change { kind, header })
     }
 
+    pub fn get(&self, id: &RunId) -> Option<&RunState> {
+        self.runs.get(id)
+    }
+
     pub fn contains(&self, id: &RunId) -> bool {
         self.runs.contains_key(id)
     }

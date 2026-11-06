@@ -3,12 +3,12 @@
 //! Runs on its own thread because WAL I/O is blocking. Requests that queue up while one fsync runs are
 //! committed together by the next one (group commit), so there is no fixed wait.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::{OwnedSemaphorePermit, oneshot};
-use tracedb_model::{RunEvent, RunId, Ts};
+use tracedb_model::{RunEvent, RunFields, RunId, Ts, check_identity};
 
 use crate::budget::Budget;
 use crate::dedup::{Dedup, DedupKey};
@@ -69,6 +69,8 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
     dedup.prune(now);
     let mut new_in_group: HashSet<RunId> = HashSet::new();
     let mut keys_in_group: HashSet<DedupKey> = HashSet::new();
+    // First fields seen in this group for runs not yet in the store, for identity checks within the group.
+    let mut idents: HashMap<RunId, RunFields> = HashMap::new();
     let mut outcomes = Vec::with_capacity(group.len());
     let mut write_err = None;
 
@@ -95,12 +97,30 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
         for it in &req.items {
             let id = it.fields.id.expect("validated before queueing");
             let key = (id, it.op, it.body_hash);
-            if dedup.contains(&key) || !keys_in_group.insert(key) {
+            if dedup.contains(&key) || keys_in_group.contains(&key) {
                 if let Ok(r) = &mut out.result {
                     r.accepted += 1;
                 }
                 continue;
             }
+            // Identity conflicts are rejected before the WAL, so a rejected item leaves no trace and an
+            // identical retry is rejected again (M2-FR-23).
+            let conflict = match store.get(&id) {
+                Some(st) => check_identity(st, &probe(it, now)).err(),
+                None => idents.get(&id).and_then(|first| ident_conflict(first, &it.fields)),
+            };
+            if let Some(rej) = conflict {
+                if let Ok(r) = &mut out.result {
+                    r.rejected.push(Rejected {
+                        id: Some(id),
+                        reason: rej.reason,
+                        detail: rej.detail,
+                    });
+                }
+                continue;
+            }
+            keys_in_group.insert(key);
+            idents.entry(id).or_insert_with(|| it.fields.clone());
             *seq += 1;
             let ev = RunEvent {
                 op: it.op,
@@ -170,4 +190,38 @@ fn commit(group: Vec<Request>, wal: &mut Wal, dedup: &mut Dedup, seq: &mut u64, 
     for (req, out) in group.into_iter().zip(outcomes) {
         let _ = req.reply.send(out.result);
     }
+}
+
+fn probe(it: &Incoming, now: Ts) -> RunEvent {
+    RunEvent {
+        op: it.op,
+        event_seq: 0,
+        received_at: now,
+        source: it.source,
+        body_hash: it.body_hash,
+        fields: it.fields.clone(),
+    }
+}
+
+/// Identity conflict between two items for the same new run in one group.
+fn ident_conflict(first: &RunFields, f: &RunFields) -> Option<tracedb_model::Reject> {
+    use tracedb_model::{Reason, Reject};
+    let differs = |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(x), Some(y)) if x != y);
+    let field = if f.trace_id.is_some() && first.trace_id.is_some() && f.trace_id != first.trace_id {
+        "trace_id"
+    } else if differs(&first.dotted_order, &f.dotted_order) {
+        "dotted_order"
+    } else if f.parent_run_id.is_some() && first.parent_run_id.is_some() && f.parent_run_id != first.parent_run_id {
+        "parent_run_id"
+    } else if differs(&first.address, &f.address) {
+        "address"
+    } else if differs(&first.project, &f.project) {
+        "project"
+    } else {
+        return None;
+    };
+    Some(Reject::new(
+        Reason::IdentityConflict,
+        format!("{field} differs from the stored run"),
+    ))
 }

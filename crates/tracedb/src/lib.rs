@@ -19,12 +19,23 @@ pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 pub struct AppState {
     pub ingest: Ingest,
     pub query: Query,
+    /// Serve UI files from this folder instead of the embedded copy.
+    pub ui_dir: Option<PathBuf>,
 }
 
 impl AppState {
     pub fn new(ingest: Ingest) -> AppState {
         let query = Query::new(ingest.snapshot());
-        AppState { ingest, query }
+        AppState {
+            ingest,
+            query,
+            ui_dir: None,
+        }
+    }
+
+    pub fn with_ui_dir(mut self, dir: Option<PathBuf>) -> AppState {
+        self.ui_dir = dir;
+        self
     }
 }
 
@@ -33,6 +44,7 @@ pub struct ServeConfig {
     pub data_dir: PathBuf,
     pub addr: SocketAddr,
     pub budget: Budget,
+    pub ui_dir: Option<PathBuf>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -65,7 +77,7 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     let mut icfg = IngestConfig::new(&cfg.data_dir);
     icfg.budget = cfg.budget;
     let (ingest, stats) = Ingest::open(icfg)?;
-    Ok((AppState::new(ingest), stats))
+    Ok((AppState::new(ingest).with_ui_dir(cfg.ui_dir.clone()), stats))
 }
 
 pub async fn serve(
