@@ -103,6 +103,18 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   dirty side grows with late finishers (~10% → ~200k runs at 2M, ~1.5 s). Mitigations: reuse D-023's cached merged
   states for multi-version runs; the first task of unit 4 is a **2M-row projected group-by spike** that measures
   both before the engine is built.
+- **Spike result (T052, 2026-11-07, release, 2.15M rows in 38 files, 202,773 multi-version runs, 50k in memory)**:
+  - Clean side, projected scan (`run_id`, `name`, `status`, `latency_ms`, `total_tokens`) into our accumulators:
+    96 ms for 1.8M rows; 26 ms with an exact `has(tags, …)` pushdown (400k rows). Our own accumulators stay (exact
+    percentiles need the values; DataFusion's `GROUP BY` has no exact nearest-rank).
+  - Group by `metadata.<k>`: a full `attrs` JSON parse per row costs 4 s; reading only the key's value from the
+    `attrs` text costs 322 ms. **q5 decided**: targeted per-row lookup, no promoted `group_keys` column.
+  - Dirty side: `collect → merge → eval` of the 202,773 multi-version runs costs 9 s; walking D-023's cached
+    merged states costs 17 ms. **q6 decided**: the dirty side reuses D-023's cache (file rows merged once and
+    kept), plus memtable versions. Its first fill is the 9 s (once per server, then per new id/file).
+  - Engine as built (2M runs, warm, machine shared with a build, load ~6/18 cores): by name 440 ms p50; with an
+    exact filter 297 ms; by `metadata.<k>` 640 ms; with an inexact filter (only the columns it reads, then `eval`)
+    475 ms (3 s with a full row decode). Cold first call 9–14 s (cache fill).
 - **Considered**: DataFusion `GROUP BY` over merged runs (needs the merge first: same 15 s); materialized rollups at
   flush (wrong after late updates until M4 compaction).
 
@@ -112,7 +124,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
     separately as `running`).
   - Percentiles are exact, **nearest rank** (⌈p·N⌉ over finished runs' latencies): keep each group's latency values
     (2M × i64 = 16 MB) and select the nth. Past a cap (default 4M values per query), fall back to the Distribution
-    histogram (≈1% relative error) and mark the figure `approximate`.
+    histogram (within ~4.5% at 8 bins per doubling) and mark the figure `approximate`.
   - Every percentile is shown with its `n`.
   - Missing groups are `null`, never `0`.
 - **Why**: the demo asserts p95 = 31 s exactly; an estimate could miss it (R11 places 22 runs at exactly 31 s so the

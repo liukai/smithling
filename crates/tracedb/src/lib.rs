@@ -93,6 +93,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/events", post(ing::native_events))
         .route("/healthz", get(healthz))
         .route("/api/query", post(routes::api::query))
+        .route("/api/aggregate", post(routes::api::aggregate))
         .route("/api/roots", get(routes::api::roots))
         .route("/api/projects", get(routes::api::projects))
         .route("/api/fields", get(routes::api::fields))

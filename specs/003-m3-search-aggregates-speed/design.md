@@ -248,7 +248,7 @@ aggregate(spec):
 - **Group keys**:
   - built-ins read columns;
   - `tag` unnests the `tags` list;
-  - `metadata.<k>` reads the `attrs` JSON text: parse per row, or a promoted column if the spike says so (§11 q5);
+  - `metadata.<k>` reads only that key's value from the `attrs` JSON text per row (§11 q5, decided by the spike);
   - missing → `(none)`.
 - **Percentiles**: nearest rank over `latencies` with `select_nth_unstable`. Past 4M values per query, the histogram
   answers instead and the cell is marked `approximate` (M3-R5).
@@ -546,10 +546,10 @@ rejected per part; no word positions (c); branch `003-…` from the 002 tip.
    select by batch tag instead of "last 12 h".
    *Proposed as is.*
 5. **Group by a metadata key.** It parses `attrs` JSON per row; the spike may show it's too slow at 2M rows.
-   *Proposed*: the spike decides; the fallback is a promoted `group_keys` column for the 16 most frequent metadata
-   keys per file.
+   *Decided (T052 spike)*: read only the key's value from the `attrs` text per row (322 ms at 1.8M rows; a full
+   parse is 4 s); no promoted `group_keys` column (research M3-R4).
 6. **Dirty-side cost.** At 10% late finishers the merge side may take ~1.5 s at 2M runs.
-   *Proposed*: reuse D-023's merged-state cache. If grouped p50 still misses 1 s, report it in the bench and pull
+   *Decided (T052 spike)*: reuse D-023's merged-state cache (9 s → 17 ms for 202k runs; first fill 9 s). If grouped p50 still misses 1 s, report it in the bench and pull
    M4's compaction trigger forward rather than loosening the target.
 7. **Backfill of M2 files.**
    *Proposed*: yes, in the background when idle (unit 6). It can be cut without breaking correctness (scan

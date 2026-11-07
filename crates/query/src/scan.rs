@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use tracedb_ingest::store::RunStore;
 use tracedb_ingest::{Ingest, Version};
 use tracedb_model::attrs::{Attrs, promote};
 use tracedb_model::{RunId, RunState, TraceId, merge_versions, present};
@@ -55,7 +56,7 @@ impl Scope {
         }
     }
 
-    fn matches_key(&self, key: i64) -> bool {
+    pub(crate) fn matches_key(&self, key: i64) -> bool {
         self.from.is_none_or(|f| key >= f) && self.to.is_none_or(|t| key <= t)
     }
 
@@ -93,7 +94,7 @@ impl Scope {
             && self.traces.as_ref().is_none_or(|ts| ts.contains(&st.run.trace_id))
     }
 
-    fn df_filter(&self) -> Option<DfExpr> {
+    pub(crate) fn df_filter(&self) -> Option<DfExpr> {
         let mut parts = Vec::new();
         if let Some(f) = self.from {
             parts.push(col("start_key").gt_eq(lit(f)));
@@ -143,7 +144,7 @@ pub struct ScanStats {
 pub struct Pinned {
     pub version: Arc<Version>,
     /// (start key, state without payload, promoted attributes), by start key.
-    rows: Vec<(i64, RunState, Attrs)>,
+    pub(crate) rows: Vec<(i64, RunState, Attrs)>,
 }
 
 impl Pinned {
@@ -165,8 +166,19 @@ impl Pinned {
 }
 
 pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
+    pin_with(ingest, scope, false).0
+}
+
+/// [`pin`], plus (if `multi`) the multi-version set and every memtable version of its runs whatever the scope,
+/// and the frozen memtable, all under the memtable lock.
+pub(crate) fn pin_with(ingest: &Ingest, scope: &Scope, multi: bool) -> (Pinned, Option<Arc<RunStore>>, HashSet<RunId>) {
     let mem = ingest.mem();
     let mem = mem.read().unwrap();
+    let mv: HashSet<RunId> = if multi {
+        ingest.multi_version().read().unwrap().clone()
+    } else {
+        HashSet::new()
+    };
     let projects = ingest.projects();
     // Memtable runs are kept or left out by project exactly as their files will be (`file_in_scope`).
     let projects = scope.project.as_ref().map(|p| (p, projects.read().unwrap()));
@@ -186,7 +198,10 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
             let attrs = store.attrs(&st.run.run_id).cloned().unwrap_or_else(|| promote(&st.run));
             (k, st.without_payload(), attrs)
         };
-        if let Some(id) = scope.run_id {
+        if multi {
+            let keep = |(k, st): &(i64, &RunState)| mv.contains(&st.run.run_id) || in_scope(&(*k, *st));
+            rows.extend(store.states().map(keyed).filter(keep).map(take));
+        } else if let Some(id) = scope.run_id {
             rows.extend(store.get(&id).map(keyed).filter(in_scope).map(take));
         } else if let Some(t) = scope.trace_id {
             rows.extend(
@@ -210,10 +225,11 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
         collect(f);
     }
     rows.sort_by_key(|r| r.0);
-    Pinned {
+    let pinned = Pinned {
         version: mem.version.clone(),
         rows,
-    }
+    };
+    (pinned, mem.frozen.clone(), mv)
 }
 
 /// Whether a read error says a file is missing or unreadable (not a network hiccup or a bug), and which.
@@ -248,7 +264,7 @@ fn damage_of(e: &QueryError) -> Option<&'static str> {
 }
 
 /// After `e` from reading only `seg`: marks it damaged if its footers or `e` say it is. True if marked.
-async fn damaged_alone(ingest: &Ingest, seg: &SegmentMeta, e: &QueryError) -> bool {
+pub(crate) async fn damaged_alone(ingest: &Ingest, seg: &SegmentMeta, e: &QueryError) -> bool {
     if !probe(ingest, &[seg]).await.is_empty() {
         return true;
     }

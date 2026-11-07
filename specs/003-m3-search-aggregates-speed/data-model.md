@@ -184,7 +184,7 @@ AggSpec {
 AggResult {
   query_id, partial: bool, sampled_pct?: f32,
   totals: Cells,                                    # whole set; separate from groups (tags overlap)
-  groups: [Group { key: [Value | "(none)" | "(other)"], cells: Cells, where: Expr }],
+  groups: [Group { key: [Value | "(none)" | "(other)"], cells: Cells, where: filter text | null }],
   cut: bool, overlap: bool,                         # top N applied; tag groups overlap
   series?: { step_ms, offset: bool, buckets: [{ t | offset_ms, per_group: [Cells | null], where }] },
   dist?:   { bins_ms: [lower…], per_group: [[count]], where_per_bin },
@@ -198,7 +198,7 @@ Cells { runs, finished, running, errors, error_rate?, p50?, p95?, p99?, n_latenc
 ```
 
 - Missing values are `null`, never 0 (a group absent on one side of a comparison, a percentile over 0 runs).
-- `where` is the click-through condition as AST JSON (design §4.5).
+- `where` is the click-through condition as filter text (design §4.5); `null` for a tag grouping's `(other)`.
 
 **SSE messages** (`GET /api/aggregate/stream`):
 

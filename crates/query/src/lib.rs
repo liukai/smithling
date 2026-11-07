@@ -4,6 +4,7 @@
 //! filter is evaluated on merged runs by [`tracedb_model::filter::eval`], the same evaluator used for
 //! memtable rows. So results never depend on where a run's pieces are.
 
+pub mod aggregate;
 pub mod cursor;
 pub mod fields;
 pub mod pushdown;
@@ -23,6 +24,7 @@ use tracedb_storage::StorageError;
 use tracedb_storage::segment::start_key;
 use xxhash_rust::xxh64::xxh64;
 
+pub use aggregate::{AggResult, AggStats, Cells, Group};
 pub use cursor::Key;
 pub use fields::{FieldInfo, Fields, TypeCount, ValueCount, Values};
 pub use scan::{Merged, ScanStats, Scope};
@@ -168,6 +170,7 @@ pub struct Query {
     ctx: SessionContext,
     first_window: usize,
     version_rows: std::sync::Arc<tokio::sync::Mutex<fields::VersionRows>>,
+    value_cap: usize,
 }
 
 fn order_key(m: &Merged, order: OrderBy) -> Key {
@@ -194,6 +197,7 @@ impl Query {
             ctx,
             first_window: window::FIRST_WINDOW_ROWS,
             version_rows: Default::default(),
+            value_cap: aggregate::accum::VALUE_CAP,
         }
     }
 
@@ -396,20 +400,7 @@ impl Query {
         };
         let keyed = found;
 
-        let mut warnings: Vec<QueryWarning> = eval_stats
-            .mixed_types
-            .into_iter()
-            .map(|(path, counts)| QueryWarning::MixedTypes {
-                path,
-                counts: counts.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
-            })
-            .collect();
-        warnings.extend(
-            eval_stats
-                .not_indexed
-                .into_iter()
-                .map(|(path, runs)| QueryWarning::NotIndexed { path, runs }),
-        );
+        let mut warnings = eval_warnings(eval_stats);
         let skipped = self.skipped(&scope);
         if !skipped.is_empty() {
             warnings.push(QueryWarning::SkippedFiles { ids: skipped });
@@ -595,6 +586,23 @@ impl Query {
     pub fn last_seq(&self) -> u64 {
         self.ingest.snapshot().last_seq()
     }
+}
+
+fn eval_warnings(s: EvalStats) -> Vec<QueryWarning> {
+    let mut warnings: Vec<QueryWarning> = s
+        .mixed_types
+        .into_iter()
+        .map(|(path, counts)| QueryWarning::MixedTypes {
+            path,
+            counts: counts.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        })
+        .collect();
+    warnings.extend(
+        s.not_indexed
+            .into_iter()
+            .map(|(path, runs)| QueryWarning::NotIndexed { path, runs }),
+    );
+    warnings
 }
 
 /// Values for the Table view's extra columns.

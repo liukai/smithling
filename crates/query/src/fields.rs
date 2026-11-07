@@ -92,20 +92,20 @@ pub struct VersionRows {
     /// Ids that joined while this memtable was being flushed: its file may not mark them `needs_merge` (the
     /// flusher reads the set once, at its start), so new files are searched for them until it's published.
     flushing: Option<(Arc<RunStore>, Vec<RunId>)>,
-    rows: Arc<Rows>,
+    pub(crate) rows: Arc<Rows>,
 }
 
 #[derive(Clone, Default)]
-struct Rows {
+pub(crate) struct Rows {
     ids: HashSet<RunId>,
     /// Per run, its file rows merged.
-    merged: HashMap<RunId, (RunState, Attrs)>,
+    pub(crate) merged: HashMap<RunId, (RunState, Attrs)>,
     /// Per file, stats of its rows of multi-version runs, and those finished.
     minus: HashMap<String, (StatsBuilder, Vec<FieldStat>)>,
 }
 
 impl VersionRows {
-    async fn update(
+    pub(crate) async fn update(
         &mut self,
         q: &Query,
         files: &[Arc<SegmentMeta>],

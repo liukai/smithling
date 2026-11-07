@@ -175,3 +175,29 @@ fn attr(o: CmpOp, path: &Path, value: &Value) -> Option<Pushed> {
 pub fn id_lit(id: uuid::Uuid) -> DfExpr {
     lit(ScalarValue::FixedSizeBinary(16, Some(id.as_bytes().to_vec())))
 }
+
+#[cfg(test)]
+mod tests {
+    use tracedb_model::filter::parse_filter;
+
+    use super::*;
+
+    /// `exact` says the pushed expression IS the filter, so aggregates can skip `eval` on single-version rows.
+    #[test]
+    fn exact_only_when_every_part_is() {
+        let exact = |f: &str| compile(&parse_filter(f).unwrap(), Ts(0)).map(|p| p.exact);
+        assert_eq!(exact(r#"has(tags, "batch=a")"#), Some(true));
+        assert_eq!(
+            exact(r#"and(eq(name, "x"), not(eq(status, "error")), gt(latency, 3))"#),
+            Some(true)
+        );
+        assert_eq!(exact(r#"in(model, ["a", "b"])"#), Some(true));
+        assert_eq!(exact("exists(end_time)"), Some(true));
+        // A superset (text match on attrs) or a part left out is not exact.
+        assert_eq!(exact(r#"eq(metadata.v, "v1")"#), Some(false));
+        assert_eq!(exact(r#"and(eq(name, "x"), eq(run_type, "llm"))"#), Some(false));
+        assert_eq!(exact(r#"or(eq(name, "x"), eq(metadata.v, "v1"))"#), Some(false));
+        assert_eq!(exact(r#"eq(run_type, "llm")"#), None);
+        assert_eq!(exact("exists(metadata.v)"), None);
+    }
+}

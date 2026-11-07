@@ -131,7 +131,7 @@ Response `200` (exact; `partial: false`):
     {"key": ["fetch_url"],
      "cells": {"runs": 300, "finished": 300, "errors": 42, "error_rate": 0.14, "p95": 31000, "n_latency": 300,
                "cost_pico": null, "no_price_runs": 0, "estimated": false, "approximate": false},
-     "where": {"eq": ["name", "fetch_url"]}}
+     "where": "eq(name, \"fetch_url\")"}
   ],
   "cut": true, "overlap": false,
   "compare": {"side_b": {"groups": [{"key": ["fetch_url"], "cells": {"error_rate": 0.02, "p95": 9000}}]}},
@@ -140,6 +140,9 @@ Response `200` (exact; `partial: false`):
 ```
 
 - `p50/p95/p99` are in milliseconds; percentiles are nearest rank.
+- `where` is filter text (contracts/filter-language.md) selecting exactly the group's runs when added to `filter`;
+  `null` for `(other)` when grouped by tag (a run with several tags can be in a shown group and in `(other)`), or
+  when two keys show no group at all.
 - `cost_pico` is in picodollars, and `null` when no run in the group had a price.
 - `view: "series"` adds `series`; `view: "dist"` adds `dist` (data-model §7).
 - `compare.shift: "1d"` compares with the same window one day earlier; series then use offsets.
@@ -147,7 +150,9 @@ Response `200` (exact; `partial: false`):
 | Status | Body |
 |---|---|
 | `400 bad_filter` | as M2, with `slot` |
-| `400 bad_stats` | unknown metric or group key, more than 2 keys, bad `bucket`/`shift`; `start`/`end` in the stats line when given |
+| `400 bad_stats` | unknown metric or group key, more than 2 keys, bad `bucket`/`shift`, a `metadata.<k>` deeper than promoted paths; `start`/`end` in the stats line when given |
+| `400 unsupported` | `view: series\|dist`, `compare`, `feedback_key` or `avg(feedback.<key>)` before units 7 and 9 |
+| `400 bad_request` | body isn't JSON or has an unknown field |
 | `500 query_failed` | engine or storage error |
 
 ### 🟢 `GET /api/aggregate/stream?q=<url-encoded AggSpec JSON>`
@@ -167,8 +172,10 @@ Every event carries `query_id`; the client ignores events for another id.
 | Query | Response |
 |---|---|
 | `?run_id=…` | `{feedback: [Feedback]}` for that run |
-| `?orphaned=true&project=&time=` | `{feedback: [Feedback], count}`: feedback whose run isn't found in scope |
-| `?keys=true&project=&time=` | `{keys: [{key, count, avg}]}` (field browser's `feedback.` section) |
+| `?orphaned=true` | `{feedback: [Feedback], count}`: feedback whose run hasn't arrived (not in memory, not in the flushed-ids filter; an orphan has no run, so no project or time) |
+| `?keys=true&project=&time=` | `{keys: [{key, count, avg}]}` (field browser's `feedback.` section), over feedback whose run is in scope; `avg` is null when no item has a score |
+
+Anything else is `400 bad_request`.
 
 ### 🟠 Field catalog
 

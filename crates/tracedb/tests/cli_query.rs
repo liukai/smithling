@@ -101,3 +101,68 @@ async fn bad_queries_and_missing_servers_exit_non_zero() {
     let (code, _, err) = tracedb(vec!["--url".into(), "http://127.0.0.1:1".into()]).await;
     assert_eq!(code, 2, "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prints_an_aggregate_table_with_other_total_and_no_price() {
+    let server = start().await;
+    let llm = |n: u64, model: &str, secs: u32| {
+        let mut r = ls_child(1, 1, n, "p");
+        r["name"] = json!("llm_call");
+        r["run_type"] = json!("llm");
+        r["extra"] = json!({"metadata": {"ls_model_name": model}});
+        r["outputs"] = json!({"usage_metadata": {"input_tokens": 1_000_000, "output_tokens": 0}});
+        r["end_time"] = json!(format!("2026-11-05T02:01:{secs:02}.000000"));
+        r
+    };
+    let mut fetch = ls_child(1, 1, 30, "p");
+    fetch["name"] = json!("fetch_url");
+    fetch["error"] = json!("HTTPError: 429");
+    fetch["end_time"] = json!("2026-11-05T02:01:31.000000");
+    post_batch(
+        &server,
+        vec![
+            ls_root(1, "p", 1),
+            llm(10, "gpt-4o-mini", 3),
+            llm(11, "gpt-4o-mini", 5),
+            llm(12, "local-llama", 9),
+            fetch,
+        ],
+        vec![],
+    )
+    .await;
+    let metrics = "count,error_rate,p95(latency),sum(cost)";
+    let (code, out, err) = tracedb(args(
+        &server,
+        &[
+            "--project",
+            "p",
+            "--group-by",
+            "name",
+            "--metrics",
+            metrics,
+            "--top",
+            "1",
+        ],
+    ))
+    .await;
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    let words = |l: &str| l.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+    assert_eq!(words(lines[0]), ["name", "runs", "error_rate", "p95", "cost"], "{out}");
+    assert_eq!(words(lines[1]), ["llm_call", "3", "0.0%", "8.0", "s", "$0.30"], "{out}");
+    assert_eq!(words(lines[2])[..3], ["(other)", "2", "100.0%"], "{out}");
+    assert!(
+        lines[3].starts_with("total") && lines[3].ends_with("1 run had no price"),
+        "{out}"
+    );
+    assert_eq!(words(lines[3])[..5], ["total", "5", "25.0%", "30.0", "s"], "{out}");
+
+    let (code, out, _) = tracedb(args(&server, &["--project", "p", "--group-by", "name", "--json"])).await;
+    assert_eq!(code, 0);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["totals"]["runs"], 5);
+
+    let (code, _, err) = tracedb(args(&server, &["--group-by", "colour"])).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("--group-by/--metrics") && err.contains("colour"), "{err}");
+}

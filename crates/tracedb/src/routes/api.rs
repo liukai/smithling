@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use tracedb_ingest::Include;
+use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, View, parse_stats};
 use tracedb_model::filter::eval::visit_paths;
 use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, contains_search, parse_filter};
 use tracedb_model::{RunId, TraceId};
@@ -374,5 +375,146 @@ pub async fn field_values(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Resp
             Err(e) => query_error(e),
         },
         Err(BadRequest(r)) => *r,
+    }
+}
+
+/// `POST /api/aggregate` body: the query fields of `POST /api/query` plus an `AggSpec`, or a `stats` line in
+/// place of `group_by` + `metrics` (data-model §7). Order, limit, cursor, columns and count are accepted and
+/// ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AggBody {
+    project: Option<String>,
+    time: Option<TimeBody>,
+    filter: Option<String>,
+    trace_filter: Option<String>,
+    tree_filter: Option<String>,
+    is_root: Option<bool>,
+    stats: Option<String>,
+    group_by: Option<serde_json::Value>,
+    metrics: Option<serde_json::Value>,
+    view: Option<serde_json::Value>,
+    top: Option<serde_json::Value>,
+    bucket: Option<serde_json::Value>,
+    compare: Option<serde_json::Value>,
+    order: Option<serde_json::Value>,
+    limit: Option<serde_json::Value>,
+    cursor: Option<serde_json::Value>,
+    columns: Option<serde_json::Value>,
+    count: Option<serde_json::Value>,
+}
+
+impl AggBody {
+    fn agg(&self) -> Result<AggSpec, BadRequest> {
+        let mut raw = serde_json::Map::new();
+        for (k, v) in [
+            ("group_by", &self.group_by),
+            ("metrics", &self.metrics),
+            ("view", &self.view),
+            ("top", &self.top),
+            ("bucket", &self.bucket),
+            ("compare", &self.compare),
+        ] {
+            if let Some(v) = v {
+                raw.insert(k.into(), v.clone());
+            }
+        }
+        let mut spec = match &self.stats {
+            Some(_) if self.group_by.is_some() || self.metrics.is_some() || self.top.is_some() => {
+                return Err(bad(
+                    "bad_stats",
+                    "give either stats or group_by + metrics (+ top), not both",
+                ));
+            }
+            Some(line) => {
+                let parsed = parse_stats(line).map_err(|e| {
+                    BadRequest(Box::new(
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": {
+                                "code": "bad_stats", "message": e.message, "start": e.start, "end": e.end,
+                            }})),
+                        )
+                            .into_response(),
+                    ))
+                })?;
+                raw.insert(
+                    "metrics".into(),
+                    json!(parsed.metrics.iter().map(Metric::text).collect::<Vec<_>>()),
+                );
+                raw.insert(
+                    "group_by".into(),
+                    json!(parsed.group_by.iter().map(GroupKey::text).collect::<Vec<_>>()),
+                );
+                raw.insert("top".into(), json!(parsed.top));
+                serde_json::from_value::<AggSpec>(raw.into()).map_err(|e| bad("bad_stats", e.to_string()))?
+            }
+            None => serde_json::from_value::<AggSpec>(raw.into()).map_err(|e| bad("bad_stats", e.to_string()))?,
+        };
+        if spec.view != View::Table || spec.compare != Compare::None {
+            return Err(bad(
+                "unsupported",
+                "series, distribution and comparison aren't answered yet",
+            ));
+        }
+        if spec.group_by.contains(&GroupKey::FeedbackKey)
+            || spec.metrics.iter().any(|m| matches!(m, Metric::AvgFeedback(_)))
+        {
+            return Err(bad(
+                "unsupported",
+                "feedback isn't answered yet (it needs the M3 feedback index)",
+            ));
+        }
+        for k in &spec.group_by {
+            if let GroupKey::Metadata(m) = k
+                && !tracedb_model::attrs::promotable("metadata", m)
+            {
+                return Err(bad(
+                    "bad_stats",
+                    format!("metadata.{m} is deeper than the levels kept for filters and groups"),
+                ));
+            }
+        }
+        spec.bucket = Default::default();
+        Ok(spec)
+    }
+}
+
+pub async fn aggregate(
+    State(st): State<AppState>,
+    body: Result<Json<AggBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(e) => return error(StatusCode::BAD_REQUEST, "bad_request", e.body_text()),
+    };
+    let query = QueryBody {
+        project: body.project.clone(),
+        time: body.time.clone(),
+        filter: body.filter.clone(),
+        trace_filter: body.trace_filter.clone(),
+        tree_filter: body.tree_filter.clone(),
+        is_root: body.is_root,
+        ..QueryBody::default()
+    };
+    let (spec, agg) = match (query.to_spec(), body.agg()) {
+        (Ok(s), Ok(a)) => (s, a),
+        (Err(BadRequest(r)), _) | (_, Err(BadRequest(r))) => return *r,
+    };
+    match st.query.aggregate(&spec, &agg, &st.prices).await {
+        Ok(mut res) => {
+            let skipped: Vec<String> = res
+                .warnings
+                .iter()
+                .find_map(|w| match w {
+                    tracedb_query::QueryWarning::SkippedFiles { ids } => Some(ids.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            res.warnings
+                .retain(|w| !matches!(w, tracedb_query::QueryWarning::SkippedFiles { .. }));
+            with_skipped(StatusCode::OK, res, skipped)
+        }
+        Err(e) => query_error(e),
     }
 }
