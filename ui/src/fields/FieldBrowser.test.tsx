@@ -11,6 +11,7 @@ const FIELDS = [
   { path: "metadata.prompt_version", types: [{ type: "string", count: 1840 }], complete: true },
   { path: "metadata.code", types: [{ type: "number", count: 40 }, { type: "string", count: 3 }], complete: true },
   { path: "tags", types: [{ type: "list", count: 200 }], complete: true },
+  { path: "feedback.correctness", types: [{ type: "number", count: 2 }], complete: true },
 ];
 const VALUES: Record<string, { value: unknown; count: number }[]> = {
   "metadata.prompt_version": [{ value: "v6", count: 928 }, { value: "v7", count: 912 }],

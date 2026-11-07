@@ -49,7 +49,7 @@ pub(crate) fn walk(
     let mut add = |st: &RunState, attrs: &Attrs| {
         if plan.admits(&st.run, attrs, eval_stats) {
             stats.dirty_runs += 1;
-            accs.add(keys_of(plan.keys, &st.run, attrs), &plan.facts(&st.run));
+            accs.add(keys_of(plan.keys, &st.run, attrs, &plan.feedback), &plan.facts(&st.run));
         }
     };
     let merged = |vs: Vec<(&RunState, &Attrs)>, file: Option<&(RunState, Attrs)>| {

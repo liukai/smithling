@@ -37,7 +37,8 @@ export function FieldBrowser({ scope, onPick, onColumn }: {
   useEffect(() => {
     let on = true;
     const t = setTimeout(() => getFields({ project, time }, prefix)
-      .then((r) => { if (on) { setFields(r.fields); setComplete(r.complete); setError(null); } })
+      // feedback.<key> paths are listed in their own section below.
+      .then((r) => { if (on) { setFields(r.fields.filter((f) => !f.path.startsWith("feedback."))); setComplete(r.complete); setError(null); } })
       .catch((e) => { if (on) setError(e instanceof Error ? e.message : String(e)); }), prefix ? DEBOUNCE_MS : 0);
     return () => { on = false; clearTimeout(t); };
   }, [project, time, prefix]);

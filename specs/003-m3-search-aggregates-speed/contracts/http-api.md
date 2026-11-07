@@ -142,6 +142,10 @@ Response `200` (exact; `partial: false`):
 ```
 
 - `p50/p95/p99` are in milliseconds; percentiles are nearest rank.
+- `feedback_avg` is the mean over the group's runs of each run's mean score for the key (`feedback.<key>`);
+  `feedback_n` counts the runs with a score. `by feedback_key`: one group per key a run has a score for
+  (`overlap: true`, like tags), `where` = `exists(feedback.<key>)`; `(none)` (no scored feedback) and `(other)`
+  have `where: null`.
 - `where` is filter text (contracts/filter-language.md) selecting exactly the group's runs when added to `filter`;
   `null` for `(other)` when grouped by tag (a run with several tags can be in a shown group and in `(other)`), or
   when two keys show no group at all.
@@ -152,8 +156,7 @@ Response `200` (exact; `partial: false`):
 | Status | Body |
 |---|---|
 | `400 bad_filter` | as M2, with `slot` |
-| `400 bad_stats` | unknown metric or group key, more than 2 keys, bad `bucket`/`shift`, a `metadata.<k>` deeper than promoted paths; `start`/`end` in the stats line when given |
-| `400 unsupported` | `view: series\|dist`, `compare`, `feedback_key` or `avg(feedback.<key>)` before units 7 and 9 |
+| `400 bad_stats` | unknown metric or group key, more than 2 keys, bad `bucket`/`shift`, a `metadata.<k>` deeper than promoted paths, more than one `avg(feedback.<key>)` (cells hold one `feedback_avg`); `start`/`end` in the stats line when given |
 | `400 bad_request` | body isn't JSON or has an unknown field |
 | `500 query_failed` | engine or storage error |
 
@@ -181,7 +184,9 @@ Anything else is `400 bad_request`.
 
 ### 🟠 Field catalog
 
-`GET /api/fields` also lists `feedback.<key>` paths (type `number`) with counts from the feedback index.
+`GET /api/fields` also lists `feedback.<key>` paths (type `number`) with counts from the feedback index: runs that
+have arrived with a score for the key, whatever the project and time (the index doesn't know them). A Table column
+`feedback.<key>` gives the run's mean score.
 
 ### 🟠 Health
 

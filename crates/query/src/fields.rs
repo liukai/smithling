@@ -281,6 +281,42 @@ impl Query {
         })
     }
 
+    /// `feedback.<key>` paths (numbers) from the feedback index: runs that have arrived with a score for the
+    /// key, in every scope. Keys a filter can't name are left out.
+    fn feedback_fields(&self, prefix: &str) -> Vec<FieldInfo> {
+        use tracedb_ingest::FeedbackLookup;
+        let fb = self.ingest.feedback();
+        let missing: std::collections::HashSet<_> = self.ingest.feedback_runs_missing().into_iter().collect();
+        let mut runs: BTreeMap<String, u64> = BTreeMap::new();
+        for run in fb.run_ids().iter().filter(|r| !missing.contains(r)) {
+            let mut keys: Vec<String> = fb
+                .scores(run)
+                .into_iter()
+                .filter(|s| s.1.is_some())
+                .map(|s| s.0)
+                .collect();
+            keys.sort();
+            keys.dedup();
+            for k in keys
+                .into_iter()
+                .filter(|k| crate::aggregate::filterable_feedback_key(k))
+            {
+                *runs.entry(k).or_default() += 1;
+            }
+        }
+        runs.into_iter()
+            .map(|(k, count)| FieldInfo {
+                path: format!("feedback.{k}"),
+                types: vec![TypeCount {
+                    ty: "number".into(),
+                    count,
+                }],
+                complete: true,
+            })
+            .filter(|f| f.path.starts_with(prefix))
+            .collect()
+    }
+
     /// Paths starting with `prefix`, most common first.
     pub async fn fields(&self, project: Option<&str>, time: TimeRange, prefix: &str) -> Result<Fields, QueryError> {
         let c = self.catalog(project, time).await?;
@@ -324,6 +360,7 @@ impl Query {
                 }
             })
             .collect();
+        fields.extend(self.feedback_fields(prefix));
         let total = |f: &FieldInfo| f.types.iter().map(|t| t.count).sum::<u64>();
         fields.sort_by(|a, b| total(b).cmp(&total(a)).then_with(|| a.path.cmp(&b.path)));
         Ok(Fields { fields, complete })

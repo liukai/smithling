@@ -15,14 +15,14 @@ use tracedb_model::agg::GroupKey;
 use tracedb_model::attrs::{Attrs, Scalar};
 use tracedb_model::cost;
 use tracedb_model::filter::eval::visit_paths;
-use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, eval};
+use tracedb_model::filter::{EvalStats, Expr, Field, Path};
 use tracedb_model::run::{JsonMap, RunType};
 use tracedb_model::{DEFAULT_PROJECT, Op, Run, RunEvent, RunFields, RunId, Source, Status, Ts};
 use tracedb_storage::StorageError;
 use tracedb_storage::segment::SegmentMeta;
 
 use super::progressive::Cancel;
-use super::{Accs, AggStats, Facts, KeyVal, Plan};
+use super::{Accs, AggStats, Facts, KeyVal, Plan, feedback_keys};
 use crate::scan::damaged_alone;
 use crate::{Query, QueryError, pushdown};
 
@@ -303,6 +303,8 @@ struct Light<'f> {
 impl Light<'_> {
     fn fill(&mut self, c: &Cols, i: usize) -> Attrs {
         let r = &mut self.run;
+        // Always set: `feedback.<key>` is looked up by it.
+        r.run_id = c.id(RUN_ID, i).unwrap_or_default();
         let s = |n: Field| c.str(field_column(n), i).map(str::to_string);
         let ts = |n: Field| c.int(field_column(n), i).map(Ts);
         let tok = |n: Field| c.int(field_column(n), i).map(|v| v as u64);
@@ -448,15 +450,7 @@ impl<'p, 'a> Rows<'p, 'a> {
             }
             if let Some(l) = &mut self.light {
                 let attrs = l.fill(&c, i);
-                if !eval(
-                    l.filter,
-                    &Row {
-                        run: &l.run,
-                        attrs: &attrs,
-                    },
-                    self.plan.now,
-                    eval_stats,
-                ) {
+                if !self.plan.eval(l.filter, &l.run, &attrs, eval_stats) {
                     continue;
                 }
             }
@@ -469,7 +463,7 @@ impl<'p, 'a> Rows<'p, 'a> {
                 output_tokens: tok(OUTPUT_TOKENS),
                 total_tokens: tok(TOTAL_TOKENS),
                 cost: None,
-                feedback: vec![],
+                feedback: self.plan.feedback_of(run_id),
                 start_us: c.int(START_TIME, i),
             };
             let rt = c.str(RUN_TYPE, i);
@@ -505,7 +499,7 @@ impl<'p, 'a> Rows<'p, 'a> {
                     GroupKey::Metadata(_) => KeyVal::of_scalar(
                         attr_value(c.str(ATTRS, i).unwrap_or(""), ak.as_deref().unwrap_or_default()).as_ref(),
                     ),
-                    GroupKey::FeedbackKey => KeyVal::None,
+                    GroupKey::FeedbackKey => feedback_keys(&self.plan.feedback, run_id),
                 })
                 .collect();
             accs.add(keys, &f);

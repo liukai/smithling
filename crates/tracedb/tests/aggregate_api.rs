@@ -137,10 +137,9 @@ async fn bad_requests_name_the_problem() {
         ),
         (json!({"metrics": ["count"], "compare": {"shift": "1d"}}), "bad_stats"),
         (
-            json!({"metrics": ["count"], "compare": {"filter": "gt(feedback.correctness, 0)"}}),
-            "unsupported",
+            json!({"metrics": ["avg(feedback.correctness)", "avg(feedback.helpfulness)"]}),
+            "bad_stats",
         ),
-        (json!({"metrics": ["avg(feedback.correctness)"]}), "unsupported"),
         (
             json!({"group_by": ["metadata.a.b.c.d.e"], "metrics": ["count"]}),
             "bad_stats",

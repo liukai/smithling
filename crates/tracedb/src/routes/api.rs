@@ -8,7 +8,6 @@ use serde::Deserialize;
 use serde_json::json;
 use tracedb_ingest::Include;
 use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, parse_stats};
-use tracedb_model::filter::eval::visit_paths;
 use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
 use tracedb_model::{RunId, TraceId};
 use tracedb_query::{OrderBy, QueryError, QuerySpec, TimeRange};
@@ -73,16 +72,6 @@ fn filter_slot(slot: &str, text: &Option<String>) -> Result<Option<Expr>, BadReq
         ))
     };
     let e = parse_filter(t).map_err(|e| slot_error("bad_filter", &e.message, e.start, e.end))?;
-    let mut feedback = false;
-    visit_paths(&e, &mut |p| feedback |= matches!(p, FPath::Feedback(_)));
-    if feedback {
-        return Err(slot_error(
-            "unsupported",
-            "feedback.<key> isn't answered yet (it needs the M3 feedback index)",
-            0,
-            t.len(),
-        ));
-    }
     Ok(Some(e))
 }
 
@@ -447,13 +436,14 @@ impl AggBody {
         if let Compare::Filter(f) = &spec.compare {
             filter_slot("compare.filter", &Some(tracedb_model::filter::print(f)))?;
         }
-        if spec.group_by.contains(&GroupKey::FeedbackKey)
-            || spec.metrics.iter().any(|m| matches!(m, Metric::AvgFeedback(_)))
+        if spec
+            .metrics
+            .iter()
+            .filter(|m| matches!(m, Metric::AvgFeedback(_)))
+            .count()
+            > 1
         {
-            return Err(bad(
-                "unsupported",
-                "feedback isn't answered yet (it needs the M3 feedback index)",
-            ));
+            return Err(bad("bad_stats", "one avg(feedback.<key>) per request"));
         }
         for k in &spec.group_by {
             if let GroupKey::Metadata(m) = k

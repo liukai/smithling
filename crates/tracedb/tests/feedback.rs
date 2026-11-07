@@ -263,3 +263,103 @@ async fn feedback_sent_before_its_run_survives_kill_9() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+/// Through the read API: filter, average and group by feedback, and the field catalog (Story 5 scenario 3).
+#[tokio::test]
+async fn feedback_is_filterable_averaged_and_listed() {
+    let s = common::start().await;
+    let b = base(&s);
+    let mut fail = ls_root(2, "p", 1);
+    fail["error"] = json!("HTTPError: 429");
+    fail["end_time"] = json!("2026-11-05T02:01:30.000000");
+    post_batch(&s, vec![ls_root(1, "p", 0), fail, ls_root(3, "p", 2)], vec![]).await;
+    for (id, run, score) in [(901, 1, 1.0), (902, 2, 0.0), (903, 2, 0.5)] {
+        assert_eq!(
+            post(&b, &fb(&uid(id), &uid(run), "correctness", json!(score))).await.0,
+            200
+        );
+    }
+    // Stored as sent, but no filter can name it.
+    assert_eq!(post(&b, &fb(&uid(904), &uid(1), "user rating", json!(1))).await.0, 200);
+    let http = reqwest::Client::new();
+    let api = |path: &str, body: Value| {
+        let req = http.post(format!("{b}{path}")).json(&body);
+        async move {
+            let r = req.send().await.unwrap();
+            let st = r.status().as_u16();
+            (st, r.json::<Value>().await.unwrap())
+        }
+    };
+    for f in [
+        "lt(feedback.correctness, 0.5)",
+        "and(eq(feedback_key, \"correctness\"), lt(feedback_score, 0.5))",
+    ] {
+        let (st, page) = api("/api/query", json!({"filter": f, "project": "p"})).await;
+        assert_eq!(st, 200, "{page}");
+        let ids: Vec<&str> = page["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["run_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [uid(2)], "{f}: run 2's mean is 0.25");
+    }
+    let (st, agg) = api(
+        "/api/aggregate",
+        json!({"project": "p", "stats": "by status | count, avg(feedback.correctness)"}),
+    )
+    .await;
+    assert_eq!(st, 200, "{agg}");
+    assert_eq!(
+        agg["totals"]["feedback_avg"], 0.625,
+        "mean of the run means 1 and 0.25: {agg}"
+    );
+    assert_eq!(agg["totals"]["feedback_n"], 2);
+    let (st, agg) = api(
+        "/api/aggregate",
+        json!({"project": "p", "stats": "by feedback_key | count"}),
+    )
+    .await;
+    assert_eq!(st, 200, "{agg}");
+    let groups: Vec<(Value, Value, Value)> = agg["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| (g["key"][0].clone(), g["cells"]["runs"].clone(), g["where"].clone()))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            (json!("correctness"), json!(2), json!("exists(feedback.correctness)")),
+            (json!("user rating"), json!(1), Value::Null),
+            (json!("(none)"), json!(1), Value::Null),
+        ]
+    );
+    let (st, agg) = api(
+        "/api/aggregate",
+        json!({"project": "p", "stats": "by feedback_key, status | count"}),
+    )
+    .await;
+    assert_eq!(st, 200, "{agg}");
+    for g in agg["groups"].as_array().unwrap() {
+        let Some(w) = g["where"].as_str() else {
+            assert!(
+                ["(none)", "user rating", "(other)"].contains(&g["key"][0].as_str().unwrap()),
+                "{g}"
+            );
+            continue;
+        };
+        let (st, page) = api("/api/query", json!({"project": "p", "filter": w, "count": true})).await;
+        assert_eq!(
+            (st, page["stats"]["matched"].clone()),
+            (200, g["cells"]["runs"].clone()),
+            "{w}"
+        );
+    }
+    assert_eq!(agg["overlap"], true);
+    let fields = get(&b, "/api/fields?prefix=feedback").await;
+    assert_eq!(
+        fields["fields"],
+        json!([{"path": "feedback.correctness", "types": [{"type": "number", "count": 2}], "complete": true}])
+    );
+}

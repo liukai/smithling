@@ -19,11 +19,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Serialize, Serializer};
+use tracedb_ingest::{FeedbackLookup, Feedbacks};
 use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, SumOf, View};
 use tracedb_model::attrs::{Attrs, Scalar};
 use tracedb_model::cost::{self, Prices};
 use tracedb_model::filter::{
-    AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, TimeAt, Value, eval, print, status_name,
+    AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, TimeAt, Value, eval_with, print, status_name,
 };
 use tracedb_model::run::run_type_str;
 use tracedb_model::{Run, RunId, TraceId, Ts};
@@ -188,8 +189,22 @@ pub(crate) fn run_type_text(run: &Run) -> &str {
     run.run_type_raw.as_deref().unwrap_or(run_type_str(run.run_type))
 }
 
+/// `feedback.<key>` prints and parses back as itself (keys are stored as sent, e.g. with spaces).
+pub(crate) fn filterable_feedback_key(key: &str) -> bool {
+    matches!(
+        tracedb_model::filter::parse_filter(&format!("exists(feedback.{key})")),
+        Ok(Expr::Exists { path: Path::Feedback(k) }) if k == key
+    )
+}
+
+/// The feedback keys `run` has a score for, as one value (unnested at finish like tags).
+pub(crate) fn feedback_keys(fb: &Feedbacks, run: RunId) -> KeyVal {
+    let scores = fb.scores(&run);
+    KeyVal::of_tags(scores.iter().filter(|(_, s)| s.is_some()).map(|(k, _)| k.as_str()))
+}
+
 /// Key values of a merged (or decoded) run.
-pub(crate) fn keys_of(keys: &[GroupKey], run: &Run, attrs: &Attrs) -> Vec<KeyVal> {
+pub(crate) fn keys_of(keys: &[GroupKey], run: &Run, attrs: &Attrs, fb: &Feedbacks) -> Vec<KeyVal> {
     keys.iter()
         .map(|k| match k {
             GroupKey::Name => KeyVal::of_str(run.name.as_deref()),
@@ -198,7 +213,7 @@ pub(crate) fn keys_of(keys: &[GroupKey], run: &Run, attrs: &Attrs) -> Vec<KeyVal
             GroupKey::RunType => KeyVal::of_str(Some(run_type_text(run))),
             GroupKey::Tag => KeyVal::of_tags(run.tags.iter().map(String::as_str)),
             GroupKey::Metadata(m) => KeyVal::of_scalar(attrs.get(&format!("metadata.{m}"))),
-            GroupKey::FeedbackKey => KeyVal::None,
+            GroupKey::FeedbackKey => feedback_keys(fb, run.run_id),
         })
         .collect()
 }
@@ -217,6 +232,9 @@ pub(crate) struct Plan<'a> {
     pub cost: bool,
     /// Runs are bucketed by `start_time`.
     pub series: bool,
+    pub feedback: Feedbacks,
+    /// The key of `avg(feedback.<key>)`, if asked for.
+    pub feedback_metric: Option<&'a str>,
 }
 
 impl Plan<'_> {
@@ -239,9 +257,21 @@ impl Plan<'_> {
             && self.scope.run_id.is_none_or(|r| run.run_id == r)
             && self.scope.has_run(run.run_id)
             && self.is_root.is_none_or(|r| run.is_root == r)
-            && self
-                .filter
-                .is_none_or(|f| eval(f, &Row { run, attrs }, self.now, stats))
+            && self.filter.is_none_or(|f| self.eval(f, run, attrs, stats))
+    }
+
+    /// `f` on `run`, `feedback.<key>` read from the feedback index.
+    pub(crate) fn eval(&self, f: &Expr, run: &Run, attrs: &Attrs, stats: &mut EvalStats) -> bool {
+        let fb = |k: &str| self.feedback.mean(&run.run_id, k);
+        eval_with(f, &Row { run, attrs }, &fb, self.now, stats)
+    }
+
+    /// The run's mean score for the `avg(feedback.<key>)` key, if it has one.
+    pub(crate) fn feedback_of(&self, run: RunId) -> Vec<(String, f64)> {
+        self.feedback_metric
+            .and_then(|k| Some((k.to_string(), self.feedback.mean(&run, k)?)))
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn facts(&self, run: &Run) -> Facts {
@@ -252,7 +282,7 @@ impl Plan<'_> {
             output_tokens: run.output_tokens,
             total_tokens: run.total_tokens,
             cost: if self.cost { cost::of(run, self.prices) } else { None },
-            feedback: vec![],
+            feedback: self.feedback_of(run.run_id),
             start_us: run.start_time.map(|t| t.0),
         }
     }
@@ -631,6 +661,11 @@ impl Query {
                         tokens: has(&|m| matches!(m, Metric::Sum(s) if *s != SumOf::Cost)),
                         cost: has(&|m| *m == Metric::Sum(SumOf::Cost)),
                         series: a.view == View::Series,
+                        feedback: self.feedback.clone(),
+                        feedback_metric: a.metrics.iter().find_map(|m| match m {
+                            Metric::AvgFeedback(k) => Some(k.as_str()),
+                            _ => None,
+                        }),
                     },
                     files,
                     origin: *origin,
@@ -810,7 +845,7 @@ impl Query {
                         })
                         .collect(),
                     cut: f.cut,
-                    overlap: a.group_by.contains(&GroupKey::Tag),
+                    overlap: a.group_by.iter().any(overlaps),
                     series,
                     dist,
                     compare: None,
@@ -986,9 +1021,7 @@ fn finish(
         .map(|g| Group {
             key: g.iter().map(KeyVal::json).collect(),
             cells: groups.get(g).map_or_else(|| merged(&[]), |(_, idx)| merged(idx)),
-            where_: Some(print(&and_all(
-                keys.iter().zip(g.iter()).map(|(k, v)| where_one(k, v)).collect(),
-            ))),
+            where_: where_group(keys, g).map(|e| print(&e)),
         })
         .collect();
     let index: HashMap<&Vec<KeyVal>, usize> = shown.iter().enumerate().map(|(i, g)| (g, i)).collect();
@@ -1024,6 +1057,11 @@ fn finish(
     }
 }
 
+/// A run can be in several groups of this key.
+fn overlaps(k: &GroupKey) -> bool {
+    matches!(k, GroupKey::Tag | GroupKey::FeedbackKey)
+}
+
 fn and_all(mut xs: Vec<Expr>) -> Expr {
     if xs.len() == 1 {
         xs.pop().expect("one")
@@ -1043,26 +1081,40 @@ fn key_path(k: &GroupKey) -> Path {
             root: AttrRoot::Metadata,
             key: m.clone(),
         },
-        GroupKey::FeedbackKey => Path::Feedback(String::new()),
+        GroupKey::FeedbackKey => unreachable!("feedback_key groups are written as exists(feedback.<key>)"),
     }
 }
 
-fn where_one(k: &GroupKey, v: &KeyVal) -> Expr {
+/// `None` for a feedback key's `(none)` (no filter says "no feedback at all") or a key no filter can name.
+fn where_one(k: &GroupKey, v: &KeyVal) -> Option<Expr> {
+    if *k == GroupKey::FeedbackKey {
+        return match v {
+            KeyVal::Str(key) if filterable_feedback_key(key) => Some(Expr::Exists {
+                path: Path::Feedback(key.clone()),
+            }),
+            _ => None,
+        };
+    }
     let path = key_path(k);
-    match (k, v.value()) {
+    Some(match (k, v.value()) {
         (GroupKey::Tag, Some(value)) => Expr::Has { path, value },
         (_, value) => Expr::Cmp {
             op: CmpOp::Eq,
             path,
             value: value.unwrap_or(Value::Null),
         },
-    }
+    })
+}
+
+fn where_group(keys: &[GroupKey], g: &[KeyVal]) -> Option<Expr> {
+    let parts: Option<Vec<Expr>> = keys.iter().zip(g.iter()).map(|(k, v)| where_one(k, v)).collect();
+    parts.map(and_all)
 }
 
 /// `(other)` as a filter. One key: has the key, and none of the shown values. Two: in none of the shown
 /// groups. A run with several tags can be in a shown group and in `(other)`, which no filter can say.
 fn where_other(keys: &[GroupKey], shown: &[Vec<KeyVal>], none_too: bool) -> Option<String> {
-    if keys.contains(&GroupKey::Tag) {
+    if keys.iter().any(overlaps) {
         return None;
     }
     if let [k] = keys {
@@ -1084,9 +1136,6 @@ fn where_other(keys: &[GroupKey], shown: &[Vec<KeyVal>], none_too: bool) -> Opti
     if shown.is_empty() {
         return None;
     }
-    let any: Vec<Expr> = shown
-        .iter()
-        .map(|g| and_all(keys.iter().zip(g.iter()).map(|(k, v)| where_one(k, v)).collect()))
-        .collect();
+    let any: Vec<Expr> = shown.iter().filter_map(|g| where_group(keys, g)).collect();
     Some(print(&Expr::Not(Box::new(Expr::Or(any)))))
 }

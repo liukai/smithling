@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use serde::Serialize;
-use tracedb_ingest::{Include, Ingest};
-use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, TimeAt, contains_search, eval};
+use tracedb_ingest::{FeedbackLookup, Feedbacks, Include, Ingest};
+use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, TimeAt, contains_search, eval_with};
 use tracedb_model::text::{Match, Text};
 use tracedb_model::{RunHeader, RunId, RunView, Status, TraceId, TraceView, Ts};
 use tracedb_storage::StorageError;
@@ -198,6 +198,8 @@ pub struct Query {
     fts: std::sync::Arc<Fts>,
     /// Search through the text index (tests turn it off to compare with reading every file).
     index: bool,
+    /// `feedback.<key>` values: the run's mean score for the key.
+    feedback: Feedbacks,
 }
 
 fn order_key(m: &Merged, order: OrderBy) -> Key {
@@ -222,6 +224,7 @@ impl Query {
         Query {
             fts: std::sync::Arc::new(Fts::new(ingest.storage().store.clone())),
             index: true,
+            feedback: ingest.feedback(),
             ingest,
             ctx,
             first_window: window::FIRST_WINDOW_ROWS,
@@ -260,6 +263,13 @@ impl Query {
         }
     }
 
+    /// `f` on a merged run, `feedback.<key>` read from the feedback index.
+    fn admits(&self, f: &Expr, m: &Merged, now: Ts, stats: &mut EvalStats) -> bool {
+        let run = &m.state.run;
+        let fb = |k: &str| self.feedback.mean(&run.run_id, k);
+        eval_with(f, &Row { run, attrs: &m.attrs }, &fb, now, stats)
+    }
+
     /// All merged runs in `scope` matching `filter` (no ordering, no limit), read from `pinned`.
     #[allow(clippy::too_many_arguments)]
     async fn matching(
@@ -287,17 +297,7 @@ impl Query {
                 && is_root.is_none_or(|r| m.state.run.is_root == r)
         };
         let ok = |m: &Merged, f: Option<&Expr>, eval_stats: &mut EvalStats| {
-            f.is_none_or(|f| {
-                eval(
-                    f,
-                    &Row {
-                        run: &m.state.run,
-                        attrs: &m.attrs,
-                    },
-                    now,
-                    eval_stats,
-                )
-            })
+            f.is_none_or(|f| self.admits(f, m, now, eval_stats))
         };
         let Some(f) = filter.filter(|f| contains_search(f)) else {
             return Ok(runs
@@ -343,17 +343,7 @@ impl Query {
     ) -> Result<Vec<Merged>, QueryError> {
         stats.candidates += ids.len();
         let pre = search::before_text(filter);
-        let ok = |m: &Merged, f: &Expr, eval_stats: &mut EvalStats| {
-            eval(
-                f,
-                &Row {
-                    run: &m.state.run,
-                    attrs: &m.attrs,
-                },
-                now,
-                eval_stats,
-            )
-        };
+        let ok = |m: &Merged, f: &Expr, eval_stats: &mut EvalStats| self.admits(f, m, now, eval_stats);
         let mut keep = |m: &Merged| {
             scope.matches_key(start_key(&m.state.run.dotted_order))
                 && scope.project.as_ref().is_none_or(|p| m.state.run.project == *p)
@@ -630,7 +620,7 @@ impl Query {
                     });
                 }
                 RunRow {
-                    columns: columns(&m, &q.columns),
+                    columns: columns(&m, &q.columns, &self.feedback),
                     r#match: matches.remove(&m.state.run.run_id),
                     header: RunHeader::from_state(&m.state, 0),
                 }
@@ -879,7 +869,7 @@ fn eval_warnings(s: EvalStats) -> Vec<QueryWarning> {
 }
 
 /// Values for the Table view's extra columns.
-fn columns(m: &Merged, paths: &[Path]) -> BTreeMap<String, serde_json::Value> {
+fn columns(m: &Merged, paths: &[Path], feedback: &Feedbacks) -> BTreeMap<String, serde_json::Value> {
     use serde_json::Value as J;
     use tracedb_model::attrs::Scalar;
     let r = &m.state.run;
@@ -893,7 +883,7 @@ fn columns(m: &Merged, paths: &[Path]) -> BTreeMap<String, serde_json::Value> {
                     Scalar::Bool(b) => J::Bool(*b),
                     Scalar::Unindexed => J::Null,
                 },
-                Path::Feedback(_) => return None,
+                Path::Feedback(k) => serde_json::Number::from_f64(feedback.mean(&r.run_id, k)?).map(J::Number)?,
                 Path::Field(f) => match f {
                     Field::Status => J::from(tracedb_model::filter::status_name(r.status)),
                     Field::Name => J::from(r.name.clone()?),

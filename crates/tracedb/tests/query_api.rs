@@ -96,11 +96,7 @@ async fn errors_name_the_slot_and_the_place() {
         json!({"filter": "and(eq(feedback_key, \"correctness\"), lt(feedback_score, 0.5))"}),
     )
     .await;
-    assert_eq!(
-        (s, v["error"]["code"].as_str()),
-        (400, Some("unsupported")),
-        "feedback.<key> waits for the feedback index"
-    );
+    assert_eq!(s, 200, "the LangSmith feedback pair is answered: {v}");
     let (s, v) = query(&server, json!({"cursor": "nope"})).await;
     assert_eq!((s, v["error"]["code"].as_str()), (400, Some("bad_cursor")));
     let (s, v) = query(&server, json!({"bogus": 1})).await;
