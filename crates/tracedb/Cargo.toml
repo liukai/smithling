@@ -41,11 +41,11 @@ thiserror.workspace = true
 tempfile.workspace = true
 zstd.workspace = true
 httparse.workspace = true
+datafusion.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
 proptest.workspace = true
-datafusion.workspace = true
 futures-util.workspace = true
 sqlx.workspace = true
 url.workspace = true

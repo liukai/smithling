@@ -1,5 +1,6 @@
 //! The `tracedb` server: HTTP routes over the ingest and query services, plus the embedded UI.
 
+pub mod bench;
 pub mod cli_query;
 pub mod demo;
 pub mod langsmith_map;

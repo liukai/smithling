@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,6 +14,7 @@ env:
 jobs:
   # The UI is built and tested on its own; Rust jobs embed its output (M2-FR-25).
   ui:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +32,7 @@ jobs:
 
   # The server builds and tests without Node; the UI is a placeholder page here.
   rust-no-node:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,3 +123,63 @@ jobs:
       - name: container logs
         if: failure()
         run: docker compose -f ci/cloud.yml logs --no-color minio postgres
+
+  # The speed table (M3-FR-17, SC-10): budgets are the SC-03 targets scaled by a calibration run on the runner.
+  # A slipped row fails the job, naming the query, target and value; the table goes in the job summary.
+  bench-smoke:
+    if: github.event_name == 'pull_request'
+    env:
+      RUST_LOG: warn
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p tracedb
+      - name: bench, 200k runs
+        shell: bash
+        run: ./target/release/tracedb bench --smoke --check --json bench.json 2>&1 | tee bench.txt
+      - name: table in the job summary
+        if: always()
+        shell: bash
+        run: |
+          { echo '### tracedb bench --smoke'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-smoke
+          path: bench.json
+
+  bench-full:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    # One 2M run at a time; a newer push waits rather than cancelling the one being measured.
+    concurrency:
+      group: bench-full
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      RUST_LOG: warn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p tracedb
+      - name: bench, 2M runs
+        shell: bash
+        run: ./target/release/tracedb bench --runs 2000000 --check --json bench.json 2>&1 | tee bench.txt
+      - name: table in the job summary
+        if: always()
+        shell: bash
+        run: |
+          { echo '### tracedb bench --runs 2000000'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-full
+          path: bench.json

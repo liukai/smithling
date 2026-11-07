@@ -67,6 +67,8 @@ enum Cmd {
     Query(tracedb::cli_query::QueryArgs),
     /// Load the overnight-eval scenario and run the M2 checks; prints a pass/fail table.
     Demo(tracedb::demo::DemoArgs),
+    /// Load the reference volume, time each query type and print P50/P99 against the targets.
+    Bench(tracedb::bench::BenchArgs),
 }
 
 /// `10m`, `30s`, `2h` → microseconds.
@@ -149,6 +151,10 @@ async fn main() -> ExitCode {
         }
         Cmd::Demo(args) => {
             let code = tracedb::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            ExitCode::from(code)
+        }
+        Cmd::Bench(args) => {
+            let code = tracedb::bench::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
         Cmd::Query(args) => {
