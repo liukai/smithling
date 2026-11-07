@@ -88,7 +88,7 @@ pub fn app(state: AppState) -> Router {
         .route("/runs/batch", post(ing::runs_batch))
         .route("/runs", post(ing::create_run))
         .route("/runs/{run_id}", patch(ing::update_run))
-        .route("/runs/multipart", post(ing::multipart))
+        .route("/runs/multipart", post(routes::multipart::runs_multipart))
         .route("/feedback", post(ing::feedback))
         .route("/v1/events", post(ing::native_events))
         .route("/healthz", get(healthz))

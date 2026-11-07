@@ -1,14 +1,17 @@
 """Record real LangSmith SDK upload traffic as contract fixtures for tracedb.
 
-Run with the Python of a venv that has the pinned `langsmith` and `langgraph`, e.g.:
+Run with the Python of a venv that has the pinned `langsmith`, `langgraph` and `zstandard`, e.g.:
 
-    uv venv /tmp/ls-0.14.17 && VIRTUAL_ENV=/tmp/ls-0.14.17 uv pip install langsmith==0.14.17 langgraph
-    /tmp/ls-0.14.17/bin/python scripts/record-sdk-fixtures.py
+    uv venv /tmp/ls-0.14.17 && VIRTUAL_ENV=/tmp/ls-0.14.17 uv pip install langsmith==0.14.17 langgraph zstandard
+    /tmp/ls-0.14.17/bin/python scripts/record-sdk-fixtures.py --mode multipart-zstd
 
-Writes tests/fixtures/sdk-<version>/requests.jsonl (every request the SDK made) and expected-runs.json
-(the merged runs, computed here independently of tracedb). Fails if the SDK logs a backend-version warning.
+`--mode` sets what `/info` advertises: `json` (multipart off; the default), `multipart`, or `multipart-zstd`.
+Writes tests/fixtures/sdk-<version>[-<mode>]/requests.jsonl (every request the SDK made; multipart bodies as
+base64 with their headers), expected-runs.json (the merged runs, computed here independently of tracedb) and
+expected-feedback.json. Fails if the SDK logs a backend-version warning.
 """
 
+import base64
 import json
 import logging
 import os
@@ -20,6 +23,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+MODES = ("json", "multipart", "multipart-zstd")
+MP_HEADERS = ("content-type", "content-encoding", "x-pre-compressed-size", "x-post-compressed-size")
 INFO = {
     "version": "",
     "tracedb_version": "recorder",
@@ -41,14 +46,22 @@ LOCK = threading.Lock()
 class Recorder(BaseHTTPRequestHandler):
     def _record(self):
         n = int(self.headers.get("content-length") or 0)
-        body = self.rfile.read(n).decode() if n else ""
+        raw = self.rfile.read(n) if n else b""
+        ct = self.headers.get("content-type") or ""
+        req = {"method": self.command, "path": self.path, "content_type": self.headers.get("content-type")}
+        if ct.startswith("multipart/"):
+            assert raw, "multipart body without Content-Length (chunked); the recorder can't read it"
+            req["body"] = None
+            req["body_b64"] = base64.b64encode(raw).decode()
+            req["headers"] = {k: self.headers[k] for k in MP_HEADERS if self.headers.get(k) is not None}
+        else:
+            body = raw.decode()
+            try:
+                req["body"] = json.loads(body) if body else ""
+            except ValueError:
+                req["body"] = body
         with LOCK:
-            REQUESTS.append({
-                "method": self.command,
-                "path": self.path,
-                "content_type": self.headers.get("content-type"),
-                "body": json.loads(body) if body and "json" in (self.headers.get("content-type") or "") else body,
-            })
+            REQUESTS.append(req)
 
     def _reply(self, code, obj):
         data = json.dumps(obj).encode()
@@ -81,7 +94,7 @@ class WarningCatcher(logging.Handler):
         self.messages.append(record.getMessage())
 
 
-def run_agent():
+def run_agent(root_id: str):
     """A small LangGraph agent: plan → web_search → fetch_url (fails) → summarize (sub-agent with an LLM)."""
     from typing import TypedDict
 
@@ -126,7 +139,10 @@ def run_agent():
     g.add_edge("plan", "search")
     g.add_edge("search", "summarize")
     g.add_edge("summarize", END)
-    g.compile().invoke({"task": "llm-papers"}, config={"metadata": {"task_id": "t-117", "prompt_version": "v7"}, "tags": ["batch=fixture"]})
+    g.compile().invoke(
+        {"task": "llm-papers"},
+        config={"run_id": root_id, "metadata": {"task_id": "t-117", "prompt_version": "v7"}, "tags": ["batch=fixture"]},
+    )
 
 
 def project_of(item: dict):
@@ -141,6 +157,40 @@ def project_of(item: dict):
     return None
 
 
+def multipart_parts(req: dict) -> list[tuple[str, bytes]]:
+    """(name, bytes) per part, decoded with the stdlib and `zstandard` (not tracedb's parser)."""
+    import zstandard
+
+    raw = base64.b64decode(req["body_b64"])
+    if req["headers"].get("content-encoding") == "zstd":
+        raw = zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True).read()
+    boundary = req["headers"]["content-type"].split("boundary=", 1)[1].encode()
+    parts = []
+    for chunk in raw.split(b"--" + boundary)[1:]:
+        if chunk.startswith(b"--"):
+            break
+        head, _, data = chunk[2:].partition(b"\r\n\r\n")
+        name = head.split(b'name="', 1)[1].split(b'"', 1)[0].decode()
+        parts.append((name, data[:-2]))
+    return parts
+
+
+def multipart_items(req: dict) -> tuple[list[dict], list[dict]]:
+    """Runs (posts, then patches) and feedback, assembled from the parts."""
+    runs: dict[tuple[str, str], dict] = {}
+    feedback = []
+    for name, data in multipart_parts(req):
+        bits = name.split(".")
+        if bits[0] in ("post", "patch") and len(bits) == 2:
+            runs.setdefault((bits[0], bits[1]), {}).update(json.loads(data))
+        elif bits[0] in ("post", "patch") and len(bits) == 3:
+            runs.setdefault((bits[0], bits[1]), {})[bits[2]] = json.loads(data)
+        elif bits[0] == "feedback":
+            feedback.append(json.loads(data))
+    items = [dict(v, id=v.get("id") or k[1]) for op in ("post", "patch") for k, v in runs.items() if k[0] == op]
+    return items, feedback
+
+
 def expected_runs(requests: list[dict]) -> list[dict]:
     """Independent oracle: fold each run's items in arrival order; present non-null fields win."""
     runs: dict[str, dict] = {}
@@ -148,6 +198,8 @@ def expected_runs(requests: list[dict]) -> list[dict]:
         body = req["body"] if isinstance(req["body"], dict) else {}
         if req["method"] == "POST" and req["path"] == "/runs/batch":
             items = body.get("post", []) + body.get("patch", [])
+        elif req["method"] == "POST" and req["path"] == "/runs/multipart":
+            items = multipart_items(req)[0]
         elif req["path"] == "/runs" or req["path"].startswith("/runs/"):
             items = [dict(body, id=body.get("id") or req["path"].rsplit("/", 1)[-1])]
         else:
@@ -180,16 +232,43 @@ def expected_runs(requests: list[dict]) -> list[dict]:
     return out
 
 
+def expected_feedback(requests: list[dict]) -> list[dict]:
+    """Feedback by id after every create and update, in arrival order."""
+    rows: dict[str, dict] = {}
+    for req in requests:
+        path = req["path"].split("?")[0]
+        if req["method"] == "POST" and path == "/feedback":
+            items = [req["body"]]
+        elif req["method"] == "PATCH" and path.startswith("/feedback/"):
+            items = [dict(req["body"], id=path.rsplit("/", 1)[-1])]
+        elif req["method"] == "POST" and path == "/runs/multipart":
+            items = multipart_items(req)[1]
+        else:
+            continue
+        for fb in items:
+            row = rows.setdefault(fb["id"], {"id": fb["id"]})
+            row.update({k: fb[k] for k in ("run_id", "key", "score", "comment") if fb.get(k) is not None})
+    return [rows[k] for k in sorted(rows)]
+
+
 def child():
-    """Runs the agent once in this process (env already set by the parent) and flushes all uploads."""
+    """Runs the agent once in this process (env already set by the parent) and flushes all uploads.
+
+    Feedback goes out before the run is uploaded (it arrives first), after it, and as one update.
+    """
     from langchain_core.tracers.langchain import wait_for_all_tracers
     from langsmith.run_trees import get_cached_client
 
     catcher = WarningCatcher()
     logging.getLogger("langsmith").addHandler(catcher)
-    run_agent()
+    client = get_cached_client()
+    root_id = str(uuid.uuid4())
+    client.create_feedback(root_id, key="correctness", score=0.0, comment="gave up on 429")
+    run_agent(root_id)
     wait_for_all_tracers()
-    get_cached_client().flush()
+    client.flush()
+    fb = client.create_feedback(root_id, key="helpfulness", score=1)
+    client.update_feedback(fb.id, score=0.5, comment="partly")
     version_warnings = [m for m in catcher.messages if "Backend version" in m]
     if version_warnings:
         sys.exit(f"SDK logged backend-version warnings: {version_warnings}")
@@ -197,6 +276,12 @@ def child():
 
 def main():
     import langsmith
+
+    mode = sys.argv[sys.argv.index("--mode") + 1] if "--mode" in sys.argv else "json"
+    if mode not in MODES:
+        sys.exit(f"--mode must be one of {MODES}")
+    INFO["batch_ingest_config"]["use_multipart_endpoint"] = mode != "json"
+    INFO["instance_flags"] = {"zstd_compression_enabled": True} if mode == "multipart-zstd" else {}
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -214,14 +299,18 @@ def main():
         subprocess.run([sys.executable, __file__, "--child"], env=base | env, check=True, timeout=120)
     server.shutdown()
 
-    out = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / f"sdk-{langsmith.__version__}"
+    suffix = "" if mode == "json" else f"-{mode}"
+    out = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / f"sdk-{langsmith.__version__}{suffix}"
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "requests.jsonl", "w") as f:
         for r in REQUESTS:
             f.write(json.dumps(r, sort_keys=True) + "\n")
     runs = expected_runs(REQUESTS)
     (out / "expected-runs.json").write_text(json.dumps(runs, indent=2, sort_keys=True) + "\n")
-    print(f"langsmith {langsmith.__version__}: {len(REQUESTS)} requests, {len(runs)} runs → {out}")
+    feedback = expected_feedback(REQUESTS)
+    (out / "expected-feedback.json").write_text(json.dumps(feedback, indent=2, sort_keys=True) + "\n")
+    print(f"langsmith {langsmith.__version__} ({mode}): {len(REQUESTS)} requests, {len(runs)} runs, "
+          f"{len(feedback)} feedback → {out}")
     print("paths:", sorted({(r["method"], r["path"].split("?")[0]) for r in REQUESTS}))
 
 

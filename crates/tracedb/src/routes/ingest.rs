@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracedb_ingest::{Incoming, Rejected};
+use tracedb_ingest::{AcceptError, AcceptResult, Incoming, Rejected};
 use tracedb_model::validate::Reject;
 use tracedb_model::{Op, Source};
 
@@ -23,7 +23,7 @@ pub async fn info() -> Json<Value> {
         "tracedb_version": env!("CARGO_PKG_VERSION"),
         "license_expiration_time": null,
         "batch_ingest_config": {
-            "use_multipart_endpoint": false,
+            "use_multipart_endpoint": true,
             // The SDK uses this object as is (no defaults), so every key it reads must be present.
             "scale_up_qsize_trigger": 200,
             "scale_up_nthreads_limit": 32,
@@ -31,7 +31,7 @@ pub async fn info() -> Json<Value> {
             "size_limit": BATCH_SIZE_LIMIT,
             "size_limit_bytes": BATCH_SIZE_LIMIT_BYTES,
         },
-        "instance_flags": {},
+        "instance_flags": {"zstd_compression_enabled": true},
     }))
 }
 
@@ -61,14 +61,6 @@ pub async fn update_run(State(st): State<AppState>, Path(run_id): Path<String>, 
         obj.entry("id").or_insert(Value::String(run_id));
     }
     submit(&st, [(Op::Patch, &v)], Source::LsSingle, Dialect::LangSmith).await
-}
-
-pub async fn multipart() -> Response {
-    error(
-        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "unsupported",
-        "multipart is supported from M3",
-    )
 }
 
 pub async fn feedback() -> Response {
@@ -106,6 +98,19 @@ async fn submit<'a>(
     source: Source,
     dialect: Dialect,
 ) -> Response {
+    match accept_items(st, items, source, dialect).await {
+        Ok(r) => (StatusCode::ACCEPTED, Json(r)).into_response(),
+        Err(e) => accept_error(&e),
+    }
+}
+
+/// Maps and writes items; mapping rejections come first in `rejected`.
+pub(crate) async fn accept_items<'a>(
+    st: &AppState,
+    items: impl IntoIterator<Item = (Op, &'a Value)>,
+    source: Source,
+    dialect: Dialect,
+) -> Result<AcceptResult, AcceptError> {
     let mut ok: Vec<Incoming> = Vec::new();
     let mut rejected: Vec<Rejected> = Vec::new();
     for (op, v) in items {
@@ -114,11 +119,7 @@ async fn submit<'a>(
             Err((id, Reject { reason, detail })) => rejected.push(Rejected { id, reason, detail }),
         }
     }
-    match st.ingest.accept(ok).await {
-        Ok(mut r) => {
-            r.rejected.splice(0..0, rejected);
-            (StatusCode::ACCEPTED, Json(r)).into_response()
-        }
-        Err(e) => accept_error(&e),
-    }
+    let mut r = st.ingest.accept(ok).await?;
+    r.rejected.splice(0..0, rejected);
+    Ok(r)
 }

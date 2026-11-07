@@ -48,7 +48,7 @@ async fn unsupported_paths_are_explicit() {
         .unwrap();
     assert_eq!(fb.status(), 501, "a 404 would make the SDK retry");
     let mp = http.post(server.url("/runs/multipart")).body("x").send().await.unwrap();
-    assert_eq!(mp.status(), 415);
+    assert_eq!(mp.status(), 400, "a 404 makes the SDK fall back, a 415 drops the batch");
 }
 
 #[tokio::test]
@@ -57,7 +57,7 @@ async fn info_has_every_batch_key_the_sdk_reads() {
     let info: Value = reqwest::get(server.url("/info")).await.unwrap().json().await.unwrap();
     assert_eq!(info["version"], "", "empty version skips the SDK's version warnings");
     let cfg = &info["batch_ingest_config"];
-    assert_eq!(cfg["use_multipart_endpoint"], false);
+    assert_eq!(cfg["use_multipart_endpoint"], true);
     for k in [
         "scale_up_qsize_trigger",
         "scale_up_nthreads_limit",

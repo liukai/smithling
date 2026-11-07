@@ -5,6 +5,8 @@ mod common;
 
 use std::path::PathBuf;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::Value;
 use tracedb_ingest::Include;
 
@@ -27,15 +29,28 @@ async fn recorded_sdk_traffic_is_fully_accepted_and_merged() {
         let server = common::start().await;
         let http = reqwest::Client::new();
 
+        let mut multipart = 0;
         for line in std::fs::read_to_string(dir.join("requests.jsonl")).unwrap().lines() {
             let req: Value = serde_json::from_str(line).unwrap();
             let (method, path) = (req["method"].as_str().unwrap(), req["path"].as_str().unwrap());
+            // Feedback is stored from unit 9 (T101); until then `/feedback` answers 501.
+            if path.starts_with("/feedback") {
+                continue;
+            }
             let url = server.url(path);
-            let resp = match method {
-                "GET" => http.get(url).send().await.unwrap(),
-                "POST" => http.post(url).json(&req["body"]).send().await.unwrap(),
-                "PATCH" => http.patch(url).json(&req["body"]).send().await.unwrap(),
-                m => panic!("{version}: unexpected method {m}"),
+            let resp = match (method, req["body_b64"].as_str()) {
+                ("GET", _) => http.get(url).send().await.unwrap(),
+                ("POST", Some(b64)) => {
+                    multipart += 1;
+                    let mut r = http.post(url).body(BASE64.decode(b64).unwrap());
+                    for (k, v) in req["headers"].as_object().unwrap() {
+                        r = r.header(k.as_str(), v.as_str().unwrap());
+                    }
+                    r.send().await.unwrap()
+                }
+                ("POST", None) => http.post(url).json(&req["body"]).send().await.unwrap(),
+                ("PATCH", None) => http.patch(url).json(&req["body"]).send().await.unwrap(),
+                (m, _) => panic!("{version}: unexpected method {m}"),
             };
             let status = resp.status();
             let body: Value = resp.json().await.unwrap_or(Value::Null);
@@ -49,6 +64,11 @@ async fn recorded_sdk_traffic_is_fully_accepted_and_merged() {
             }
         }
 
+        assert_eq!(
+            multipart > 0,
+            version.contains("multipart"),
+            "{version}: multipart requests replayed: {multipart}"
+        );
         let expected: Vec<Value> =
             serde_json::from_str(&std::fs::read_to_string(dir.join("expected-runs.json")).unwrap()).unwrap();
         let snap = server.state.ingest.snapshot();

@@ -1,0 +1,30 @@
+[
+  {
+    "comment": "gave up on 429",
+    "id": "01a1b4f9-014f-74be-89ca-3af5bec6c900",
+    "key": "correctness",
+    "run_id": "ce7568ce-7186-4a8c-aaaf-f8ce8b41c03c",
+    "score": 0.0
+  },
+  {
+    "comment": "partly",
+    "id": "01a1b4f9-080a-712e-a570-60884bc5f47e",
+    "key": "helpfulness",
+    "run_id": "ce7568ce-7186-4a8c-aaaf-f8ce8b41c03c",
+    "score": 0.5
+  },
+  {
+    "comment": "gave up on 429",
+    "id": "01a1b4f9-0a10-71fc-b047-c94d2d3e7631",
+    "key": "correctness",
+    "run_id": "eaf42a85-6bfb-47bb-a173-f3a2f78c0633",
+    "score": 0.0
+  },
+  {
+    "comment": "partly",
+    "id": "01a1b4f9-10a2-731f-9467-7289e5b2bad6",
+    "key": "helpfulness",
+    "run_id": "eaf42a85-6bfb-47bb-a173-f3a2f78c0633",
+    "score": 0.5
+  }
+]
