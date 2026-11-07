@@ -90,8 +90,8 @@ Each unit, before its one local commit (no pushes):
 
 **Purpose**: branch and dependencies.
 
-- [ ] T001 ⚪ Cut branch `003-m3-search-aggregates-speed` from the 002 tip once the docs in `specs/003-m3-search-aggregates-speed/` are approved (settled 2026-11-06); confirm `cargo test --workspace` and `cd ui && npm test` are green before any change
-- [ ] T002 🟠 Add workspace dependencies in root `Cargo.toml`: `unicode-segmentation = "1.13"`, `zstd = "0.13"`, `httparse = "1.10"` (all already in `Cargo.lock`), `moka = { version = "0.12", features = ["sync"] }` (offline registry, M3-R15); each crate adds only what it uses, in its unit; `cargo tree -d` shows one `zstd` and one `arrow`; `tikv-jemallocator = "0.7"` (offline registry) is added by T091 in unit 12 (q1)
+- [X] T001 ⚪ Cut branch `003-m3-search-aggregates-speed` from the 002 tip once the docs in `specs/003-m3-search-aggregates-speed/` are approved (settled 2026-11-06); confirm `cargo test --workspace` and `cd ui && npm test` are green before any change
+- [X] T002 🟠 Add workspace dependencies in root `Cargo.toml`: `unicode-segmentation = "1.13"`, `zstd = "0.13"`, `httparse = "1.10"` (all already in `Cargo.lock`), `moka = { version = "0.12", features = ["sync"] }` (offline registry, M3-R15); each crate adds only what it uses, in its unit; `cargo tree -d` shows one `zstd` and one `arrow`; `tikv-jemallocator = "0.7"` (offline registry) is added by T091 in unit 12 (q1)
 - [ ] T003 [P] 🟠 Decision-log entries in `specs/000-tracedb-master-plan/decisions.md` (q2), each written at the start of the unit that changes it, with the next free D-id at that time (D-023 is the last today; an in-flight M2 fix may take D-024): unit 1 second start marked multi-version (revisits D-016); unit 5 per-file text index (replaces the roadmap's "scan + bloom in v0"); unit 9 feedback by `POST /feedback` (corrects design-notes §4); unit 12 bounded `Cache` and memory defaults (revisits D-013)
 - [ ] T004 🟢 TOML parser for `prices.toml`: add `toml` 0.9 (in the offline registry: 0.8.23, 0.9.12, 1.1.5) to root `Cargo.toml` workspace deps and `crates/model/Cargo.toml`
 
