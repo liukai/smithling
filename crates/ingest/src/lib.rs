@@ -7,6 +7,7 @@ pub mod dedup;
 pub mod flush;
 pub mod hub;
 pub mod memtable;
+pub mod projects;
 mod recover;
 pub mod store;
 pub mod wal;
@@ -392,6 +393,8 @@ struct Inner {
     queue_events: usize,
     mem: Arc<RwLock<Mem>>,
     mvset: Arc<RwLock<HashSet<RunId>>>,
+    projects: Arc<RwLock<projects::Projects>>,
+    backfill: Mutex<Option<JoinHandle<()>>>,
     hub: Hub,
     health: Arc<Mutex<Option<String>>>,
     flush_health: Arc<Mutex<FlushHealth>>,
@@ -412,6 +415,9 @@ impl Drop for Inner {
             let _ = t.join();
         }
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.backfill.lock().unwrap().take() {
+            let _ = t.join();
+        }
         if let Some(t) = self.flusher.lock().unwrap().take() {
             let _ = t.join();
         }
@@ -456,6 +462,11 @@ impl Ingest {
             stats: open_stats,
         } = recover::recover(&cfg, &storage)?;
         let flushed_seq = version.flushed_seq;
+        let mut projects = projects::Projects::default();
+        for st in active.states().filter(|st| st.project_set) {
+            projects.note(st.run.run_id, &st.run.project);
+        }
+        let projects = Arc::new(RwLock::new(projects));
 
         let mem = Arc::new(RwLock::new(Mem {
             active,
@@ -477,6 +488,7 @@ impl Ingest {
         let flusher = flush::Flusher {
             mem: mem.clone(),
             mvset: mvset.clone(),
+            projects: projects.clone(),
             storage: storage.clone(),
             counters: counters.clone(),
             flush_health: flush_health.clone(),
@@ -496,6 +508,7 @@ impl Ingest {
             hub: hub.clone(),
             health: health.clone(),
             mvset: mvset.clone(),
+            projects: projects.clone(),
             counters: counters.clone(),
             limits: cfg.limits,
             flush_tx,
@@ -506,15 +519,24 @@ impl Ingest {
             .spawn(move || writer::run(rx, wal, dedup, pending, last_seq, shared))
             .map_err(OpenError::Thread)?;
 
+        let backfill = {
+            let (mem, storage, projects, stop) = (mem.clone(), storage.clone(), projects.clone(), stop.clone());
+            std::thread::Builder::new()
+                .name("tracedb-backfill".into())
+                .spawn(move || flush::backfill_projects(&mem, &storage, &projects, &stop))
+                .map_err(OpenError::Thread)?
+        };
         let inner = Inner {
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
             flusher: Mutex::new(Some(flusher_thread)),
+            backfill: Mutex::new(Some(backfill)),
             stop,
             permits: Arc::new(Semaphore::new(cfg.queue_events)),
             queue_events: cfg.queue_events,
             mem,
             mvset,
+            projects,
             hub,
             health,
             flush_health,
@@ -589,6 +611,11 @@ impl Ingest {
 
     pub fn multi_version(&self) -> Arc<RwLock<HashSet<RunId>>> {
         self.inner.mvset.clone()
+    }
+
+    /// Recent runs' projects: where a version that doesn't name its project is filed.
+    pub fn projects(&self) -> Arc<RwLock<projects::Projects>> {
+        self.inner.projects.clone()
     }
 
     pub fn storage(&self) -> Arc<Storage> {

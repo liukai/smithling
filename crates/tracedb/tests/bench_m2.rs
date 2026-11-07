@@ -480,3 +480,112 @@ async fn bloom_filters_cut_files_opened_per_trace_lookup() {
         "blooms must skip files that trace bounds can't"
     );
 }
+
+/// The quickstart's server: the overnight-eval scenario, then ~2M seeded runs at the default memtable (300+ files
+/// over the same hours), whose late updates come without a project after their starts were flushed (as the SDK
+/// sends them). The scenario's lists must not pay for the seed's updates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore]
+async fn sc03_lists_with_late_updates_in_another_project() {
+    use tracedb::{scenario, seed};
+    let _serial = SERIAL.lock().await;
+    let server = start().await;
+    let url = server.url("");
+    let ingest = server.state.ingest.clone();
+    let base = Ts::now().0 - 6 * 3_600_000_000;
+    let s = scenario::generate(7, base, DEFAULT_MEMTABLE_BYTES);
+    let loaded = Instant::now();
+    let l = scenario::load(&url, &s).await.unwrap();
+    assert!(l.in_files);
+    let (mut posts, mut patches) = (0, 0);
+    // 40 uploads of 305 traces (~49k runs, ~10 memtables each): each upload's late updates follow its starts.
+    for batch in 0..40u64 {
+        let traces = seed::generate(1_000 + batch, 305, base);
+        let (p, u) = seed::send(&url, &traces, true).await.unwrap();
+        posts += p;
+        patches += u;
+    }
+    while ingest.health().frozen || ingest.health().memtable_bytes >= DEFAULT_MEMTABLE_BYTES {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let health = ingest.health();
+    let unknown: u64 = {
+        let mem = ingest.mem();
+        let mem = mem.read().unwrap();
+        mem.version
+            .segments
+            .iter()
+            .filter(|s| s.project.is_empty())
+            .map(|s| s.row_count)
+            .sum()
+    };
+    eprintln!(
+        "loaded {} seed runs ({patches} late updates) + scenario in {:.1?}: {} files ({} rows, {unknown} under no project), {} runs in memory",
+        posts,
+        loaded.elapsed(),
+        health.segments,
+        health.segment_rows,
+        health.runs
+    );
+    assert!(health.segments >= 300, "{} files", health.segments);
+
+    let http = reqwest::Client::new();
+    let tag = scenario::BATCH_TAG;
+    let roots = |filter: String, tree: Option<&str>, count: bool, project: &str| {
+        json!({"project": project, "time": {"last": "12h"}, "is_root": true, "filter": filter,
+               "tree_filter": tree, "limit": 200, "count": count})
+    };
+    let failing = |count| {
+        roots(
+            format!(r#"and(has(tags, "{tag}"), eq(status, "error"))"#),
+            None,
+            count,
+            scenario::PROJECT,
+        )
+    };
+    let quiet = |count| {
+        roots(
+            format!(r#"and(has(tags, "{tag}"), eq(status, "ok"))"#),
+            Some(r#"eq(status, "error")"#),
+            count,
+            scenario::PROJECT,
+        )
+    };
+    let n_runs = |n: usize| move |v: &Value| v["runs"].as_array().is_some_and(|a| a.len() == n);
+    let mut missed = Vec::new();
+    for (label, body, n, assert) in [
+        ("failing roots", failing(false), scenario::FAILING_ROOTS, true),
+        ("quiet failures", quiet(false), scenario::QUIET_FAILURES, true),
+        ("failing roots, count", failing(true), scenario::FAILING_ROOTS, false),
+        ("quiet failures, count", quiet(true), scenario::QUIET_FAILURES, false),
+    ] {
+        let reqs = (0..21)
+            .map(|_| http.post(server.url("/api/query")).json(&body))
+            .collect();
+        let p50 = measure(label, reqs, n_runs(n)).await;
+        let v: Value = http
+            .post(server.url("/api/query"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        eprintln!("{label:>22}: stats {}", v["stats"]);
+        let rows = v["stats"]["rows_read"].as_u64().unwrap();
+        if assert && p50 > Duration::from_millis(500) {
+            missed.push(format!("SC-03 {label}: p50 {p50:.1?} > 500 ms"));
+        }
+        if assert && rows > 10 * 200 {
+            missed.push(format!("{label}: read {rows} rows for a 200-run page"));
+        }
+    }
+    // Reported only: the seeded project's own lists merge its late updates.
+    let seed_failing = roots(r#"eq(status, "error")"#.into(), None, false, seed::PROJECT);
+    let reqs = (0..5)
+        .map(|_| http.post(server.url("/api/query")).json(&seed_failing))
+        .collect();
+    measure("seed: failing roots", reqs, |v| v["runs"].is_array()).await;
+    assert!(missed.is_empty(), "missed: {missed:#?}");
+}

@@ -85,11 +85,13 @@ struct Tick {
     left: Vec<RunId>,
 }
 
-type Running = Pin<Box<dyn Future<Output = (HashSet<TraceId>, HashSet<RunId>, Result<Page, QueryError>)> + Send>>;
+/// The traces and runs a re-query covers, and its result.
+type Requery = (HashSet<TraceId>, HashSet<RunId>, Result<Page, QueryError>);
+type Running = Pin<Box<dyn Future<Output = Requery> + Send>>;
 
 enum Step {
     Change(Result<Change, RecvError>),
-    Done((HashSet<TraceId>, HashSet<RunId>, Result<Page, QueryError>)),
+    Done(Box<Requery>),
     Due,
     Closed,
 }
@@ -133,7 +135,7 @@ impl Query {
                             Some(f) => f.await,
                             None => std::future::pending().await,
                         }
-                    } => Step::Done(done),
+                    } => Step::Done(Box::new(done)),
                     _ = tokio::time::sleep_until(next_run), if running.is_none() && !traces.is_empty() => Step::Due,
                     _ = tx.closed() => Step::Closed,
                 };
@@ -155,7 +157,8 @@ impl Query {
                     Step::Change(Err(RecvError::Lagged(_))) => msgs.push(TailMsg::Resync),
                     Step::Change(Err(RecvError::Closed)) | Step::Closed => return,
                     Step::Due => {}
-                    Step::Done((t, r, res)) => {
+                    Step::Done(done) => {
+                        let (t, r, res) = *done;
                         running = None;
                         match res {
                             Ok(page) => {

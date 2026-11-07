@@ -94,7 +94,7 @@ CREATE TABLE state (
 
 CREATE TABLE segments (
   id              TEXT PRIMARY KEY,          -- ULID
-  project         TEXT NOT NULL,             -- '' for versions with unknown project
+  project         TEXT NOT NULL,             -- '' for versions whose run's project isn't known at flush (D-024)
   core_path       TEXT NOT NULL,
   payload_path    TEXT NOT NULL,
   min_start_key   BIGINT NOT NULL,  max_start_key BIGINT NOT NULL,
@@ -137,7 +137,7 @@ from the WAL, so start rebuilds the dedup window with no flushed WAL files kept.
 <storage root>/
   <project>/<yyyy-mm-dd>/seg-<ulid>.core.parquet
   <project>/<yyyy-mm-dd>/seg-<ulid>.payload.parquet
-  _unknown/<yyyy-mm-dd>/seg-<ulid>.…              versions without a known project
+  _unknown/<yyyy-mm-dd>/seg-<ulid>.…              versions whose run's project isn't known at flush
 <data>/wal/<first_seq:020>.wal                      local disk in every mode (M1 format); only unflushed files
 <data>/meta.sqlite                                  local mode only
 ```
@@ -152,6 +152,7 @@ The day is the flush day (UTC). Names are unique and never reused, so nothing is
 | Frozen memtable | flusher, readers | `Arc` of the previous active, immutable | ≤ 128 MB, at most one |
 | `Version` | query (pinned) | segment list + frozen `Arc` | small |
 | Multi-version set | ingest (writes), query (reads) | `HashSet<RunId>` | ~3 MB (10% late) |
+| Recent projects (D-024) | writer, flusher (writes); flusher, query pin (reads) | run → project for the last 1–2M runs | ≤ ~50 MB |
 | Dedup set | writer | `(run_id, op, body_hash)` for the last 10 min | ~2M keys at 5k events/s |
 | `Cache` | storage | Parquet footers, bloom filters, hot row groups (LRU) | default 256 MB |
 

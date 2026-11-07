@@ -15,9 +15,10 @@ use serde_json::Value;
 use tracedb_ingest::store::RunStore;
 use tracedb_model::attrs::{Attrs, promote};
 use tracedb_model::{RunId, RunState, Ts};
+use tracedb_storage::StoredRow;
 use tracedb_storage::segment::{FieldStat, INCOMPLETE_PATH, SegmentMeta, StatsBuilder, TOP_VALUES, start_key};
 
-use crate::scan::{self, merge_group, read_core, versions_of};
+use crate::scan::{self, merge_group, read_core_each, versions_by_file};
 use crate::{Query, QueryError, TimeRange};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -114,24 +115,27 @@ impl VersionRows {
         let new: Vec<Arc<SegmentMeta>> = files.iter().filter(|s| !self.known.contains(&s.id)).cloned().collect();
         let new_ids: Vec<RunId> = multi.iter().filter(|id| !self.rows.ids.contains(id)).copied().collect();
         let none = scan::Scope::default();
-        let mut read = Vec::new();
+        // (file id, row)
+        let mut read: Vec<(String, StoredRow)> = Vec::new();
+        fn tag(found: Vec<(&SegmentMeta, StoredRow)>) -> impl Iterator<Item = (String, StoredRow)> + '_ {
+            found.into_iter().map(|(s, r)| (s.id.clone(), r))
+        }
         if !new_ids.is_empty() {
             let all: Vec<&SegmentMeta> = self.segments.iter().chain(&new).map(|s| &**s).collect();
-            read.extend(versions_of(&q.ctx, &q.ingest, &all, &new_ids, &none).await?);
+            let ids: HashSet<RunId> = new_ids.iter().copied().collect();
+            read.extend(tag(versions_by_file(&q.ctx, &q.ingest, &all, &ids, &none).await?));
         }
         let pending: HashSet<RunId> = self.flushing.iter().flat_map(|f| f.1.iter().copied()).collect();
         if !new.is_empty() && !self.rows.ids.is_empty() {
             let files: Vec<&SegmentMeta> = new.iter().map(|s| &**s).collect();
-            let marked = read_core(&q.ctx, &q.ingest, &files, Some(col("needs_merge").eq(lit(true)))).await?;
+            let marked = read_core_each(&q.ctx, &q.ingest, &files, Some(col("needs_merge").eq(lit(true)))).await?;
             let ids = &self.rows.ids;
-            read.extend(
-                marked
-                    .into_iter()
-                    .filter(|r| ids.contains(&r.state.run.run_id) && !pending.contains(&r.state.run.run_id)),
-            );
+            read.extend(tag(marked
+                .into_iter()
+                .filter(|(_, r)| ids.contains(&r.state.run.run_id) && !pending.contains(&r.state.run.run_id))
+                .collect()));
             if !pending.is_empty() {
-                let pending: Vec<RunId> = pending.iter().copied().collect();
-                read.extend(versions_of(&q.ctx, &q.ingest, &files, &pending, &none).await?);
+                read.extend(tag(versions_by_file(&q.ctx, &q.ingest, &files, &pending, &none).await?));
             }
         }
         // Nothing is kept until every read is done, so a failed or dropped request leaves no gap.
@@ -149,28 +153,19 @@ impl VersionRows {
         }
         let rows = Arc::make_mut(&mut self.rows);
         rows.ids.extend(new_ids);
-        // A file holds one memtable's rows of one project, and memtables cover disjoint seq ranges.
-        let mut by_project: HashMap<&str, Vec<&SegmentMeta>> = HashMap::new();
-        for s in &self.segments {
-            by_project.entry(s.project.as_str()).or_default().push(s);
-        }
-        for segs in by_project.values_mut() {
-            segs.sort_by_key(|s| s.min_seq);
-        }
         let mut touched: HashMap<RunId, Vec<(RunState, Attrs)>> = HashMap::new();
         let mut touched_files = HashSet::new();
-        for row in read {
-            let st = &row.state;
-            let project = if st.project_set { st.run.project.as_str() } else { "" };
-            let segs = by_project.get(project).map_or(&[][..], |v| &v[..]);
-            let i = segs.partition_point(|s| s.min_seq <= st.first_seq);
-            let Some(seg) = i.checked_sub(1).map(|i| segs[i]).filter(|s| st.last_seq <= s.max_seq) else {
-                debug_assert!(false, "a row read from a file matches no file");
-                continue;
-            };
-            rows.minus.entry(seg.id.clone()).or_default().0.add_run(st, &row.attrs);
-            touched_files.insert(seg.id.clone());
-            touched.entry(st.run.run_id).or_default().push((row.state, row.attrs));
+        for (seg, row) in read {
+            rows.minus
+                .entry(seg.clone())
+                .or_default()
+                .0
+                .add_run(&row.state, &row.attrs);
+            touched_files.insert(seg);
+            touched
+                .entry(row.state.run.run_id)
+                .or_default()
+                .push((row.state, row.attrs));
         }
         for id in touched_files {
             let (b, done) = rows.minus.get_mut(&id).expect("just added");

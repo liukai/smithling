@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -19,6 +19,7 @@ use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError};
 
 use crate::dedup::{self, DedupKey};
 use crate::memtable::Mem;
+use crate::projects::Projects;
 use crate::store::RunStore;
 use crate::{Counters, Storage, crash_point, wal};
 
@@ -33,6 +34,7 @@ pub(crate) struct FlushJob {
 pub(crate) struct Flusher {
     pub mem: Arc<RwLock<Mem>>,
     pub mvset: Arc<RwLock<HashSet<RunId>>>,
+    pub projects: Arc<RwLock<Projects>>,
     pub storage: Arc<Storage>,
     pub counters: Arc<Counters>,
     pub flush_health: Arc<Mutex<FlushHealth>>,
@@ -88,13 +90,12 @@ impl Flusher {
         let now = Ts::now();
         let (metas, stats, written) = {
             let mvset = self.mvset.read().unwrap();
+            let projects = self.projects.read().unwrap();
             let mut by_project: BTreeMap<String, Vec<Row>> = BTreeMap::new();
             for st in job.frozen.states() {
-                let project = if st.project_set {
-                    st.run.project.clone()
-                } else {
-                    String::new()
-                };
+                // A version that doesn't name its project is filed under its run's, if known; the row
+                // itself is unchanged.
+                let project = projects.filed(st).to_string();
                 let needs_merge = st.created_by_patch() || mvset.contains(&st.run.run_id);
                 by_project.entry(project).or_default().push(Row {
                     attrs: job
@@ -106,6 +107,7 @@ impl Flusher {
                     needs_merge,
                 });
             }
+            drop(projects);
             let mut metas = Vec::new();
             let mut stats = Vec::new();
             let mut written = Vec::new();
@@ -185,5 +187,55 @@ impl Flusher {
         let mut mem = self.mem.write().unwrap();
         mem.version = Arc::new(mem.version.with_flush(metas, stats, flushed_seq));
         mem.frozen = None;
+    }
+}
+
+/// After a restart, learns the projects of the newest files' runs (oldest of them first, so a run's first
+/// project wins), so their late updates are filed under them. Best effort and off the flush path: a run not
+/// found (yet) stays unknown, which is safe.
+pub(crate) fn backfill_projects(mem: &RwLock<Mem>, storage: &Storage, projects: &RwLock<Projects>, stop: &AtomicBool) {
+    let started = std::time::Instant::now();
+    let mut segs: Vec<Arc<SegmentMeta>> = {
+        let mem = mem.read().unwrap();
+        mem.version
+            .segments
+            .iter()
+            .filter(|s| !s.project.is_empty())
+            .cloned()
+            .collect()
+    };
+    segs.sort_by_key(|s| std::cmp::Reverse(s.max_seq));
+    let mut rows = 0;
+    segs.retain(|s| {
+        rows += s.row_count;
+        rows <= crate::projects::GENERATION as u64
+    });
+    let mut found = 0;
+    for s in segs.iter().rev() {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let (store, path) = (storage.store.clone(), s.core_path.clone());
+        let ids = storage
+            .block(async move { store.get(&path).await })
+            .and_then(segment::run_ids);
+        match ids {
+            Ok(ids) => {
+                found += ids.len();
+                projects
+                    .write()
+                    .unwrap()
+                    .backfill(ids.into_iter().map(|id| (id, s.project.as_str())));
+            }
+            Err(e) => tracing::warn!(segment = %s.id, error = %e, "could not read run ids; skipped"),
+        }
+    }
+    if found > 0 {
+        tracing::info!(
+            files = segs.len(),
+            runs = found,
+            ms = started.elapsed().as_millis() as u64,
+            "learned recent runs' projects"
+        );
     }
 }

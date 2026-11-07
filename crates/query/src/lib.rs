@@ -134,6 +134,10 @@ pub struct PageStats {
     pub files_scanned: usize,
     pub rows_read: usize,
     pub rows_merged: usize,
+    /// Files searched for other versions of multi-version runs (not in `files_scanned`).
+    pub files_version_lookup: usize,
+    /// Rows that search read (in `rows_read`).
+    pub merge_rows: usize,
     pub matched: usize,
     /// Every run in scope was read, so `matched` is the total.
     pub complete: bool,
@@ -425,6 +429,8 @@ impl Query {
                 files_scanned: scan_stats.files_scanned,
                 rows_read: scan_stats.rows_read,
                 rows_merged: scan_stats.rows_merged,
+                files_version_lookup: scan_stats.files_version_lookup,
+                merge_rows: scan_stats.merge_rows,
                 matched,
                 complete,
                 ms: started.elapsed().as_millis() as u64,

@@ -224,6 +224,12 @@ query(Q):
 - **Pushdown** into the file scan is `Q.filter OR needs_merge OR run_id ∈ multi-version set`. Single-version rows are
   filtered in the scan; rows that may have other versions always come through to the merge, so no version is dropped
   before its run is complete. Only identity predicates (project, time, trace id) are pushed down unconditionally.
+- **Where a version without a project goes** ([D-024](../000-tracedb-master-plan/decisions.md#d-024)). SDK late
+  updates carry no `session_name`. The flusher files such a version under its run's project, from a bounded recent
+  run → project map in ingest, and the memtable pin applies the same rule. Only versions whose run is unknown go
+  to `""`, which every project's scope reads.
+- **Version lookup**: each candidate file (same time and trace bounds, any project) is read once. Up to 2,000 ids
+  use `run_id IN (…)`, so blooms skip most files; more ids read the file's run ids first, then only the rows it holds.
 - **Time pruning uses `start_key`**, the run's own start time taken from the last segment of its `dotted_order`.
   Every version has it, even a late update with no `start_time`, so time pruning never drops a late version.
 - **Tree filters** are semi-joins on `trace_id` (master research R10). `tree_filter` matches *other* runs in the trace,

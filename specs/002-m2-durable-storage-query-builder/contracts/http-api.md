@@ -36,7 +36,9 @@ Request (data-model §9; every field optional):
 
 By start time the server reads newest-first (oldest-first for `asc`) and stops once the page is full, so
 `stats.matched` counts only the runs read and `stats.complete` is `false`; `"count": true` reads everything and
-makes `matched` the total ([D-021](../../000-tracedb-master-plan/decisions.md#d-021)).
+makes `matched` the total ([D-021](../../000-tracedb-master-plan/decisions.md#d-021)). `files_version_lookup` and
+`merge_rows` are the files searched for other versions of multi-version runs and the rows that search read (also in
+`rows_read`; [D-024](../../000-tracedb-master-plan/decisions.md#d-024)).
 
 Response `200`:
 
@@ -47,8 +49,8 @@ Response `200`:
             "columns": {"metadata.prompt_version": "v7"}}],
   "next_cursor": "eyJ…",
   "warnings": [{"kind": "mixed_types", "path": "outputs.status_code", "counts": {"number": 4120, "string": 3}}],
-  "stats": {"files_total": 65, "files_scanned": 4, "rows_read": 3120, "rows_merged": 812, "matched": 51,
-            "complete": false, "ms": 74}
+  "stats": {"files_total": 65, "files_scanned": 4, "rows_read": 3120, "rows_merged": 812,
+            "files_version_lookup": 65, "merge_rows": 1624, "matched": 51, "complete": false, "ms": 74}
 }
 ```
 

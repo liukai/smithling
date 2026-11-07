@@ -131,7 +131,12 @@ pub struct ScanStats {
     pub files_scanned: usize,
     pub rows_read: usize,
     pub rows_merged: usize,
+    /// Files searched for other versions of multi-version runs.
+    pub files_version_lookup: usize,
+    /// Rows read by that search (included in `rows_read`).
+    pub merge_rows: usize,
     scanned: HashSet<String>,
+    looked_up: HashSet<String>,
 }
 
 /// The file set and the memtable runs in a scope, taken together under the memtable lock.
@@ -162,48 +167,42 @@ impl Pinned {
 pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
     let mem = ingest.mem();
     let mem = mem.read().unwrap();
+    let projects = ingest.projects();
+    // Memtable runs are kept or left out by project exactly as their files will be (`file_in_scope`).
+    let projects = scope.project.as_ref().map(|p| (p, projects.read().unwrap()));
+    let in_project = |st: &RunState| {
+        projects.as_ref().is_none_or(|(p, map)| {
+            let filed = map.filed(st);
+            filed == p.as_str() || filed.is_empty()
+        })
+    };
     let mut rows = Vec::new();
     fn keyed(st: &RunState) -> (i64, &RunState) {
         (start_key(&st.run.dotted_order), st)
     }
     let mut collect = |store: &tracedb_ingest::store::RunStore| {
+        let in_scope = |(k, st): &(i64, &RunState)| scope.row_in_scope(*k, st) && in_project(st);
         let take = |(k, st): (i64, &RunState)| {
             let attrs = store.attrs(&st.run.run_id).cloned().unwrap_or_else(|| promote(&st.run));
             (k, st.without_payload(), attrs)
         };
         if let Some(id) = scope.run_id {
-            rows.extend(
-                store
-                    .get(&id)
-                    .map(keyed)
-                    .filter(|(k, st)| scope.row_in_scope(*k, st))
-                    .map(take),
-            );
+            rows.extend(store.get(&id).map(keyed).filter(in_scope).map(take));
         } else if let Some(t) = scope.trace_id {
             rows.extend(
                 store
                     .trace_run_ids(&t)
                     .iter()
                     .filter_map(|id| store.get(id))
+                    .filter(|st| in_project(st))
                     .map(keyed)
                     .map(take),
             );
         } else if let Some(ts) = scope.traces.as_ref().filter(|ts| ts.len() < store.len()) {
             let ids = ts.iter().flat_map(|t| store.trace_run_ids(t));
-            rows.extend(
-                ids.filter_map(|id| store.get(id))
-                    .map(keyed)
-                    .filter(|(k, st)| scope.row_in_scope(*k, st))
-                    .map(take),
-            );
+            rows.extend(ids.filter_map(|id| store.get(id)).map(keyed).filter(in_scope).map(take));
         } else {
-            rows.extend(
-                store
-                    .states()
-                    .map(keyed)
-                    .filter(|(k, st)| scope.row_in_scope(*k, st))
-                    .map(take),
-            );
+            rows.extend(store.states().map(keyed).filter(in_scope).map(take));
         }
     };
     collect(&mem.active);
@@ -240,22 +239,152 @@ pub(crate) async fn read_core(
     Ok(out)
 }
 
-/// Every version, in `files`, of the given runs (chunked `run_id IN (…)` scans; blooms skip most files).
+/// Files read at once by [`versions_of`].
+const LOOKUP_FILES: usize = 16;
+
+/// Every version, in `files`, of the runs in `ids`. A short id list is one `run_id IN (…)` scan over every
+/// file (bloom filters skip most); a long one reads each file's run ids first, then the rows of the runs it holds.
 pub(crate) async fn versions_of(
     ctx: &SessionContext,
     ingest: &Ingest,
     files: &[&SegmentMeta],
-    ids: &[RunId],
+    ids: &HashSet<RunId>,
     scope: &Scope,
 ) -> Result<Vec<StoredRow>, QueryError> {
+    if ids.is_empty() || files.is_empty() {
+        return Ok(vec![]);
+    }
+    if ids.len() <= IN_CHUNK {
+        let list: Vec<RunId> = ids.iter().copied().collect();
+        return read_core(ctx, ingest, files, Some(by_ids(&list, scope))).await;
+    }
+    Ok(versions_by_file(ctx, ingest, files, ids, scope)
+        .await?
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect())
+}
+
+fn by_ids(list: &[RunId], scope: &Scope) -> DfExpr {
+    let by_id = col("run_id").in_list(list.iter().map(|id| id_lit(*id)).collect(), false);
+    match scope.df_filter() {
+        Some(s) => s.and(by_id),
+        None => by_id,
+    }
+}
+
+/// [`versions_of`], with each row's file: every file is read on its own.
+pub(crate) async fn versions_by_file<'a>(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    files: &[&'a SegmentMeta],
+    ids: &HashSet<RunId>,
+    scope: &Scope,
+) -> Result<Vec<(&'a SegmentMeta, StoredRow)>, QueryError> {
+    use futures_util::{StreamExt, TryStreamExt};
+    if ids.is_empty() || files.is_empty() {
+        return Ok(vec![]);
+    }
+    let short: Option<Vec<RunId>> = (ids.len() <= IN_CHUNK).then(|| ids.iter().copied().collect());
+    let reads: Vec<_> = files
+        .iter()
+        .map(|seg| versions_in(ctx, ingest, seg, short.as_deref(), ids, scope))
+        .collect();
+    let per_file: Vec<Vec<(&'a SegmentMeta, StoredRow)>> = futures_util::stream::iter(reads)
+        .buffer_unordered(LOOKUP_FILES)
+        .try_collect()
+        .await?;
+    Ok(per_file.into_iter().flatten().collect())
+}
+
+async fn versions_in<'a>(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    seg: &'a SegmentMeta,
+    short: Option<&[RunId]>,
+    ids: &HashSet<RunId>,
+    scope: &Scope,
+) -> Result<Vec<(&'a SegmentMeta, StoredRow)>, QueryError> {
+    let held: Vec<RunId>;
+    let list = match short {
+        Some(list) => list,
+        None => {
+            held = read_ids(ctx, ingest, seg, scope.df_filter())
+                .await?
+                .into_iter()
+                .filter(|id| ids.contains(id))
+                .collect();
+            &held[..]
+        }
+    };
+    if list.is_empty() {
+        return Ok(vec![]);
+    }
+    let tag = |rows: Vec<StoredRow>| rows.into_iter().map(|r| (seg, r));
+    // A file mostly made of these runs (a late-update file) is read whole.
+    if list.len() > IN_CHUNK || (short.is_none() && list.len() as u64 * 2 > seg.row_count) {
+        let rows = read_core(ctx, ingest, &[seg], scope.df_filter()).await?;
+        return Ok(tag(rows).filter(|(_, r)| ids.contains(&r.state.run.run_id)).collect());
+    }
+    Ok(tag(read_core(ctx, ingest, &[seg], Some(by_ids(list, scope))).await?).collect())
+}
+
+/// Rows of `files` matching `filter`, with their file (one scan per file).
+pub(crate) async fn read_core_each<'a>(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    files: &[&'a SegmentMeta],
+    filter: Option<DfExpr>,
+) -> Result<Vec<(&'a SegmentMeta, StoredRow)>, QueryError> {
+    use futures_util::{StreamExt, TryStreamExt};
+    let reads: Vec<_> = files
+        .iter()
+        .map(|seg| read_tagged(ctx, ingest, seg, filter.clone()))
+        .collect();
+    let per_file: Vec<Vec<(&'a SegmentMeta, StoredRow)>> = futures_util::stream::iter(reads)
+        .buffer_unordered(LOOKUP_FILES)
+        .try_collect()
+        .await?;
+    Ok(per_file.into_iter().flatten().collect())
+}
+
+async fn read_tagged<'a>(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    seg: &'a SegmentMeta,
+    filter: Option<DfExpr>,
+) -> Result<Vec<(&'a SegmentMeta, StoredRow)>, QueryError> {
+    let rows = read_core(ctx, ingest, &[seg], filter).await?;
+    Ok(rows.into_iter().map(|r| (seg, r)).collect())
+}
+
+/// The run ids of one file's rows matching `filter` (reads only the columns it needs).
+async fn read_ids(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    seg: &SegmentMeta,
+    filter: Option<DfExpr>,
+) -> Result<Vec<RunId>, QueryError> {
+    use datafusion::arrow::array::{Array, FixedSizeBinaryArray};
+    let store = &ingest.storage().store;
+    let mut df = ctx
+        .read_parquet(store.url(&seg.core_path), ParquetReadOptions::default())
+        .await?;
+    if let Some(f) = filter {
+        df = df.filter(f)?;
+    }
     let mut out = Vec::new();
-    for chunk in ids.chunks(IN_CHUNK) {
-        let by_id = col("run_id").in_list(chunk.iter().map(|id| id_lit(*id)).collect(), false);
-        let filter = match scope.df_filter() {
-            Some(s) => s.and(by_id),
-            None => by_id,
-        };
-        out.extend(read_core(ctx, ingest, files, Some(filter)).await?);
+    for b in df.select_columns(&["run_id"])?.collect().await? {
+        let ids = b
+            .column(0)
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .ok_or_else(|| tracedb_storage::StorageError::Format("run_id is not FixedSizeBinary".into()))?;
+        out.extend(
+            (0..ids.len())
+                .filter(|&i| !ids.is_null(i))
+                .filter_map(|i| RunId::from_slice(ids.value(i)).ok()),
+        );
     }
     Ok(out)
 }
@@ -328,9 +457,11 @@ pub async fn collect_pinned(
             .copied()
             .filter(|s| scope.file_may_hold_versions(s))
             .collect();
-        let ids: Vec<RunId> = multi_ids.iter().copied().collect();
-        extra = versions_of(ctx, ingest, &vfiles, &ids, scope).await?;
+        extra = versions_of(ctx, ingest, &vfiles, &multi_ids, scope).await?;
+        stats.looked_up.extend(vfiles.iter().map(|s| s.id.clone()));
+        stats.files_version_lookup = stats.looked_up.len();
         stats.rows_read += extra.len();
+        stats.merge_rows += extra.len();
         if scope.window.is_some() {
             fresh.extend(
                 pinned

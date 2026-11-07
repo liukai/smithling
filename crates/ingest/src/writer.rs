@@ -19,6 +19,7 @@ use crate::dedup::{Dedup, DedupKey};
 use crate::flush::FlushJob;
 use crate::hub::Hub;
 use crate::memtable::Mem;
+use crate::projects::Projects;
 use crate::wal::Wal;
 use crate::{AcceptError, AcceptResult, Counters, Incoming, Limits, Rejected};
 
@@ -39,6 +40,7 @@ pub(crate) struct Shared {
     pub hub: Hub,
     pub health: Arc<Mutex<Option<String>>>,
     pub mvset: Arc<RwLock<HashSet<RunId>>>,
+    pub projects: Arc<RwLock<Projects>>,
     pub counters: Arc<Counters>,
     pub limits: Limits,
     pub flush_tx: Sender<FlushJob>,
@@ -240,12 +242,16 @@ fn commit(
         // Updated while the memtable lock is held, so no reader sees a new version before its run is
         // marked as multi-version.
         let mut mvset = sh.mvset.write().unwrap();
+        let mut projects = sh.projects.write().unwrap();
         for out in &mut outcomes {
             let Ok(result) = &mut out.result else { continue };
             for ev in &out.events {
                 match mem.active.apply(ev) {
                     Ok(mut change) => {
                         let id = change.header.run_id;
+                        if let Some(p) = &ev.fields.project {
+                            projects.note(id, p);
+                        }
                         // A new state started by an update, or a run whose earlier part is frozen, has (or
                         // may have) another version elsewhere: reads must merge it (design §4.3).
                         if change.created

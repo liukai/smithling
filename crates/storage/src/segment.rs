@@ -796,6 +796,21 @@ pub fn field_stats<'a>(segment_id: &str, rows: impl IntoIterator<Item = (&'a Run
     b.finish(segment_id)
 }
 
+/// Run ids of every row in a core file (reads only that column).
+pub fn run_ids(core: Bytes) -> Result<Vec<RunId>, StorageError> {
+    use datafusion::parquet::arrow::ProjectionMask;
+    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let b = ParquetRecordBatchReaderBuilder::try_new(core)?;
+    let mask = ProjectionMask::columns(b.parquet_schema(), ["run_id"]);
+    let mut out = Vec::new();
+    for batch in b.with_projection(mask).build()? {
+        let batch = batch?;
+        let ids = Cols { batch: &batch }.ids("run_id")?;
+        out.extend((0..batch.num_rows()).filter_map(|i| uuid_at(ids, i)));
+    }
+    Ok(out)
+}
+
 /// Run ids of rows marked `needs_merge` in a core file (read at startup to rebuild the multi-version set).
 /// Reads only the two columns it needs.
 pub fn needs_merge_ids(core: Bytes) -> Result<Vec<RunId>, StorageError> {
