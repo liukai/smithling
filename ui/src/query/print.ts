@@ -14,6 +14,10 @@ export function print(e: Expr): string {
       return `has(${e.path}, ${printValue(e.value)})`;
     case "in":
       return `in(${e.path}, [${e.values.map(printValue).join(", ")}])`;
+    case "search":
+      return `search(${e.side === "any" ? "" : `${e.side}, `}${printValue(e.text)})`;
+    case "exists":
+      return `exists(${e.path})`;
   }
 }
 

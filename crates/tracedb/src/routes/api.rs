@@ -7,7 +7,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use tracedb_ingest::Include;
-use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
+use tracedb_model::filter::eval::visit_paths;
+use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, contains_search, parse_filter};
 use tracedb_model::{RunId, TraceId};
 use tracedb_query::{OrderBy, QueryError, QuerySpec, TimeRange};
 
@@ -59,22 +60,37 @@ fn filter_slot(slot: &str, text: &Option<String>) -> Result<Option<Expr>, BadReq
     let Some(t) = text.as_deref().filter(|t| !t.trim().is_empty()) else {
         return Ok(None);
     };
-    parse_filter(t).map(Some).map_err(|e| {
-        let code = if e.message.contains("supported from") {
-            "unsupported"
-        } else {
-            "bad_filter"
-        };
+    let slot_error = |code: &str, message: &str, start: usize, end: usize| {
         BadRequest(Box::new(
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": {
-                    "code": code, "message": e.message, "slot": slot, "start": e.start, "end": e.end,
+                    "code": code, "message": message, "slot": slot, "start": start, "end": end,
                 }})),
             )
                 .into_response(),
         ))
-    })
+    };
+    let e = parse_filter(t).map_err(|e| slot_error("bad_filter", &e.message, e.start, e.end))?;
+    if contains_search(&e) {
+        return Err(slot_error(
+            "unsupported",
+            "search() isn't answered yet (it needs the M3 text index)",
+            0,
+            t.len(),
+        ));
+    }
+    let mut feedback = false;
+    visit_paths(&e, &mut |p| feedback |= matches!(p, FPath::Feedback(_)));
+    if feedback {
+        return Err(slot_error(
+            "unsupported",
+            "feedback.<key> isn't answered yet (it needs the M3 feedback index)",
+            0,
+            t.len(),
+        ));
+    }
+    Ok(Some(e))
 }
 
 fn time_at(field: &str, s: &str) -> Result<TimeAt, BadRequest> {

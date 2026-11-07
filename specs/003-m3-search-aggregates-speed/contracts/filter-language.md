@@ -38,7 +38,7 @@ A separate text slot (`stats` in the API, the *Text* view of the Stats panel) th
 filter selects. tracedb's own syntax; LangSmith has none.
 
 ```ebnf
-stats    = "by" key { "," key } "|" metric { "," metric } [ "|" "top" number ] ;
+stats    = [ "by" key { "," key } "|" ] metric { "," metric } [ "|" "top" number ] ;   (* no keys: totals only *)
 key      = "name" | "run_type" | "model" | "status" | "tag" | "feedback_key" | path ;   (* path: metadata.<…> *)
 metric   = "count" | "error_rate"
          | ( "p50" | "p95" | "p99" ) "(" "latency" ")"

@@ -21,18 +21,47 @@ pub struct EvalStats {
 }
 
 /// Evaluates `e` for one run. Comparisons only match values of the same type; a missing path matches only
-/// `eq(path, null)`.
+/// `eq(path, null)`. `feedback.<key>` is missing on every run; see [`eval_with`].
 pub fn eval(e: &Expr, row: &Row, now: Ts, stats: &mut EvalStats) -> bool {
-    match e {
-        Expr::And(xs) => xs.iter().all(|x| eval(x, row, now, stats)),
-        Expr::Or(xs) => xs.iter().any(|x| eval(x, row, now, stats)),
-        Expr::Not(x) => !eval(x, row, now, stats),
-        Expr::Has { path, value } => match (path, value) {
-            (Path::Field(Field::Tags), Value::Str(v)) => row.run.tags.iter().any(|t| t == v),
-            _ => false,
-        },
-        Expr::In { path, values } => values.iter().any(|v| cmp(CmpOp::Eq, path, v, row, now, stats)),
-        Expr::Cmp { op, path, value } => cmp(*op, path, value, row, now, stats),
+    eval_with(e, row, &|_| None, now, stats)
+}
+
+/// [`eval`] with `feedback(key)` giving the run's mean score for `key` (`None`: no feedback with that key).
+/// `search` isn't evaluated here yet and matches nothing; queries with it are rejected before they run.
+pub fn eval_with(e: &Expr, row: &Row, feedback: &dyn Fn(&str) -> Option<f64>, now: Ts, stats: &mut EvalStats) -> bool {
+    let ctx = Ctx { row, feedback, now };
+    ctx.eval(e, stats)
+}
+
+struct Ctx<'a, 'r> {
+    row: &'a Row<'r>,
+    feedback: &'a dyn Fn(&str) -> Option<f64>,
+    now: Ts,
+}
+
+impl Ctx<'_, '_> {
+    fn eval(&self, e: &Expr, stats: &mut EvalStats) -> bool {
+        match e {
+            Expr::And(xs) => xs.iter().all(|x| self.eval(x, stats)),
+            Expr::Or(xs) => xs.iter().any(|x| self.eval(x, stats)),
+            Expr::Not(x) => !self.eval(x, stats),
+            Expr::Has { path, value } => match (path, value) {
+                (Path::Field(Field::Tags), Value::Str(v)) => self.row.run.tags.iter().any(|t| t == v),
+                _ => false,
+            },
+            Expr::In { path, values } => values.iter().any(|v| self.cmp(CmpOp::Eq, path, v, stats)),
+            Expr::Cmp { op, path, value } => self.cmp(*op, path, value, stats),
+            Expr::Exists { path } => self.cmp(CmpOp::Neq, path, &Value::Null, stats),
+            Expr::Search { .. } => false,
+        }
+    }
+
+    fn cmp(&self, op: CmpOp, path: &Path, value: &Value, stats: &mut EvalStats) -> bool {
+        let have = match path {
+            Path::Feedback(key) => (self.feedback)(key).map_or(Found::Absent, Found::Num),
+            _ => found(path, self.row),
+        };
+        cmp(op, path, value, have, self.row, self.now, stats)
     }
 }
 
@@ -82,6 +111,7 @@ fn found<'a>(path: &Path, row: &'a Row) -> Found<'a> {
             Field::TraceId | Field::RunId => Found::Bool(true),
             Field::ParentRunId => r.parent_run_id.map_or(Found::Absent, |_| Found::Bool(true)),
         },
+        Path::Feedback(_) => Found::Absent,
         Path::Attr { .. } => match row.attrs.get(&path.text()) {
             None if !crate::attrs::promotable_path(&path.text()) => Found::Unindexed,
             None => Found::Absent,
@@ -93,8 +123,7 @@ fn found<'a>(path: &Path, row: &'a Row) -> Found<'a> {
     }
 }
 
-fn cmp(op: CmpOp, path: &Path, value: &Value, row: &Row, now: Ts, stats: &mut EvalStats) -> bool {
-    let have = found(path, row);
+fn cmp(op: CmpOp, path: &Path, value: &Value, have: Found, row: &Row, now: Ts, stats: &mut EvalStats) -> bool {
     if *value == Value::Null {
         if matches!(have, Found::Unindexed) {
             // A promotable path marked unindexed exists; deeper paths are unknown, so neither test matches.
@@ -205,6 +234,17 @@ pub fn visit_paths(e: &Expr, f: &mut impl FnMut(&Path)) {
     match e {
         Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| visit_paths(x, f)),
         Expr::Not(x) => visit_paths(x, f),
-        Expr::Cmp { path, .. } | Expr::Has { path, .. } | Expr::In { path, .. } => f(path),
+        Expr::Cmp { path, .. } | Expr::Has { path, .. } | Expr::In { path, .. } | Expr::Exists { path } => f(path),
+        Expr::Search { .. } => {}
+    }
+}
+
+/// Whether `e` has a `search(…)` anywhere.
+pub fn contains_search(e: &Expr) -> bool {
+    match e {
+        Expr::And(xs) | Expr::Or(xs) => xs.iter().any(contains_search),
+        Expr::Not(x) => contains_search(x),
+        Expr::Search { .. } => true,
+        Expr::Cmp { .. } | Expr::Has { .. } | Expr::In { .. } | Expr::Exists { .. } => false,
     }
 }

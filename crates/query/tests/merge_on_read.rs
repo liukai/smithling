@@ -233,6 +233,16 @@ const CASES: &[Case] = &[
     ),
     c(Some("2026-11-05T02:20:00Z"), None, None, None, None, Some("a")),
     c(None, Some(r#"has(tags, "retried")"#), None, None, None, None),
+    // `exists` pushes down as `IS NOT NULL` on built-in columns only.
+    c(None, Some("exists(end_time)"), None, None, None, None),
+    c(
+        None,
+        Some("and(exists(metadata.v), not(exists(error)))"),
+        None,
+        None,
+        None,
+        None,
+    ),
 ];
 
 const fn c(

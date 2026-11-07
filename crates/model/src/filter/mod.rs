@@ -6,7 +6,7 @@ pub mod eval;
 pub mod parse;
 pub mod print;
 
-pub use ast::{AttrRoot, CmpOp, Expr, Field, Kind, Path, TimeAt, Value};
-pub use eval::{EvalStats, Row, eval, status_name};
+pub use ast::{AttrRoot, CmpOp, Expr, Field, Kind, Path, Side, TimeAt, Value};
+pub use eval::{EvalStats, Row, contains_search, eval, eval_with, status_name};
 pub use parse::{ParseError, parse_filter};
 pub use print::print;

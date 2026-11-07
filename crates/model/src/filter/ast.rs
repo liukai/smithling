@@ -21,6 +21,37 @@ pub enum Expr {
         path: Path,
         values: Vec<Value>,
     },
+    /// The words of `text`, in order, inside one text value of `side`. `words` is `text::tokens(text)`.
+    Search {
+        text: String,
+        words: Vec<String>,
+        side: Side,
+    },
+    /// The path has a value (same result as `neq(path, null)`).
+    Exists {
+        path: Path,
+    },
+}
+
+/// Where `search` looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Any,
+    Inputs,
+    Outputs,
+    Error,
+}
+
+impl Side {
+    /// The name written in `search(side, …)`; `None` for [`Side::Any`], which is written without one.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Side::Any => None,
+            Side::Inputs => Some("inputs"),
+            Side::Outputs => Some("outputs"),
+            Side::Error => Some("error"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +85,8 @@ pub enum Path {
         root: AttrRoot,
         key: String,
     },
+    /// `feedback.<key>`: the mean of the run's feedback scores for `key`; missing if none.
+    Feedback(String),
 }
 
 impl Path {
@@ -62,6 +95,7 @@ impl Path {
         match self {
             Path::Field(f) => f.name().to_string(),
             Path::Attr { root, key } => format!("{}.{key}", root.name()),
+            Path::Feedback(key) => format!("feedback.{key}"),
         }
     }
 
@@ -69,6 +103,7 @@ impl Path {
         match self {
             Path::Field(f) => f.kind(),
             Path::Attr { .. } => Kind::Any,
+            Path::Feedback(_) => Kind::Num,
         }
     }
 }

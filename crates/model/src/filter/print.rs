@@ -51,6 +51,20 @@ fn write_expr(s: &mut String, e: &Expr) {
             }
             s.push_str("])");
         }
+        Expr::Search { text, side, .. } => {
+            s.push_str("search(");
+            if let Some(side) = side.name() {
+                s.push_str(side);
+                s.push_str(", ");
+            }
+            write_value(s, &Value::Str(text.clone()));
+            s.push(')');
+        }
+        Expr::Exists { path } => {
+            s.push_str("exists(");
+            s.push_str(&path.text());
+            s.push(')');
+        }
     }
 }
 

@@ -575,6 +575,7 @@ fn columns(m: &Merged, paths: &[Path]) -> BTreeMap<String, serde_json::Value> {
                     Scalar::Bool(b) => J::Bool(*b),
                     Scalar::Unindexed => J::Null,
                 },
+                Path::Feedback(_) => return None,
                 Path::Field(f) => match f {
                     Field::Status => J::from(tracedb_model::filter::status_name(r.status)),
                     Field::Name => J::from(r.name.clone()?),

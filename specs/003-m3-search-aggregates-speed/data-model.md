@@ -154,7 +154,7 @@ Path = … (M2) | feedback.<key>                                                
 
 | Rule | Detail |
 |---|---|
-| `Search.words` | `text::tokens(text)`, computed at parse; an empty list is a parse error ("search needs a word") |
+| `Search.words` | `text::tokens(text)`, computed at parse; an empty list is a parse error ("search needs at least one word") |
 | Evaluation order | `Search` last within an `and`; it needs payload text |
 | Index use | only for a `Search` at the top level of a slot or of a top-level `and` |
 | `Exists` | true when the path has a value (same as `neq(path, null)`); printed as written |

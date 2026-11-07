@@ -5,11 +5,12 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use serde_json::json;
+use tracedb_model::agg::{parse_stats, print_stats};
 use tracedb_model::attrs::{Attrs, promote};
 use tracedb_model::filter::{
-    AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, TimeAt, Value, eval, parse_filter, print,
+    AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, Side, TimeAt, Value, eval, eval_with, parse_filter, print,
 };
-use tracedb_model::{Op, RunState, Ts, merge};
+use tracedb_model::{Op, RunState, Ts, merge, text};
 
 #[test]
 fn golden_cases() {
@@ -21,13 +22,23 @@ fn golden_cases() {
     let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
     for case in doc["cases"].as_array().unwrap() {
         let input = case["input"].as_str().unwrap();
-        match parse_filter(input) {
-            Ok(e) => {
+        let parsed = match case["slot"].as_str().unwrap_or("filter") {
+            "filter" => parse_filter(input).map(|e| {
+                assert_eq!(parse_filter(&print(&e)).unwrap(), e, "re-parse of {input:?}");
+                print(&e)
+            }),
+            "stats" => parse_stats(input).map(|a| {
+                assert_eq!(parse_stats(&print_stats(&a)).unwrap(), a, "re-parse of {input:?}");
+                print_stats(&a)
+            }),
+            other => panic!("unknown slot {other:?}"),
+        };
+        match parsed {
+            Ok(text) => {
                 let want = case["ok"]
                     .as_str()
                     .unwrap_or_else(|| panic!("{input:?} parsed but expected an error"));
-                assert_eq!(print(&e), want, "canonical text of {input:?}");
-                assert_eq!(parse_filter(&print(&e)).unwrap(), e, "re-parse of {input:?}");
+                assert_eq!(text, want, "canonical text of {input:?}");
             }
             Err(err) => {
                 let want = &case["error"];
@@ -44,6 +55,56 @@ fn golden_cases() {
             }
         }
     }
+}
+
+#[test]
+fn m3_errors_are_byte_exact() {
+    for (input, want) in [
+        ("search()", "7..7 search needs a string"),
+        (r#"search("")"#, "7..9 search needs at least one word"),
+        (r#"search(body, "x")"#, "7..11 search side is inputs, outputs or error"),
+        (r#"exists("x")"#, "7..10 exists() needs a field path"),
+        ("gt(feedback, 1)", "3..11 feedback needs a key: feedback.<key>"),
+    ] {
+        assert_eq!(parse_filter(input).unwrap_err().to_string(), want, "{input}");
+    }
+    for (input, want) in [
+        (
+            "by name | p90(latency)",
+            r#"10..13 unknown metric "p90"; expected p50, p95 or p99"#,
+        ),
+        ("by a, b, c | count", "9..10 at most 2 group keys"),
+    ] {
+        assert_eq!(parse_stats(input).unwrap_err().to_string(), want, "{input}");
+    }
+}
+
+#[test]
+fn search_keeps_text_and_words() {
+    let e = parse_filter(r#"search(outputs, "429, Too  Many")"#).unwrap();
+    assert_eq!(
+        e,
+        Expr::Search {
+            text: "429, Too  Many".into(),
+            words: vec!["429".into(), "too".into(), "many".into()],
+            side: Side::Outputs,
+        }
+    );
+    assert_eq!(print(&e), r#"search(outputs, "429, Too  Many")"#);
+    let any = parse_filter(r#"search("x")"#).unwrap();
+    assert!(matches!(any, Expr::Search { side: Side::Any, .. }));
+}
+
+#[test]
+fn feedback_pair_is_rewritten() {
+    assert_eq!(
+        parse_filter(r#"and(eq(feedback_key, "correctness"), gt(feedback_score, 0.5))"#).unwrap(),
+        Expr::Cmp {
+            op: CmpOp::Gt,
+            path: Path::Feedback("correctness".into()),
+            value: Value::Num(0.5),
+        }
+    );
 }
 
 fn fetch_url() -> RunState {
@@ -107,6 +168,54 @@ fn evaluates_fields_attrs_and_null() {
     ] {
         assert_eq!(matches(&st, f), want, "{f}");
     }
+}
+
+#[test]
+fn evaluates_exists_and_feedback() {
+    let st = fetch_url();
+    let attrs = promote(&st.run);
+    let row = Row {
+        run: &st.run,
+        attrs: &attrs,
+    };
+    for (f, same) in [
+        ("exists(metadata.prompt_version)", "neq(metadata.prompt_version, null)"),
+        ("exists(error)", "neq(error, null)"),
+        ("exists(tags)", "has(tags, \"batch=2026-11-05-a\")"),
+        ("exists(outputs.status_code)", "neq(outputs.status_code, null)"),
+        ("not(exists(model))", "eq(model, null)"),
+        ("not(exists(metadata.missing))", "eq(metadata.missing, null)"),
+        (
+            "not(exists(metadata.deep.a.b.c.d))",
+            "not(neq(metadata.deep.a.b.c.d, null))",
+        ),
+        ("not(exists(feedback.correctness))", "eq(feedback.correctness, null)"),
+    ] {
+        assert!(matches(&st, f), "{f}");
+        assert!(matches(&st, same), "{same}");
+    }
+    let mean = |key: &str| (key == "correctness").then_some(0.25);
+    let check = |f: &str| {
+        eval_with(
+            &parse_filter(f).unwrap(),
+            &row,
+            &mean,
+            Ts::now(),
+            &mut EvalStats::default(),
+        )
+    };
+    assert!(check("lt(feedback.correctness, 0.5)"));
+    assert!(check("exists(feedback.correctness)"));
+    assert!(!check("gt(feedback.correctness, 0.5)"));
+    assert!(!check("exists(feedback.helpfulness)"));
+    assert!(check("eq(feedback.helpfulness, null)"));
+    assert!(check(
+        r#"and(eq(feedback_key, "correctness"), lte(feedback_score, 0.25))"#
+    ));
+    assert!(
+        !matches(&st, "lt(feedback.correctness, 0.5)"),
+        "no lookup: feedback is missing"
+    );
 }
 
 #[test]
@@ -197,12 +306,16 @@ fn path() -> impl Strategy<Value = Path> {
             prop::sample::select(AttrRoot::ALL.to_vec())
         )
             .prop_map(|(key, root)| Path::Attr { root, key }),
+        "[a-zA-Z_][a-zA-Z0-9_-]{0,6}(\\.[a-z0-9_]{1,4})?".prop_map(Path::Feedback),
     ]
 }
 
 fn value_for(p: &Path) -> BoxedStrategy<Value> {
     match p {
         Path::Field(_) => "[ -~]{0,8}".prop_map(Value::Str).boxed(),
+        Path::Feedback(_) => (-1e3f64..1e3)
+            .prop_map(|n| Value::Num((n * 100.0).round() / 100.0))
+            .boxed(),
         Path::Attr { .. } => prop_oneof![
             "[ -~]{0,8}".prop_map(Value::Str),
             (-1e9f64..1e9).prop_map(|n| Value::Num((n * 100.0).round() / 100.0)),
@@ -238,6 +351,17 @@ fn leaf() -> impl Strategy<Value = Expr> {
             path: Path::Field(Field::Status),
             value: Value::Str(s.into()),
         }),
+        (
+            "[a-zA-Z0-9]{1,6}[ -~]{0,8}|[ -~]{0,4}(ключ|é|😀|429)[ -~]{0,4}",
+            prop::sample::select(vec![Side::Any, Side::Inputs, Side::Outputs, Side::Error])
+        )
+            .prop_filter("search needs a word", |(t, _)| !text::tokens(t).is_empty())
+            .prop_map(|(t, side)| Expr::Search {
+                words: text::tokens(&t),
+                text: t,
+                side,
+            }),
+        prop_oneof![path(), Just(Path::Field(Field::Tags))].prop_map(|path| Expr::Exists { path }),
     ]
 }
 

@@ -74,6 +74,31 @@ async fn errors_name_the_slot_and_the_place() {
 
     let (s, v) = query(&server, json!({"filter": "search(\"x\")"})).await;
     assert_eq!((s, v["error"]["code"].as_str()), (400, Some("unsupported")));
+    let (s, v) = query(
+        &server,
+        json!({"tree_filter": "and(eq(name, \"x\"), not(search(outputs, \"rate limit\")))"}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str(), v["error"]["slot"].as_str()),
+        (400, Some("unsupported"), Some("tree_filter"))
+    );
+    let (s, _) = query(
+        &server,
+        json!({"filter": "and(exists(metadata.prompt_version), exists(name))"}),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, v) = query(
+        &server,
+        json!({"filter": "and(eq(feedback_key, \"correctness\"), lt(feedback_score, 0.5))"}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("unsupported")),
+        "feedback.<key> waits for the feedback index"
+    );
     let (s, v) = query(&server, json!({"cursor": "nope"})).await;
     assert_eq!((s, v["error"]["code"].as_str()), (400, Some("bad_cursor")));
     let (s, v) = query(&server, json!({"bogus": 1})).await;

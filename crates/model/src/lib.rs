@@ -1,5 +1,6 @@
 //! tracedb's run model: events, merged runs, the merge rule and validation. No I/O.
 
+pub mod agg;
 pub mod attrs;
 pub mod derive;
 pub mod dotted_order;
@@ -7,6 +8,7 @@ pub mod event;
 pub mod filter;
 pub mod merge;
 pub mod run;
+pub mod text;
 pub mod ts;
 pub mod validate;
 pub mod views;

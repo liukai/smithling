@@ -67,6 +67,10 @@ pub fn compile(e: &Expr, now: Ts) -> Option<Pushed> {
             })
         }
         Expr::Cmp { op, path, value } => leaf(*op, path, value, now),
+        // `neq(p, null)`: `IS NOT NULL` on a built-in column, nothing on a JSON path.
+        Expr::Exists { path } => leaf(CmpOp::Neq, path, &Value::Null, now),
+        // Needs payload text, which the core file doesn't have.
+        Expr::Search { .. } => None,
     }
 }
 
@@ -90,8 +94,10 @@ fn exact(expr: DfExpr) -> Option<Pushed> {
 }
 
 fn leaf(o: CmpOp, path: &Path, value: &Value, now: Ts) -> Option<Pushed> {
-    let Path::Field(f) = path else {
-        return attr(o, path, value);
+    let f = match path {
+        Path::Field(f) => f,
+        Path::Attr { .. } => return attr(o, path, value),
+        Path::Feedback(_) => return None,
     };
     // Fields whose stored column can differ from what `eval` sees for an absent value are not pushed:
     // project (absent = "default"), run_type (absent = "other"), error ("" counts as absent).
