@@ -247,8 +247,8 @@ done right after Phase 2 (plan PR 2).
 - [X] T079 [P] *(256KB memtable so the seeded traces flush, checked via `/healthz` segments; then `tracedb demo`; Linux-only (strace), so not run here; the same commands without strace pass on macOS)* No-outbound check `scripts/no-outbound.sh`: add a flush and a `tracedb demo` run in local mode (M1 check extended)
 - [X] T080 [P] `README.md`: storage flags, `tracedb demo`, `tracedb query`, the query panel, cloud mode, M2 limits (no compaction, no text search)
 - [X] T081 *(see its "Last verified": steps 1, 2 (CLI), 3, 4, 6, 8 pass; browser clicks, live view and cloud not runnable here; wrong steps fixed: `--memtable` for `demo --url`, seeding in batches, `tracedb-ingest` slowdown, step 7 env)* Run [quickstart.md](quickstart.md) end to end and record results under "Last verified"
-- [ ] T082 Update the M2 row and STATE/NEXT in `specs/000-tracedb-master-plan/roadmap.md`
-- [ ] T083 **Code starter guide** (M2-FR-27, plan PR 12): rewrite `specs/002-m2-durable-storage-query-builder/starter-guide.md` from pre-code to a guide for reading the built code, as M1's: reading order of the real files; each scene (write + identity check, freeze, flush write → register → trim, late update, query split/merge/semi-join, trace lookup, live view, field browser, restart, panel ⇄ text) mapped to real functions with links and line numbers; vertical diagrams with short labels; rough edges found while writing it
+- [X] T082 Update the M2 row and STATE/NEXT in `specs/000-tracedb-master-plan/roadmap.md`
+- [X] T083 *(committed 6e77f12; colour-coded new / revised / unchanged)* **Code starter guide** (M2-FR-27, plan PR 12): rewrite `specs/002-m2-durable-storage-query-builder/starter-guide.md` from pre-code to a guide for reading the built code, as M1's: reading order of the real files; each scene (write + identity check, freeze, flush write → register → trim, late update, query split/merge/semi-join, trace lookup, live view, field browser, restart, panel ⇄ text) mapped to real functions with links and line numbers; vertical diagrams with short labels; rough edges found while writing it
 
 ---
 

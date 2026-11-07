@@ -35,30 +35,38 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06: **Milestones numbered from 1**: M0–M4 renamed M1–M5 everywhere (docs, code comments, messages, phase folder `001-m1-…`, branch). Commit messages before this keep the old labels.
 - 2026-11-06: **Every phase ends with a code starter guide** (`starter-guide.md` in the phase folder): reading order, one run traced through the code with line-level links. Planning includes a pre-code version (Appendix A of the plan) with pseudo-flows.
 - 2026-11-06: **Diagrams read top to bottom**: prefer vertical (`flowchart TB`) charts with short labels and few nodes per chart; no wide horizontal chains.
+- 2026-11-06: **Mark the delta in every phase spec and starter guide**: 🟢 New (green fill), 🟠 Improved / revised (orange), ⚪ Existing (grey) on end-state lines, lifecycle rows, stories, requirements, success criteria and every diagram node, plus a "Delta at a glance" section near the top of the spec.
+- 2026-11-06 (M3 scope): **multipart + zstd** accepted and advertised in `/info` (SDK defaults work unchanged); **attachment parts rejected per part** with a named reason (stored later); **text index without word positions** (staged SmithDB difference, revisit if text-search p99 misses); **M2 = built, passed locally** (browser and cloud checks open), M3 branches from the 002 tip.
+- 2026-11-06 (M3 plan): **memory defaults may change** to meet 200 MB idle (64 MB memtable measured as heap, 2 min flush age, 16 B dedup fingerprints with a cap, 32 MB cache, jemalloc; all configurable; heap-profile spike first); **feedback check added to `tracedb demo`**; **CI bench**: 200k smoke on PRs, full 2M on main + nightly; plan.md defaults accepted (four changed decisions to be logged, `feedback.<key>` = mean score, batch a now−30 h / b now−6 h, stats line `by <key> | <metrics>`, background index of M2 files, report rather than loosen a missed 1 s grouped target).
+- 2026-11-06 (standing approval): **implement all of M3** (specs/003 tasks), on branch `003-m3-search-aggregates-speed` cut from the 002 tip after the last M2 commit; M3 spec/plan/tasks committed as the branch's first commit; one local commit per plan unit, same per-unit quality bar as M2, no pushes; the last unit rewrites `specs/003-…/starter-guide.md` for the built code, colour-coded.
 - 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
 - 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
 - 2026-11-06: **Keep 000 in step with reality**: after every phase checkpoint, update the roadmap (STATE, NEXT, progress), the [decision log](decisions.md) for any change of direction, and the master plan/design notes where the design moved. The decision log records every change of an earlier decision.
 - 2026-11-06: **After M2 is built, spec M3 the same way as 002** (spec → plan → tasks via speckit, Appendix A starter guide); M3 docs stay uncommitted until the user approves them.
 
-**STATE as of 2026-11-06** (verified by `git log`, `cargo test --workspace` 97/97, clippy `-D warnings`, and the slow crash/restart/throughput tests run locally):
-M1 is **built** (see M1 spec; UI-by-eye and CI-only checks still open). M2 is **in progress** on branch
-`002-m2-durable-storage-query-builder`: plan units 1–7 committed (49/83 tasks). Unit 6 checkpoint: crash harness 10/10
-with kills during upload and at five flush points (0 missing, 0 duplicated); restart at 2M runs ready in 1.6 s;
-54k events/s while flushing, p99 106 ms. The data folder is locked against a second process.
+**STATE as of 2026-11-07** (verified by `git log`, `cargo test --workspace` 145 passed, clippy `-D warnings`, `tracedb demo --seed 7` 5/5, crash harness 10/10, `bench_m2` at 2M runs):
+M2 is **built, passed locally** on branch `002-m2-durable-storage-query-builder` (83/83 tasks, plan units 1–12 plus
+fixes D-019–D-024). 2M-run bench: lists 13–51 ms, trace 6 ms, run 28 ms, suggestions 3 ms, disk 19% of raw JSON;
+with 300+ overlapping files and late updates sent without a project, failing roots 52 ms and quiet failures 109 ms.
+**Not yet verified**: the UI in a real browser; the cloud CI job and no-outbound check under strace (no Docker or
+remote CI here). **Known gap**: queries inside a project that holds many unmerged late updates take seconds (4.5 s at
+192k such rows) — M3 unit 12 / M4 compaction. M3 is **specced and planned** (`specs/003-m3-search-aggregates-speed/`,
+128 tasks).
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) M2 unit 8: tree filters, field catalog endpoints, `tracedb query`. 2) Units 9–12 (live views, UI panel,
-`tracedb demo` + cloud CI + bench, code starter guide). 3) Spec M3 the same way as 002.
+**NEXT**: 1) Cut `003-m3-search-aggregates-speed` from the 002 tip; commit the M3 spec, plan and tasks. 2) M3 units
+1, 2, 3 and 8 in parallel, then 5, 4, 6, 7, 9, UI, speed + bench, demo, starter guide. 3) Still open from M1/M2: the UI
+by eye in a browser; push to a remote so CI (incl. cloud) runs.
 
 ## Progress
 
 | Phase | Spec | Status | Tasks done | Exit check |
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
-| M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | in progress: units 1–7 of 12 committed | 49/83 | unit 6 checkpoint passed locally |
-| M3 Core demo | — | not started | — | — |
+| M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
+| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | specced and planned | 0/128 | — |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
 
