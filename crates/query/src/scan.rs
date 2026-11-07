@@ -218,7 +218,7 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
 }
 
 /// Reads core rows from `files` matching `filter`.
-async fn read_core(
+pub(crate) async fn read_core(
     ctx: &SessionContext,
     ingest: &Ingest,
     files: &[&SegmentMeta],
@@ -241,7 +241,7 @@ async fn read_core(
 }
 
 /// Every version, in `files`, of the given runs (chunked `run_id IN (…)` scans; blooms skip most files).
-async fn versions_of(
+pub(crate) async fn versions_of(
     ctx: &SessionContext,
     ingest: &Ingest,
     files: &[&SegmentMeta],
@@ -362,7 +362,7 @@ pub async fn collect_pinned(
 }
 
 /// Merges versions and their attributes: for each attribute root, the newest version that set it wins.
-fn merge_group(mut versions: Vec<(RunState, Attrs)>, multi: bool) -> Merged {
+pub(crate) fn merge_group(mut versions: Vec<(RunState, Attrs)>, multi: bool) -> Merged {
     if versions.len() == 1 {
         let (state, attrs) = versions.pop().expect("one version");
         return Merged { state, attrs, multi };

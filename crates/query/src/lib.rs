@@ -159,6 +159,7 @@ pub struct Query {
     ingest: Ingest,
     ctx: SessionContext,
     first_window: usize,
+    version_rows: std::sync::Arc<tokio::sync::Mutex<fields::VersionRows>>,
 }
 
 fn order_key(m: &Merged, order: OrderBy) -> Key {
@@ -184,6 +185,7 @@ impl Query {
             ingest,
             ctx,
             first_window: window::FIRST_WINDOW_ROWS,
+            version_rows: Default::default(),
         }
     }
 

@@ -71,7 +71,7 @@ pub struct IngestConfig {
     pub queue_events: usize,
     pub wal_roll_bytes: u64,
     pub hub_capacity: usize,
-    /// Tests only: delay every flush by this much.
+    /// Tests only: delay every flush by this much (after it has read the multi-version set).
     pub test_flush_delay: Option<Duration>,
 }
 

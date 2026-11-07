@@ -679,7 +679,7 @@ pub fn decode_payload(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, Stor
 type PathCounts = (u64, HashMap<String, (Value, u64)>);
 
 /// Field catalog stats (data-model §10), built one run at a time: built-in fields and every promoted path.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StatsBuilder {
     /// type → path → counts
     counts: HashMap<&'static str, HashMap<String, PathCounts>>,
@@ -745,6 +745,15 @@ impl StatsBuilder {
     }
 
     pub fn finish(self, segment_id: &str) -> Vec<FieldStat> {
+        self.finish_top(segment_id, TOP_VALUES)
+    }
+
+    /// Like [`StatsBuilder::finish`], with every value listed.
+    pub fn finish_all(self, segment_id: &str) -> Vec<FieldStat> {
+        self.finish_top(segment_id, usize::MAX)
+    }
+
+    fn finish_top(self, segment_id: &str, top: usize) -> Vec<FieldStat> {
         let mut out: Vec<FieldStat> = self
             .counts
             .into_iter()
@@ -752,14 +761,14 @@ impl StatsBuilder {
             .map(|(path, ty, (count, values))| {
                 let mut vals: Vec<(Value, u64)> = values.into_values().collect();
                 vals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| json_text(&a.0).cmp(&json_text(&b.0))));
-                vals.truncate(TOP_VALUES);
-                let top: u64 = vals.iter().map(|v| v.1).sum();
+                vals.truncate(top);
+                let listed: u64 = vals.iter().map(|v| v.1).sum();
                 FieldStat {
                     segment_id: segment_id.to_string(),
                     path,
                     ty: ty.to_string(),
                     count,
-                    other_count: count - top,
+                    other_count: count - listed,
                     top_values: vals,
                 }
             })

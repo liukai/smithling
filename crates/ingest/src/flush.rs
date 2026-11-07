@@ -84,9 +84,6 @@ impl Flusher {
     }
 
     fn flush(&self, job: &FlushJob) -> Result<(), StorageError> {
-        if let Some(d) = self.test_delay {
-            std::thread::sleep(d);
-        }
         let started = std::time::Instant::now();
         let now = Ts::now();
         let (metas, stats, written) = {
@@ -120,6 +117,9 @@ impl Flusher {
             }
             (metas, stats, written)
         };
+        if let Some(d) = self.test_delay {
+            std::thread::sleep(d);
+        }
         let store = self.storage.store.clone();
         let meta = self.storage.meta.clone();
         let (m2, s2) = (metas.clone(), stats.clone());

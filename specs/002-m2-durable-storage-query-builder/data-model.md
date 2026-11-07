@@ -218,7 +218,8 @@ Path = built-in field (status, name, run_type, latency, start_time, tags, total_
 Field { path, types: [{type, count}], top_values: [{value, count}], other_count, complete: bool }
 ```
 
-Built from `field_stats` rows of segments in scope, summed, plus memtable stats computed on demand.
+Built from `field_stats` rows of segments in scope, summed, plus memtable stats computed on demand. Runs in the
+multi-version set count once: their file rows are subtracted and their merged state is added (D-023).
 
 ## 11. Live view messages
 

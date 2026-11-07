@@ -311,7 +311,10 @@ impl FieldsQs {
 
 pub async fn fields(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Response {
     match q.scope() {
-        Ok((project, time)) => Json(st.query.fields(project, time, &q.prefix)).into_response(),
+        Ok((project, time)) => match st.query.fields(project, time, &q.prefix).await {
+            Ok(f) => Json(f).into_response(),
+            Err(e) => query_error(e),
+        },
         Err(BadRequest(r)) => *r,
     }
 }
@@ -321,7 +324,10 @@ pub async fn field_values(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Resp
         return error(StatusCode::BAD_REQUEST, "bad_request", "path is required");
     };
     match q.scope() {
-        Ok((project, time)) => Json(st.query.values(project, time, path, &q.prefix)).into_response(),
+        Ok((project, time)) => match st.query.values(project, time, path, &q.prefix).await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => query_error(e),
+        },
         Err(BadRequest(r)) => *r,
     }
 }
