@@ -12,7 +12,9 @@ import { navigate } from "../route";
 import { StatsPanel } from "../stats/StatsPanel";
 import { Samples } from "./Samples";
 
-const VIEWS: [QueryState["view"], string][] = [["samples", "Samples"], ["table", "Table"], ["stats", "Stats"]];
+const VIEWS: [QueryState["view"], string][] = [
+  ["samples", "Samples"], ["table", "Table"], ["stats", "Stats"], ["series", "Time series"], ["dist", "Distribution"],
+];
 const STATS_VIEWS: QueryState["view"][] = ["stats", "series", "dist"];
 const slotKey = (q: QueryState) => JSON.stringify(SLOTS.map((s) => slotText(q, s) ?? ""));
 const textsOf = (q: QueryState) => Object.fromEntries(SLOTS.map((s) => [s, slotText(q, s) ?? ""])) as Record<Slot, string>;
@@ -115,12 +117,23 @@ export function RunsPage({ search }: { search: string }) {
     else apply({}, { ...rows, filter: withBox(rows.filter, text) }, true);
   };
 
-  /** A stats cell's runs as Samples: the group's `where` (null: the whole query) and `extra` as chips. */
-  const onOpen = (where: string | null, extra?: Expr) => {
-    const w = where ? parse(where) : null;
-    if (w && !w.ok) return;
-    const add = [...(w ? chipsOf(w.expr) : []), ...(extra ? [chip(extra)] : [])];
-    apply({ view: "samples" }, { ...rows, filter: addChips(rows.filter, add) }, true);
+  /**
+   * A stats cell's, point's or bar's runs as Samples: its conditions and `extra` as chips. Side b's runs: the
+   * compare filter in place of the filter, or (a shift) the conditions over all time, as b's times are absolute.
+   */
+  const onOpen = (wheres: string[], extra?: Expr, side?: "a" | "b") => {
+    const ws = wheres.map((w) => parse(w));
+    const add = [...ws.flatMap((w) => (w.ok ? chipsOf(w.expr) : [])), ...(extra ? [chip(extra)] : [])];
+    if (ws.some((w) => !w.ok)) return;
+    if (side === "b" && q.cmp) {
+      const b = parse(q.cmp);
+      if (!b.ok) return;
+      apply({ view: "samples", cmp: undefined }, { ...rows, filter: addChips(withBox(chipsOf(b.expr), q.q), add) }, true);
+    } else if (side === "b") {
+      apply({ view: "samples", shift: undefined, time: undefined }, { ...rows, filter: addChips(rows.filter, add) }, true);
+    } else {
+      apply({ view: "samples" }, { ...rows, filter: addChips(rows.filter, add) }, true);
+    }
   };
 
   const stats = STATS_VIEWS.includes(q.view);

@@ -1,18 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { Cells } from "../api";
 import { DEFAULT_METRICS, fromUrl, toUrl } from "../query/url";
-import { header, mockFetch, queryPage } from "../testutil";
+import { FakeEventSource, cells, header, mockFetch, queryPage, stubAggStream } from "../testutil";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 type Body = Record<string, unknown>;
-const cells = (over: Partial<Cells>): Cells => ({
-  runs: 0, finished: 0, running: 0, errors: 0, error_rate: null, p50: null, p95: null, p99: null, n_latency: 0,
-  input_tokens: null, output_tokens: null, total_tokens: null, cost_pico: null, no_price_runs: 0,
-  feedback_avg: null, feedback_n: 0, estimated: false, approximate: false, ...over,
-});
 const AGG = {
   query_id: "q1", partial: false, cut: true, overlap: false,
   totals: cells({ runs: 4210, finished: 4210, errors: 56, error_rate: 0.0133, p95: 12000, n_latency: 4210, cost_pico: 4_120_000_000_000, no_price_runs: 12 }),
@@ -28,13 +22,13 @@ function setup(path: string, agg: (b: Body) => unknown = () => AGG) {
   history.replaceState(null, "", path);
   const aggs: Body[] = [];
   const queries: Body[] = [];
+  const { streams } = stubAggStream(agg, aggs);
   mockFetch({
-    "/api/aggregate": (_u, b) => { aggs.push(b); return agg(b); },
     "/api/query": (_u, b) => { queries.push(b); return queryPage([header(1)]); },
     "/api/projects": () => [],
   });
   render(<App />);
-  return { aggs, queries };
+  return { aggs, queries, streams };
 }
 
 const last = (bodies: Body[]) => bodies[bodies.length - 1];
@@ -191,3 +185,73 @@ describe("stats view", () => {
     expect(toUrl(q)).toBe(url);
   });
 });
+
+describe("progressive stats", () => {
+  const ESTIMATE = {
+    ...AGG, partial: true, sampled_pct: 10,
+    totals: { ...AGG.totals, estimated: true, runs: 4000 },
+    groups: AGG.groups.map((g) => ({ ...g, cells: { ...g.cells!, estimated: true } })),
+  };
+  const open = () => setup(`/?filter=${BATCH}&view=stats&by=name`, () => undefined);
+  const decoded = (s: FakeEventSource) => JSON.parse(new URL(s.url, "http://localhost").searchParams.get("q")!);
+
+  it("streams the aggregate body, shows the estimate marked partial, then the exact result", async () => {
+    const { streams } = open();
+    await waitFor(() => expect(streams.length).toBe(1));
+    expect(streams[0].url.startsWith("/api/aggregate/stream?q=")).toBe(true);
+    expect(decoded(streams[0])).toEqual({ filter: 'has(tags, "batch=a")', group_by: ["name"], metrics: DEFAULT_METRICS, top: 10, view: "table" });
+    act(() => streams[0].emit("estimate", ESTIMATE));
+    await waitFor(() => screen.getByRole("table", { name: "stats" }));
+    expect(screen.getByRole("status").textContent).toBe("≈ estimate · 10% sampled; exact figures follow");
+    expect(lines()[1]).toEqual(["fetch_url", "≈300", "≈14.0%", "≈31.0 sn=300", "—"]);
+    expect(lines()[4][1]).toBe("≈4,000");
+
+    act(() => streams[0].emit("result", AGG));
+    await waitFor(() => expect(lines()[1]).toEqual(["fetch_url", "300", "14.0%", "31.0 sn=300", "—"]));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(streams[0].closed).toBe(true);
+  });
+
+  it("ignores events for another query_id", async () => {
+    const { streams } = open();
+    await waitFor(() => expect(streams.length).toBe(1));
+    act(() => streams[0].emit("estimate", ESTIMATE));
+    act(() => streams[0].emit("result", { ...AGG, query_id: "q-old", groups: [] }));
+    await waitFor(() => screen.getByRole("table", { name: "stats" }));
+    expect(lines()[1][0]).toBe("fetch_url");
+    expect(screen.getByRole("status").textContent).toMatch(/^≈ estimate/);
+    expect(streams[0].closed).toBe(false);
+    act(() => streams[0].emit("result", AGG));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("closes the old stream when the query changes and drops its late events", async () => {
+    const { streams } = open();
+    await waitFor(() => expect(streams.length).toBe(1));
+    act(() => streams[0].emit("estimate", ESTIMATE));
+    act(() => metric("p99 latency").click());
+    await waitFor(() => expect(streams.length).toBe(2));
+    expect(streams[0].closed).toBe(true);
+    expect(decoded(streams[1]).metrics).toEqual([...DEFAULT_METRICS, "p99(latency)"]);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("updating…")).toBeTruthy();
+    act(() => streams[0].emit("result", { ...AGG, groups: [] }));
+    expect(lines()[0]).toEqual(["name", "runs", "error rate", "p95 latency", "cost"]);
+    act(() => streams[1].emit("result", AGG));
+    await waitFor(() => expect(lines()[0]).toEqual(["name", "runs", "error rate", "p95 latency", "cost", "p99 latency"]));
+  });
+
+  it("shows a stream error, and a lost connection as an error rather than a retry", async () => {
+    const { streams } = open();
+    await waitFor(() => expect(streams.length).toBe(1));
+    act(() => streams[0].emit("error", { query_id: "q1", code: "query_failed", message: "storage went away" }));
+    await waitFor(() => screen.getByText("storage went away"));
+    expect(streams[0].closed).toBe(true);
+    act(() => metric("p99 latency").click());
+    await waitFor(() => expect(streams.length).toBe(2));
+    act(() => { for (const fn of streams[1].listeners.get("error") ?? []) fn(new Event("error") as MessageEvent); });
+    await waitFor(() => screen.getByText("Lost the connection to tracedb; change the query to retry."));
+    expect(streams[1].closed).toBe(true);
+  });
+});
+

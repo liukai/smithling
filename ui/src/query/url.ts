@@ -13,10 +13,13 @@ export interface Order { by: "start_time" | "latency"; dir: "desc" | "asc" }
 export type View = "samples" | "table" | "stats" | "series" | "dist";
 const VIEW_NAMES: View[] = ["samples", "table", "stats", "series", "dist"];
 export const DEFAULT_METRICS = ["count", "error_rate", "p95(latency)", "sum(cost)"];
+/** Time-series bucket widths the server takes; none = `auto`. */
+export const BUCKETS = ["1m", "5m", "15m", "1h", "6h", "1d"];
+const SHIFT = /^[1-9][0-9]*[smhd]$/;
 
 /**
  * The runs view as the URL describes it:
- * `?project=&time=&filter=&q=&trace=&tree=&root=1&order=&limit=&cols=&view=&by=&m=&top=&bucket=&live=1`.
+ * `?project=&time=&filter=&q=&trace=&tree=&root=1&order=&limit=&cols=&view=&by=&m=&top=&bucket=&cmp=&shift=&live=1`.
  */
 export interface QueryState {
   project?: string;
@@ -37,6 +40,9 @@ export interface QueryState {
   m: string[];
   top: number;
   bucket?: string;
+  /** Compare: side b is the query with this filter in place of `filter`, or the window `shift` earlier. */
+  cmp?: string;
+  shift?: string;
   live: boolean;
 }
 
@@ -67,7 +73,9 @@ export function fromUrl(search: string): { q: QueryState; m1: boolean } {
     by: list("by"),
     m: list("m").length ? list("m") : DEFAULT_METRICS,
     top: Number.isInteger(top) && top >= 1 && top <= 50 ? top : DEFAULT_TOP,
-    bucket: p.get("bucket") || undefined,
+    bucket: BUCKETS.find((b) => b === p.get("bucket")),
+    cmp: p.get("cmp") || undefined,
+    shift: p.get("cmp") ? undefined : (SHIFT.exec(p.get("shift") ?? "")?.[0]),
     live: p.get("live") === "1",
   };
   if (m1) {
@@ -96,6 +104,8 @@ export function toUrl(q: QueryState): string {
   if (q.m.join() !== DEFAULT_METRICS.join()) set("m", q.m.join(","));
   if (q.top !== DEFAULT_TOP) p.set("top", String(q.top));
   set("bucket", q.bucket);
+  set("cmp", q.cmp);
+  set("shift", q.shift);
   if (q.live) p.set("live", "1");
   // `?project=` alone reads as an M1 link (roots only), so say "all runs" explicitly.
   if ([...p.keys()].join() === "project") p.set("root", "0");
@@ -127,9 +137,16 @@ const scope = (q: QueryState) => ({
   is_root: q.root || undefined,
 });
 
-/** The `POST /api/aggregate` body. */
+const AGG_VIEW: Partial<Record<View, string>> = { series: "series", dist: "dist" };
+
+/** The `POST /api/aggregate` body; side b keeps the search box. */
 export function aggBody(q: QueryState) {
-  return { ...scope(q), group_by: q.by, metrics: q.m, top: q.top, view: "table" };
+  const view = AGG_VIEW[q.view] ?? "table";
+  const compare = q.cmp ? { filter: filterOf({ ...q, filter: q.cmp }) } : q.shift ? { shift: q.shift } : undefined;
+  return {
+    ...scope(q), group_by: q.by, metrics: q.m, top: q.top, view,
+    bucket: view === "series" ? q.bucket : undefined, compare,
+  };
 }
 
 /** The `POST /api/query` body. */

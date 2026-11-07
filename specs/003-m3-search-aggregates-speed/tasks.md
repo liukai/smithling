@@ -259,11 +259,11 @@ in the table and the charts (spec Story 2).
 
 ### Tests for User Story 2 (unit 11: charts)
 
-- [ ] T068 [P] [US2] 🟢 UI tests `ui/src/stats/charts.test.tsx`: Time series draws ≤ 10 series + other with `null` gaps; Distribution bars; clicking a point or bar opens Samples with its `where`; `bucket=` round trip
+- [x] T068 [P] [US2] 🟢 UI tests `ui/src/stats/charts.test.tsx`: Time series draws ≤ 10 series + other with `null` gaps; Distribution bars; clicking a point or bar opens Samples with its `where`; `bucket=` round trip — unit 11 (also: keyboard open, hover/focus tooltip, chart metric picker, bucket not sent outside series, empty series/metric, whole count ticks; seen failing first)
 
 ### Implementation for User Story 2 (unit 11)
 
-- [ ] T069 [US2] 🟢 `ui/src/stats/TimeSeries.tsx` and `ui/src/stats/Distribution.tsx` (unit 11): hand-drawn SVG, no chart library (M3-R14), M2 palette, hover tooltip, click-through; Stats view shows table and chart together (M3-FR-05)
+- [x] T069 [US2] 🟢 `ui/src/stats/TimeSeries.tsx` and `ui/src/stats/Distribution.tsx` (unit 11): hand-drawn SVG, no chart library (M3-R14), M2 palette, hover tooltip, click-through; Stats view shows table and chart together (M3-FR-05) — unit 11 (shared frame in `stats/chart.tsx`, metrics in `stats/metric.ts`; Time series / Distribution tabs show chart + table; 8 validated categorical slots, groups past 8 and `(other)` grey; chart metric defaults to the first non-count metric and isn't in the URL; Distribution shows one group at a time; points/bars are focusable buttons, Enter/Space opens)
 
 **Checkpoint (demo)**: quickstart step 5 (`/api/aggregate`), steps 2.2–2.3 in the browser. **US1 + US2 is the M3 MVP**
 ("is this a pattern, and how bad is it?").
@@ -289,11 +289,11 @@ time chart (spec Story 3).
 
 ### Tests for User Story 3 (unit 11)
 
-- [ ] T074 [P] [US3] 🟢 UI tests `ui/src/stats/Compare.test.tsx`: compare picker → `cmp=` / `shift=` in the URL and back; b columns per group; an empty side shown empty, not zero; two series on one offset axis
+- [x] T074 [P] [US3] 🟢 UI tests `ui/src/stats/Compare.test.tsx`: compare picker → `cmp=` / `shift=` in the URL and back; b columns per group; an empty side shown empty, not zero; two series on one offset axis — unit 11 (also: search box kept on both sides, b click-through, shift needs a time window, a/b legend and colours)
 
 ### Implementation for User Story 3 (unit 11)
 
-- [ ] T075 [US3] 🟢 `ui/src/stats/Compare.tsx`, b columns in `ui/src/stats/StatsTable.tsx`, overlay in `ui/src/stats/TimeSeries.tsx`, `cmp` / `shift` in `ui/src/query/url.ts`
+- [x] T075 [US3] 🟢 `ui/src/stats/Compare.tsx`, b columns in `ui/src/stats/StatsTable.tsx`, overlay in `ui/src/stats/TimeSeries.tsx`, `cmp` / `shift` in `ui/src/query/url.ts` — unit 11 (side b's filter keeps the search box; compared charts show one group, picked; a b cell/point opens b's runs with the compare filter in place of `filter`; under a shift only series points open, over all time, as b's times are absolute; table b cells and dist bars don't)
 
 **Checkpoint (demo)**: quickstart steps 2.4–2.5 and the `--compare` command of step 5.
 
@@ -318,11 +318,11 @@ US6 (T104–T107); within unit 12 build it right after the spike T082 so the fix
 
 ### Tests for User Story 4 (unit 11: progressive display)
 
-- [ ] T080 [P] [US4] 🟠 Progressive cases in `ui/src/stats/StatsPanel.test.tsx`: "estimate · N% sampled" marked partial, replaced by the result; events for an old `query_id` ignored; changing the query closes the old stream
+- [x] T080 [P] [US4] 🟠 Progressive cases in `ui/src/stats/StatsPanel.test.tsx`: "estimate · N% sampled" marked partial, replaced by the result; events for an old `query_id` ignored; changing the query closes the old stream — unit 11 (also: stream error, dropped connection shown, not retried; an old estimate isn't shown as current; existing Stats tests now answer over a fake stream)
 
 ### Implementation for User Story 4 (unit 11)
 
-- [ ] T081 [US4] 🟠 Progressive display in `ui/src/stats/StatsPanel.tsx` and an `EventSource` client in `ui/src/api.ts`
+- [x] T081 [US4] 🟠 Progressive display in `ui/src/stats/StatsPanel.tsx` and an `EventSource` client in `ui/src/api.ts` — unit 11 (`streamAggregate`; Stats views always use the stream; ≈ on estimated cells, dashed lines / faded bars, "≈ estimate · N% sampled; exact figures follow"; first event's `query_id` wins)
 
 ### Spike (first task of unit 12)
 

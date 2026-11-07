@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { RunHeader } from "./api";
+import type { Cells, RunHeader } from "./api";
 
 export class FakeEventSource {
   static last: FakeEventSource | null = null;
@@ -49,3 +49,31 @@ export function mockFetch(routes: Record<string, (url: URL, body: any) => unknow
 
 export const queryPage = (runs: unknown[], next_cursor: string | null = null) =>
   ({ runs, next_cursor, warnings: [], stats: { files_total: 0, files_scanned: 0, rows_read: 0, rows_merged: 0, matched: 0, ms: 1 } });
+
+export const cells = (over: Partial<Cells> = {}): Cells => ({
+  runs: 0, finished: 0, running: 0, errors: 0, error_rate: null, p50: null, p95: null, p99: null, n_latency: 0,
+  input_tokens: null, output_tokens: null, total_tokens: null, cost_pico: null, no_price_runs: 0,
+  feedback_avg: null, feedback_n: 0, estimated: false, approximate: false, ...over,
+});
+
+/**
+ * `GET /api/aggregate/stream` answering each stream once with `agg(body)` as its `result`, or a `Response` error
+ * body as its `error` event; `bodies` collects the requests. Streams stay open until closed, as a server's would.
+ */
+export function stubAggStream(agg: (body: any) => unknown, bodies: unknown[] = []) {
+  const streams: FakeEventSource[] = [];
+  vi.stubGlobal("EventSource", class extends FakeEventSource {
+    constructor(url: string) {
+      super(url);
+      streams.push(this);
+      const body = JSON.parse(new URL(url, "http://localhost").searchParams.get("q")!);
+      bodies.push(body);
+      Promise.resolve(agg(body)).then(async (out) => {
+        if (this.closed || out === undefined) return;
+        if (out instanceof Response) this.emit("error", { ...(await out.json()).error, query_id: null });
+        else this.emit("result", out);
+      });
+    }
+  });
+  return { bodies, streams };
+}

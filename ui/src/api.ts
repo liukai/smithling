@@ -115,14 +115,25 @@ export interface Cells {
 /** `where` is filter text selecting exactly the group's runs; null when no filter can say it. */
 export interface AggGroup { key: unknown[]; cells: Cells | null; where: string | null }
 
+/** One time bucket: `t` alone, `offset_ms` from the side's start when compared; one cell per group (null: no runs). */
+export interface SeriesBucket { t?: string; offset_ms?: number; per_group: (Cells | null)[]; where: string }
+export interface Series { step_ms: number; offset: boolean; buckets: SeriesBucket[] }
+/** Log-latency bins: lower bounds in ms; finished runs per group per bin. */
+export interface Dist { bins_ms: number[]; per_group: number[][]; where_per_bin: string[] }
+
 export interface AggResult {
   query_id: string;
   partial: boolean;
+  /** Percent of rows read for an estimate. */
   sampled_pct?: number;
   totals: Cells;
   groups: AggGroup[];
   cut: boolean;
   overlap: boolean;
+  series?: Series;
+  dist?: Dist;
+  /** Side b: its groups pair with side a's by position. */
+  compare?: { side_b: AggResult };
   warnings?: QueryWarning[];
   skipped_files?: string[];
   stats: { files_scanned: number; clean_rows: number; dirty_runs: number; ms: number };
@@ -170,6 +181,47 @@ export const postQuery = (body: object) =>
 export const postAggregate = (body: object) =>
   fetch("/api/aggregate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
     .then((r) => json<AggResult>(r));
+
+export interface AggHandlers {
+  onEstimate: (r: AggResult) => void;
+  onResult: (r: AggResult) => void;
+  onError: (e: ApiError) => void;
+}
+
+/**
+ * `GET /api/aggregate/stream`: an `estimate` (maybe), then the `result` or an `error`. Events for another
+ * `query_id` than the stream's first are ignored; a dropped connection is an error, not a silent re-run.
+ * The returned function closes the stream, which cancels the query.
+ */
+export function streamAggregate(body: object, h: AggHandlers): () => void {
+  const es = new EventSource(`/api/aggregate/stream?${new URLSearchParams({ q: JSON.stringify(body) })}`);
+  let id: string | null = null;
+  let done = false;
+  const close = () => { done = true; es.close(); };
+  const read = (e: Event): { query_id?: string | null } & Record<string, any> | null => {
+    if (done) return null;
+    const d = JSON.parse((e as MessageEvent).data);
+    if (d.query_id != null) {
+      id ??= d.query_id;
+      if (d.query_id !== id) return null;
+    }
+    return d;
+  };
+  es.addEventListener("estimate", (e) => { const d = read(e); if (d) h.onEstimate(d as AggResult); });
+  es.addEventListener("result", (e) => { const d = read(e); if (d) { close(); h.onResult(d as AggResult); } });
+  es.addEventListener("error", (e) => {
+    if (done) return;
+    if (typeof (e as MessageEvent).data !== "string") {
+      close();
+      return h.onError(new ApiError("Lost the connection to tracedb; change the query to retry.", "disconnected"));
+    }
+    const d = read(e);
+    if (!d) return;
+    close();
+    h.onError(new ApiError(d.message ?? "query failed", d.code, d.slot, d.start, d.end));
+  });
+  return close;
+}
 
 export const getProjects = () => get<ProjectInfo[]>("/api/projects");
 export const getTrace = (id: string) => get<TraceView>(`/api/traces/${id}`);
