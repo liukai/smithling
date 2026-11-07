@@ -493,7 +493,7 @@ async fn sc03_lists_with_late_updates_in_another_project() {
     let url = server.url("");
     let ingest = server.state.ingest.clone();
     let base = Ts::now().0 - 6 * 3_600_000_000;
-    let s = scenario::generate(7, base, DEFAULT_MEMTABLE_BYTES);
+    let s = scenario::generate(7, Ts::now().0, DEFAULT_MEMTABLE_BYTES);
     let loaded = Instant::now();
     let l = scenario::load(&url, &s).await.unwrap();
     assert!(l.in_files);
@@ -532,7 +532,7 @@ async fn sc03_lists_with_late_updates_in_another_project() {
     let http = reqwest::Client::new();
     let tag = scenario::BATCH_TAG;
     let roots = |filter: String, tree: Option<&str>, count: bool, project: &str| {
-        json!({"project": project, "time": {"last": "12h"}, "is_root": true, "filter": filter,
+        json!({"project": project, "time": {"last": "48h"}, "is_root": true, "filter": filter,
                "tree_filter": tree, "limit": 200, "count": count})
     };
     let failing = |count| {

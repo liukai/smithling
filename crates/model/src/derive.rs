@@ -49,6 +49,7 @@ pub fn derive(st: &mut RunState) {
         (None, None) => None,
         (i, o) => Some(i.unwrap_or(0) + o.unwrap_or(0)),
     });
+    r.reported_cost_pico = crate::cost::reported_pico(usage, &r.extra);
 
     st.has_start = r.start_time.is_some() && r.name.is_some();
     if st.present & present::CONFLICT != 0 {

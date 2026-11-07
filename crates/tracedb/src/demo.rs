@@ -103,7 +103,7 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         (None, Some(u)) => u.trim_end_matches('/').to_string(),
         (None, None) => unreachable!("either --url or the demo's own server"),
     };
-    let s = scenario::generate(a.seed, tracedb_model::Ts::now().0 - 6 * 3_600_000_000, a.memtable);
+    let s = scenario::generate(a.seed, tracedb_model::Ts::now().0, a.memtable);
     let loaded = match scenario::load(&url, &s).await {
         Ok(l) => l,
         Err(e @ SeedError::Unreachable(..)) => {
@@ -171,6 +171,7 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
             ..Limits::default()
         },
         ui_dir: None,
+        prices: None,
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     let (state, _) = tokio::task::spawn_blocking(move || crate::open(&cfg)).await??;
@@ -220,9 +221,10 @@ impl Api {
     }
 }
 
+/// Scoped by the batch tag in `filter`, not by time: the batches end 30 h and 6 h ago.
 fn roots(filter: &str, tree_filter: Option<&str>) -> Value {
     json!({
-        "project": PROJECT, "time": {"last": "12h"}, "is_root": true,
+        "project": PROJECT, "is_root": true,
         "filter": filter, "tree_filter": tree_filter, "limit": 200, "count": true,
     })
 }
@@ -274,10 +276,11 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
         ))
         .await?;
 
-    // Top values as the field browser shows them, cross-checked against exact query counts.
+    // Top values as the field browser shows them (only batch a has prompt_version), cross-checked against exact
+    // query counts.
     let (values, mut ms3) = api
         .get(&format!(
-            "/api/fields/values?project={PROJECT}&time=12h&path=metadata.prompt_version"
+            "/api/fields/values?project={PROJECT}&path=metadata.prompt_version"
         ))
         .await?;
     let mut top: Vec<String> = values["values"]
@@ -290,8 +293,8 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
         top.push(format!("other {}", values["other_count"]));
     }
     for (v, want) in [("v6", scenario::PROMPT_V6), ("v7", scenario::PROMPT_V7)] {
-        let filter = format!(r#"eq(metadata.prompt_version, "{v}")"#);
-        let body = json!({"project": PROJECT, "time": {"last": "12h"}, "filter": filter, "limit": 1, "count": true});
+        let filter = format!(r#"and(has(tags, "{tag}"), eq(metadata.prompt_version, "{v}"))"#);
+        let body = json!({"project": PROJECT, "filter": filter, "limit": 1, "count": true});
         let (r, ms) = api.query(body).await?;
         ms3 += ms;
         if matched(&r) != want as u64 {
@@ -301,8 +304,8 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
 
     let (limited, ms4) = api
         .query(json!({
-            "project": PROJECT, "time": {"last": "12h"}, "limit": 200, "count": true,
-            "filter": r#"and(eq(metadata.prompt_version, "v7"), eq(outputs.status_code, 429))"#,
+            "project": PROJECT, "limit": 200, "count": true,
+            "filter": format!(r#"and(has(tags, "{tag}"), eq(metadata.prompt_version, "v7"), eq(outputs.status_code, 429))"#),
         }))
         .await?;
     let across = [&failing, &quiet, &limited]

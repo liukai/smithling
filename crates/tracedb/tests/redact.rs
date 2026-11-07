@@ -31,6 +31,7 @@ fn summary_hides_passwords_and_aws_values() {
         metastore: Some("postgres://tdb:hunter2@db:5432/tracedb".into()),
         limits: Limits::default(),
         ui_dir: None,
+        prices: None,
     };
     let env = [
         ("AWS_SECRET_ACCESS_KEY", "topsecret"),

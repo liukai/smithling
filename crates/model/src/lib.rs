@@ -2,6 +2,7 @@
 
 pub mod agg;
 pub mod attrs;
+pub mod cost;
 pub mod derive;
 pub mod dotted_order;
 pub mod event;

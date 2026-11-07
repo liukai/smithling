@@ -137,6 +137,8 @@ pub struct Run {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    /// The cost the run reported, in picodollars (`cost::reported_pico`).
+    pub reported_cost_pico: Option<i64>,
 
     pub inputs: Option<Value>,
     pub outputs: Option<Value>,
@@ -242,6 +244,7 @@ impl RunState {
                 input_tokens: r.input_tokens,
                 output_tokens: r.output_tokens,
                 total_tokens: r.total_tokens,
+                reported_cost_pico: r.reported_cost_pico,
                 inputs: None,
                 outputs: None,
                 events: None,

@@ -9,11 +9,13 @@ pub mod seed;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use tracedb_ingest::{Health, Ingest, IngestConfig, Limits, OpenStats};
+use tracedb_model::cost::Prices;
 use tracedb_query::Query;
 
 /// `512MB`, `2GB` → bytes (for `--memtable`).
@@ -45,6 +47,7 @@ pub struct AppState {
     pub query: Query,
     /// Serve UI files from this folder instead of the embedded copy.
     pub ui_dir: Option<PathBuf>,
+    pub prices: Arc<Prices>,
 }
 
 impl AppState {
@@ -54,6 +57,7 @@ impl AppState {
             ingest,
             query,
             ui_dir: None,
+            prices: Arc::new(Prices::embedded()),
         }
     }
 
@@ -73,6 +77,8 @@ pub struct ServeConfig {
     pub metastore: Option<String>,
     pub limits: Limits,
     pub ui_dir: Option<PathBuf>,
+    /// Price list replacing embedded entries by name (default `<data>/prices.toml` if present).
+    pub prices: Option<PathBuf>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -103,8 +109,21 @@ async fn healthz(State(st): State<AppState>) -> Json<Health> {
     Json(st.ingest.health())
 }
 
+/// Embedded prices, then `--prices` or `<data>/prices.toml`; read once at start, no network.
+pub fn load_prices(cfg: &ServeConfig) -> anyhow::Result<Prices> {
+    let mut prices = Prices::embedded();
+    let user = cfg.data_dir.join("prices.toml");
+    match &cfg.prices {
+        Some(path) => prices.merge_user(path)?,
+        None if user.exists() => prices.merge_user(&user)?,
+        None => {}
+    }
+    Ok(prices)
+}
+
 /// Opens the data folder (replaying the WAL) before binding, so the port only opens when ready.
 pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
+    let prices = load_prices(cfg)?;
     let mut icfg = IngestConfig::new(&cfg.data_dir);
     icfg.storage = cfg.storage.clone();
     icfg.metastore = cfg.metastore.clone();
@@ -114,7 +133,9 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
         icfg.wal_roll_bytes = b;
     }
     let (ingest, stats) = Ingest::open(icfg)?;
-    Ok((AppState::new(ingest).with_ui_dir(cfg.ui_dir.clone()), stats))
+    let mut state = AppState::new(ingest).with_ui_dir(cfg.ui_dir.clone());
+    state.prices = Arc::new(prices);
+    Ok((state, stats))
 }
 
 pub async fn serve(

@@ -47,6 +47,9 @@ enum Cmd {
         /// Serve UI files from this folder instead of the built-in copy (for UI development).
         #[arg(long, env = "TRACEDB_UI_DIR")]
         ui_dir: Option<PathBuf>,
+        /// Model prices (USD per 1M tokens) replacing the built-in entries by name. Default: <data>/prices.toml if present.
+        #[arg(long)]
+        prices: Option<PathBuf>,
     },
     /// Generate realistic research-agent traces and send them to a running tracedb.
     Seed {
@@ -114,6 +117,7 @@ async fn main() -> ExitCode {
             max_memory,
             max_runs,
             ui_dir,
+            prices,
         } => {
             if max_memory.is_some() || max_runs.is_some() {
                 eprintln!("tracedb: --max-memory and --max-runs no longer apply: data moves to disk (M2)");
@@ -130,6 +134,7 @@ async fn main() -> ExitCode {
                     ..Limits::default()
                 },
                 ui_dir,
+                prices,
             };
             let shutdown = async {
                 let _ = tokio::signal::ctrl_c().await;

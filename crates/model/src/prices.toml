@@ -1,0 +1,17 @@
+# Embedded in the binary; <data>/prices.toml (same shape) replaces entries by name. USD per 1M tokens.
+version = 1
+
+[models."gpt-4o-mini"]
+input = 0.15
+output = 0.60
+aliases = ["gpt-4o-mini-2024-07-18"]
+
+[models."gpt-4o"]
+input = 2.50
+output = 10.00
+aliases = ["gpt-4o-2024-08-06", "gpt-4o-2024-11-20"]
+
+[models."claude-haiku"]
+input = 0.80
+output = 4.00
+aliases = ["claude-3-5-haiku-latest"]

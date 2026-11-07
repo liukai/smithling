@@ -82,6 +82,7 @@ fn new_state(ev: &RunEvent) -> Result<RunState, Reject> {
         input_tokens: None,
         output_tokens: None,
         total_tokens: None,
+        reported_cost_pico: None,
         inputs: None,
         outputs: None,
         events: None,
