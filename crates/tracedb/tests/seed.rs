@@ -72,3 +72,50 @@ async fn unreachable_server_is_reported() {
     let err = send("http://127.0.0.1:9", &generate(1, 1, 0), true).await.unwrap_err();
     assert!(matches!(err, tracedb::seed::SeedError::Unreachable(..)));
 }
+
+fn times(traces: &[tracedb::seed::GenTrace]) -> Vec<i64> {
+    let at = |v: &serde_json::Value| v.as_str().map(|s| tracedb_model::Ts::parse(s).unwrap().0);
+    traces
+        .iter()
+        .flat_map(|t| &t.steps)
+        .flat_map(|s| {
+            [
+                at(&s.post["start_time"]),
+                at(&s.post["end_time"]),
+                s.late_patch.as_ref().and_then(|(_, p)| at(&p["end_time"])),
+            ]
+        })
+        .flatten()
+        .collect()
+}
+
+#[test]
+fn seeded_runs_never_start_or_end_in_the_future() {
+    let now = tracedb_model::Ts::now().0;
+    let traces = tracedb::seed::generate_before(42, 50, now);
+    let t = times(&traces);
+    assert!(
+        t.iter().all(|&x| x <= now),
+        "max {} > now {now}",
+        t.iter().max().unwrap()
+    );
+    // Recent: the last trace ends near now (within its 7 s slot plus the longest duration).
+    assert!(t.iter().max().unwrap() > &(now - 50 * 7_000_000 - 3_600_000_000));
+    // Deterministic for a given seed and time; ids differ when the time does.
+    let again = tracedb::seed::generate_before(42, 50, now);
+    assert_eq!(traces[3].steps[5].post, again[3].steps[5].post);
+    let later = tracedb::seed::generate_before(42, 50, now + 1);
+    assert_ne!(traces[0].trace_id, later[0].trace_id);
+}
+
+#[tokio::test]
+async fn seeding_the_same_seed_twice_into_one_folder_is_accepted() {
+    let server = common::start().await;
+    let url = format!("http://{}", server.addr);
+    let first = tracedb::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
+    send(&url, &first, true).await.unwrap();
+    let second = tracedb::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
+    send(&url, &second, true).await.expect("no identity_conflict");
+    let steps: usize = first.iter().chain(&second).map(|t| t.steps.len()).sum();
+    assert_eq!(server.state.ingest.health().runs, steps);
+}

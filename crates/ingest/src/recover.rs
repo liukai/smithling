@@ -1,5 +1,6 @@
-//! Start-up recovery (design §4.6): read the catalog, delete orphan files, rebuild the multi-version set,
-//! replay the WAL past `flushed_seq`, and rebuild the dedup window from the catalog's saved keys plus the WAL.
+//! Start-up recovery (design §4.6): read the catalog, delete orphan files, check every file's footer, rebuild
+//! the multi-version set and the flushed-ids filter, replay the WAL past `flushed_seq`, and rebuild the dedup
+//! window from the catalog's saved keys plus the WAL.
 //! An M1 folder (only `wal/`) gets a fresh catalog with `flushed_seq = 0`, so its whole log is replayed.
 
 use std::collections::HashSet;
@@ -7,13 +8,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tracedb_model::{Op, RunId, Ts};
-use tracedb_storage::{DedupKeys, SegmentMeta, StorageError};
+use tracedb_storage::{DedupKeys, SegmentMeta, StorageError, segment};
 
 use crate::dedup::{self, Dedup, DedupKey};
+use crate::flushed::FlushedIds;
 use crate::memtable::Version;
 use crate::store::RunStore;
 use crate::wal::{ReplayStats, Wal};
-use crate::{IngestConfig, OpenError, OpenStats, Storage};
+use crate::{Damaged, IngestConfig, OpenError, OpenStats, Storage};
 
 pub(crate) struct Recovered {
     pub wal: Wal,
@@ -23,9 +25,11 @@ pub(crate) struct Recovered {
     /// Dedup keys of the replayed events, saved by the flush that takes them.
     pub pending: Vec<(DedupKey, Ts)>,
     pub mvset: HashSet<RunId>,
+    /// Run ids in the readable files.
+    pub flushed: FlushedIds,
     pub version: Version,
     /// Registered segments whose files are missing or unreadable; left out of `version`.
-    pub corrupt: Vec<String>,
+    pub damaged: Vec<Damaged>,
     pub stats: OpenStats,
 }
 
@@ -80,34 +84,47 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         })?;
     }
 
-    let mut corrupt = Vec::new();
-    let mut readable: Vec<SegmentMeta> = Vec::with_capacity(segments.len());
-    let mut mvset: HashSet<RunId> = HashSet::new();
-    for s in segments {
-        if !present.contains(s.core_path.as_str()) || !present.contains(s.payload_path.as_str()) {
-            tracing::error!(segment = %s.id, "a registered data file is missing; its runs are not served");
-            corrupt.push(s.id);
-            continue;
-        }
-        if s.needs_merge_rows > 0 {
-            let (store, path) = (storage.store.clone(), s.core_path.clone());
-            let bytes = storage.block(async move { store.get(&path).await })?;
-            match tracedb_storage::segment::needs_merge_ids(bytes) {
-                Ok(ids) => mvset.extend(ids),
-                Err(e @ (StorageError::Parquet(_) | StorageError::Arrow(_) | StorageError::Format(_))) => {
-                    tracing::error!(segment = %s.id, error = %e, "a data file is unreadable; its runs are not served");
-                    corrupt.push(s.id);
-                    continue;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        readable.push(s);
+    let found_at = Ts::now();
+    let mut damaged = Vec::new();
+    let mut damage = |s: SegmentMeta, reason: &str| {
+        tracing::error!(segment = %s.id, reason, "a registered data file can't be read; its runs are not served");
+        damaged.push(Damaged {
+            id: s.id.clone(),
+            reason: reason.to_string(),
+            since: found_at,
+            segment: Arc::new(s),
+        });
+    };
+    let (present_segs, missing): (Vec<SegmentMeta>, Vec<SegmentMeta>) = segments
+        .into_iter()
+        .partition(|s| present.contains(s.core_path.as_str()) && present.contains(s.payload_path.as_str()));
+    for s in missing {
+        damage(s, "missing");
     }
-    let corrupt_ids: HashSet<&str> = corrupt.iter().map(String::as_str).collect();
+    let mut flushed = FlushedIds::new(2 * present_segs.iter().map(|s| s.row_count as usize).sum::<usize>());
+    let mut readable: Vec<SegmentMeta> = Vec::with_capacity(present_segs.len());
+    let mut mvset: HashSet<RunId> = HashSet::new();
+    let (store, segs) = (storage.store.clone(), present_segs.clone());
+    let inspected = storage.block(async move { segment::inspect_all(store, segs).await });
+    for (s, r) in present_segs.into_iter().zip(inspected) {
+        match r {
+            Ok(ids) => {
+                mvset.extend(ids.needs_merge);
+                for id in &ids.run_ids {
+                    flushed.insert(id);
+                }
+                readable.push(s);
+            }
+            Err(e) => match segment::damage(&e) {
+                Some(reason) => damage(s, reason),
+                None => return Err(e.into()),
+            },
+        }
+    }
+    let damaged_ids: HashSet<&str> = damaged.iter().map(|d| d.id.as_str()).collect();
     let field_stats: Vec<_> = field_stats
         .into_iter()
-        .filter(|f| !corrupt_ids.contains(f.segment_id.as_str()))
+        .filter(|f| !damaged_ids.contains(f.segment_id.as_str()))
         .map(Arc::new)
         .collect();
 
@@ -115,9 +132,6 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
     let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
     let now = Ts::now();
     let (mut replay_rejected, mut skipped) = (0, 0);
-    // Runs with a version already flushed (recently: from the saved keys and any flushed WAL records left):
-    // a later start for one of them is a second version too.
-    let mut flushed_ids: HashSet<RunId> = HashSet::new();
     // Keys inside the window, inserted oldest first after replay (pruning pops from the front).
     let mut recent: Vec<(DedupKey, Ts)> = Vec::new();
     let mut latest_saved: Vec<(DedupKey, Ts)> = Vec::new();
@@ -127,7 +141,6 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
             continue;
         };
         for &(key, at) in &keys {
-            flushed_ids.insert(key.0);
             if dedup.in_window(at, now) {
                 recent.push((key, at));
             }
@@ -151,7 +164,6 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         if ev.event_seq <= flushed_seq {
             skipped += 1;
             if let Some(key) = key {
-                flushed_ids.insert(key.0);
                 flushed_in_wal.push((key, ev.received_at));
             }
             return;
@@ -160,7 +172,8 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
             pending.push((key, ev.received_at));
         }
         match active.apply(&ev) {
-            Ok(c) if c.created && (ev.op == Op::Patch || flushed_ids.contains(&c.header.run_id)) => {
+            // A new state for a run already in a file is a second version (D-025).
+            Ok(c) if c.created && (ev.op == Op::Patch || flushed.contains(&c.header.run_id)) => {
                 mvset.insert(c.header.run_id);
             }
             Ok(_) => {}
@@ -172,8 +185,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         dedup.insert(key, at);
     }
     if skipped > 0 {
-        // Save their keys with the latest flush's (all of them: the next start also takes `flushed_ids` from
-        // them), then the records can go.
+        // Save their keys with the latest flush's, then the records can go.
         let mut keys = latest_saved;
         let mut have: HashSet<DedupKey> = keys.iter().map(|k| k.0).collect();
         keys.extend(flushed_in_wal.into_iter().filter(|k| have.insert(k.0)));
@@ -216,8 +228,9 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         dedup,
         pending,
         mvset,
+        flushed,
         version,
-        corrupt,
+        damaged,
         stats,
     })
 }

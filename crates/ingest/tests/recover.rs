@@ -331,3 +331,46 @@ async fn a_second_process_on_the_same_folder_is_refused() {
     drop(first);
     Ingest::open(cfg(dir.path(), 0)).expect("free again once the first is gone");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_checks_every_files_footer_and_reports_damage() {
+    let dir = tempfile::tempdir().unwrap();
+    let (garbled, lost, total) = {
+        let (ingest, _) = Ingest::open(cfg(dir.path(), 0)).unwrap();
+        upload(&ingest, 1, 300).await;
+        wait_all_flushed(&ingest).await;
+        let mem = ingest.mem();
+        let m = mem.read().unwrap();
+        assert!(m.version.segments.len() >= 3);
+        assert!(m.version.segments.iter().all(|s| s.needs_merge_rows == 0));
+        let total: u64 = m.version.segments.iter().map(|s| s.row_count).sum();
+        (m.version.segments[0].clone(), m.version.segments[1].clone(), total)
+    };
+    // A core file cut short (no footer), and a deleted one.
+    let path = dir.path().join("data").join(&garbled.core_path);
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    std::fs::remove_file(dir.path().join("data").join(&lost.core_path)).unwrap();
+
+    let (ingest, stats) = Ingest::open(cfg(dir.path(), 0)).unwrap();
+    let h = ingest.health();
+    assert!(!h.ok && h.wal_ok && h.flush_ok, "{h:?}");
+    let mut got: Vec<(String, String)> = h
+        .damaged_segments
+        .iter()
+        .map(|d| (d.id.clone(), d.reason.clone()))
+        .collect();
+    got.sort();
+    let mut want = vec![
+        (garbled.id.clone(), "unreadable".to_string()),
+        (lost.id.clone(), "missing".to_string()),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+    assert!(h.damaged_segments.iter().all(|d| d.since.0 > 0));
+    let mut alias = h.corrupt_segments.clone();
+    alias.sort();
+    assert_eq!(alias, want.iter().map(|w| w.0.clone()).collect::<Vec<_>>());
+    assert_eq!(h.segment_rows, total - garbled.row_count - lost.row_count);
+    assert_eq!(stats.segments, h.segments);
+}

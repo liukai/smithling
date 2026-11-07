@@ -27,7 +27,10 @@ use serde_json::Value;
 use tracedb_model::attrs::{Attrs, Scalar};
 use tracedb_model::{Op, PayloadSizes, RunEvent, RunFields, RunId, RunState, Source, TraceId, Ts, merge, present};
 
-use crate::StorageError;
+use datafusion::parquet::arrow::ParquetRecordBatchStreamBuilder;
+
+use crate::object::Ranged;
+use crate::{StorageError, Store};
 
 pub const ROW_GROUP_ROWS: usize = 65_536;
 pub const TOP_VALUES: usize = 50;
@@ -811,25 +814,97 @@ pub fn run_ids(core: Bytes) -> Result<Vec<RunId>, StorageError> {
     Ok(out)
 }
 
-/// Run ids of rows marked `needs_merge` in a core file (read at startup to rebuild the multi-version set).
-/// Reads only the two columns it needs.
-pub fn needs_merge_ids(core: Bytes) -> Result<Vec<RunId>, StorageError> {
+/// Why a segment can't be served, if `e` says so: `"missing"` or `"unreadable"`. Other errors (a network
+/// failure, say) may pass, so they don't mark it.
+pub fn damage(e: &StorageError) -> Option<&'static str> {
+    match e {
+        StorageError::Object(e) => store_damage(e),
+        StorageError::Parquet(e) => parquet_damage(e),
+        StorageError::Arrow(_) | StorageError::Format(_) => Some("unreadable"),
+        _ => None,
+    }
+}
+
+/// [`damage`] of a boxed reader error holding a storage or Parquet error; `None` for anything else.
+pub fn boxed_damage(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<&'static str> {
+    if let Some(e) = e.downcast_ref::<object_store::Error>() {
+        store_damage(e)
+    } else {
+        e.downcast_ref::<datafusion::parquet::errors::ParquetError>()
+            .and_then(parquet_damage)
+    }
+}
+
+pub fn store_damage(e: &object_store::Error) -> Option<&'static str> {
+    matches!(e, object_store::Error::NotFound { .. }).then_some("missing")
+}
+
+/// A Parquet error is damage unless it wraps a storage error (a ranged read failing).
+pub fn parquet_damage(e: &datafusion::parquet::errors::ParquetError) -> Option<&'static str> {
+    use datafusion::parquet::errors::ParquetError;
+    match e {
+        ParquetError::External(inner) => match inner.downcast_ref::<object_store::Error>() {
+            Some(store) => store_damage(store),
+            None => inner
+                .downcast_ref::<std::io::Error>()
+                .map_or(Some("unreadable"), |_| None),
+        },
+        _ => Some("unreadable"),
+    }
+}
+
+/// What start needs from a segment's core file.
+#[derive(Clone, Debug, Default)]
+pub struct SegmentIds {
+    pub run_ids: Vec<RunId>,
+    /// Run ids of rows marked `needs_merge`.
+    pub needs_merge: Vec<RunId>,
+}
+
+async fn open_parquet(store: &Store, rel: &str) -> Result<ParquetRecordBatchStreamBuilder<Ranged>, StorageError> {
+    let size = store.size(rel).await?;
+    Ok(ParquetRecordBatchStreamBuilder::new(store.parquet(rel, size)).await?)
+}
+
+/// Checks both files' footers (ranged reads: the footer only).
+pub async fn check(store: &Store, s: &SegmentMeta) -> Result<(), StorageError> {
+    open_parquet(store, &s.core_path).await?;
+    open_parquet(store, &s.payload_path).await?;
+    Ok(())
+}
+
+/// Checks both files' footers, then reads the core file's `run_id` and `needs_merge` columns only.
+pub async fn inspect(store: &Store, s: &SegmentMeta) -> Result<SegmentIds, StorageError> {
     use datafusion::parquet::arrow::ProjectionMask;
-    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    let b = ParquetRecordBatchReaderBuilder::try_new(core)?;
-    let mask = ProjectionMask::columns(b.parquet_schema(), ["run_id", "needs_merge"]);
-    let mut out = Vec::new();
-    for batch in b.with_projection(mask).build()? {
-        let batch = batch?;
-        let c = Cols { batch: &batch };
+    use futures_util::TryStreamExt;
+    let core = open_parquet(store, &s.core_path).await?;
+    open_parquet(store, &s.payload_path).await?;
+    let mask = ProjectionMask::columns(core.parquet_schema(), ["run_id", "needs_merge"]);
+    let batches: Vec<RecordBatch> = core.with_projection(mask).build()?.try_collect().await?;
+    let mut out = SegmentIds::default();
+    for batch in &batches {
+        let c = Cols { batch };
         let (ids, needs) = (c.ids("run_id")?, c.bools("needs_merge")?);
         for i in 0..batch.num_rows() {
-            if needs.value(i)
-                && let Some(id) = uuid_at(ids, i)
-            {
-                out.push(id);
+            if let Some(id) = uuid_at(ids, i) {
+                out.run_ids.push(id);
+                if needs.value(i) {
+                    out.needs_merge.push(id);
+                }
             }
         }
     }
     Ok(out)
+}
+
+/// [`inspect`] of every segment, a few at a time; results in input order.
+pub async fn inspect_all(store: Store, segments: Vec<SegmentMeta>) -> Vec<Result<SegmentIds, StorageError>> {
+    use futures_util::StreamExt;
+    futures_util::stream::iter(segments.into_iter().map(|s| {
+        let store = store.clone();
+        async move { inspect(&store, &s).await }
+    }))
+    .buffered(16)
+    .collect()
+    .await
 }

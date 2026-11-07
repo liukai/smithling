@@ -161,7 +161,7 @@ async fn main() -> ExitCode {
             url,
             no_delay,
         } => {
-            let generated = tracedb::seed::generate(seed, traces, tracedb_model::Ts::now().0);
+            let generated = tracedb::seed::generate_before(seed, traces, tracedb_model::Ts::now().0);
             let steps: usize = generated.iter().map(|t| t.steps.len()).sum();
             let late = generated
                 .iter()

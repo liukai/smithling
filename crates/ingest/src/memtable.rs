@@ -36,6 +36,15 @@ impl Version {
         v.flushed_seq = flushed_seq;
         v
     }
+
+    /// The same files without segment `id` (found damaged).
+    pub fn without(&self, id: &str) -> Version {
+        let mut v = self.clone();
+        v.id += 1;
+        v.segments.retain(|s| s.id != id);
+        v.field_stats.retain(|f| f.segment_id != id);
+        v
+    }
 }
 
 /// A consistent copy of what to read: the active memtable is read under the caller's lock; frozen and

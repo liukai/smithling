@@ -4,10 +4,13 @@
 //! start); then one metastore transaction registers them, saves the events' dedup keys and moves
 //! `flushed_seq` (a crash after it means replay skips `seq ≤ flushed_seq`); only then are WAL files deleted.
 //! At every step each confirmed event, and its dedup key, is in the WAL, in the catalog, or both.
+//!
+//! A job's files and segment ids are made once and reused by every retry, so a retry after a commit that
+//! landed but whose reply was lost is "already committed" in the catalog, not a second registration.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -15,9 +18,10 @@ use std::time::Duration;
 use tracedb_model::attrs::promote;
 use tracedb_model::{RunId, Ts};
 use tracedb_storage::segment::{self, Version as Row};
-use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError};
+use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError, Written};
 
 use crate::dedup::{self, DedupKey};
+use crate::flushed::FlushedIds;
 use crate::memtable::Mem;
 use crate::projects::Projects;
 use crate::store::RunStore;
@@ -34,6 +38,7 @@ pub(crate) struct FlushJob {
 pub(crate) struct Flusher {
     pub mem: Arc<RwLock<Mem>>,
     pub mvset: Arc<RwLock<HashSet<RunId>>>,
+    pub flushed: Arc<Mutex<FlushedIds>>,
     pub projects: Arc<RwLock<Projects>>,
     pub storage: Arc<Storage>,
     pub counters: Arc<Counters>,
@@ -42,8 +47,18 @@ pub(crate) struct Flusher {
     pub dedup_window: Duration,
     /// Tests only: slow every flush down (to exercise write slowdown).
     pub test_delay: Option<Duration>,
+    /// Tests only: this many landed commits report an error, as a lost reply would.
+    pub lost_replies: AtomicU32,
     /// Set when ingest shuts down: stop retrying a failing flush (the WAL still has the data).
     pub stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A job's files, made once and kept across its retries.
+struct Prepared {
+    created_at: Ts,
+    written: Vec<Written>,
+    /// Every file is stored (a failed commit keeps them: it may have landed).
+    stored: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,9 +72,11 @@ impl Flusher {
     pub fn run(self, rx: Receiver<FlushJob>) {
         while let Ok(job) = rx.recv() {
             let mut backoff = Duration::from_millis(200);
+            let mut prepared = None;
             loop {
                 // A panic in one attempt (a bug, or a storage task dying) must not stop flushing for good.
-                let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush(&job)));
+                let attempt =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush(&job, &mut prepared)));
                 let err = match attempt {
                     Ok(Ok(())) => break,
                     Ok(Err(e)) => e.to_string(),
@@ -85,10 +102,9 @@ impl Flusher {
         }
     }
 
-    fn flush(&self, job: &FlushJob) -> Result<(), StorageError> {
-        let started = std::time::Instant::now();
+    fn prepare(&self, job: &FlushJob) -> Result<Prepared, StorageError> {
         let now = Ts::now();
-        let (metas, stats, written) = {
+        let written = {
             let mvset = self.mvset.read().unwrap();
             let projects = self.projects.read().unwrap();
             let mut by_project: BTreeMap<String, Vec<Row>> = BTreeMap::new();
@@ -108,21 +124,70 @@ impl Flusher {
                 });
             }
             drop(projects);
-            let mut metas = Vec::new();
-            let mut stats = Vec::new();
-            let mut written = Vec::new();
-            for (project, rows) in by_project {
-                let w = segment::write(&project, rows, now)?;
-                metas.push(w.meta.clone());
-                stats.extend(w.stats.iter().cloned());
-                written.push(w);
-            }
-            (metas, stats, written)
+            by_project
+                .into_iter()
+                .map(|(project, rows)| segment::write(&project, rows, now))
+                .collect::<Result<Vec<_>, _>>()?
         };
         if let Some(d) = self.test_delay {
             std::thread::sleep(d);
         }
+        Ok(Prepared {
+            created_at: now,
+            written,
+            stored: false,
+        })
+    }
+
+    fn flush(&self, job: &FlushJob, prepared: &mut Option<Prepared>) -> Result<(), StorageError> {
+        let started = std::time::Instant::now();
+        if prepared.is_none() {
+            *prepared = Some(self.prepare(job)?);
+        }
+        let p = prepared.as_mut().expect("prepared");
+        let metas: Vec<SegmentMeta> = p.written.iter().map(|w| w.meta.clone()).collect();
+        let stats: Vec<FieldStat> = p.written.iter().flat_map(|w| w.stats.iter().cloned()).collect();
         let store = self.storage.store.clone();
+        if !p.stored {
+            let files: Vec<_> = p
+                .written
+                .iter()
+                .map(|w| {
+                    (
+                        (w.meta.core_path.clone(), w.core.clone()),
+                        (w.meta.payload_path.clone(), w.payload.clone()),
+                    )
+                })
+                .collect();
+            self.storage.block(async move {
+                let put = async {
+                    // On a retry a name may already hold these bytes (a put that landed before the attempt
+                    // failed); names are never reused, so that counts as stored.
+                    let stored = |r: Result<(), StorageError>| match r {
+                        Err(e) if e.already_exists() => Ok(()),
+                        r => r,
+                    };
+                    for ((core_path, core), (payload_path, payload)) in &files {
+                        stored(store.put_new(core_path, core.clone()).await)?;
+                        crash_point("during_put");
+                        stored(store.put_new(payload_path, payload.clone()).await)?;
+                    }
+                    Ok::<_, StorageError>(())
+                }
+                .await;
+                if let Err(e) = put {
+                    // Best effort: these files were never registered.
+                    for ((core_path, _), (payload_path, _)) in &files {
+                        let _ = store.delete(core_path).await;
+                        let _ = store.delete(payload_path).await;
+                    }
+                    return Err(e);
+                }
+                Ok(())
+            })?;
+            p.stored = true;
+        }
+        crash_point("after_put");
         let meta = self.storage.meta.clone();
         let (m2, s2) = (metas.clone(), stats.clone());
         let max_seq = job.max_seq;
@@ -131,32 +196,26 @@ impl Flusher {
             newest_at: job.keys.iter().map(|k| k.1.0).max().unwrap_or(0),
             keys: dedup::pack(&job.keys),
         };
-        let forget_before = now.0.saturating_sub(self.dedup_window.as_micros() as i64);
-        self.storage.block(async move {
-            let put = async {
-                for w in &written {
-                    store.put_new(&w.meta.core_path, w.core.clone()).await?;
-                    crash_point("during_put");
-                    store.put_new(&w.meta.payload_path, w.payload.clone()).await?;
-                }
-                Ok::<_, StorageError>(())
+        let forget_before = p.created_at.0.saturating_sub(self.dedup_window.as_micros() as i64);
+        // A failed commit may still have landed (e.g. a lost reply), so its files are kept and the retry commits
+        // the same segment ids; if it didn't land, they are orphans, deleted on the next start.
+        self.storage
+            .block(async move { meta.commit_flush(&m2, &s2, max_seq, &keys, forget_before).await })?;
+        crash_point("after_commit");
+        if self
+            .lost_replies
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(StorageError::Metastore("test: the commit reply was lost".into()));
+        }
+        // Before the frozen memtable goes, so a new start for one of these runs always finds it in one of them.
+        {
+            let mut flushed = self.flushed.lock().unwrap();
+            for st in job.frozen.states() {
+                flushed.insert(&st.run.run_id);
             }
-            .await;
-            if let Err(e) = put {
-                // Best effort: these files were never registered.
-                for w in &written {
-                    let _ = store.delete(&w.meta.core_path).await;
-                    let _ = store.delete(&w.meta.payload_path).await;
-                }
-                return Err(e);
-            }
-            crash_point("after_put");
-            // A failed commit may still have landed (e.g. a lost reply), so its files are kept; if it didn't,
-            // they are orphans, deleted on the next start.
-            meta.commit_flush(&m2, &s2, max_seq, &keys, forget_before).await?;
-            crash_point("after_commit");
-            Ok(())
-        })?;
+        }
         self.publish(metas, stats, job.max_seq);
         self.counters.flushed_seq.store(job.max_seq, Ordering::Relaxed);
         match wal::trim(&self.wal_dir, job.max_seq) {

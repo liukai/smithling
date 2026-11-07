@@ -126,6 +126,10 @@ pub enum QueryWarning {
     IdentityConflict {
         run_id: RunId,
     },
+    /// Damaged or missing data files in scope that weren't read (M3-FR-18).
+    SkippedFiles {
+        ids: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -406,6 +410,10 @@ impl Query {
                 .into_iter()
                 .map(|(path, runs)| QueryWarning::NotIndexed { path, runs }),
         );
+        let skipped = self.skipped(&scope);
+        if !skipped.is_empty() {
+            warnings.push(QueryWarning::SkippedFiles { ids: skipped });
+        }
         let rows: Vec<RunRow> = keyed
             .into_iter()
             .map(|(_, m)| {
@@ -468,6 +476,35 @@ impl Query {
                 .collect();
         }
         Ok(ok)
+    }
+
+    /// Damaged data files (found at start or while serving) that `scope` would have read.
+    pub fn skipped(&self, scope: &Scope) -> Vec<String> {
+        self.ingest
+            .damaged()
+            .into_iter()
+            .filter(|d| scope.file_in_scope(&d.segment))
+            .map(|d| d.id)
+            .collect()
+    }
+
+    /// [`Query::skipped`] for one trace.
+    pub fn skipped_for_trace(&self, id: TraceId) -> Vec<String> {
+        self.skipped(&Scope {
+            trace_id: Some(id),
+            ..Scope::default()
+        })
+    }
+
+    /// [`Query::skipped`] for a project and time range (field catalog).
+    pub fn skipped_in(&self, project: Option<&str>, time: TimeRange) -> Vec<String> {
+        let now = Ts::now();
+        self.skipped(&Scope {
+            project: project.map(str::to_string),
+            from: time.from.map(|t| t.resolve(now).0),
+            to: time.to.map(|t| t.resolve(now).0),
+            ..Scope::default()
+        })
     }
 
     /// The whole tree of one trace, headers only, in `dotted_order`.

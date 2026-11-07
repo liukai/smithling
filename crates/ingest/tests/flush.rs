@@ -131,3 +131,59 @@ async fn a_big_unflushed_log_after_restart_flushes_instead_of_staying_busy() {
     );
     wait_for(|| ingest.health().unflushed_wal_bytes < 64 * 1024).await;
 }
+
+fn segment_rows_in_catalog(dir: &Path) -> (i64, i64) {
+    let url = format!("sqlite://{}", dir.join("meta.sqlite").display());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+            let r: (i64, i64) = sqlx::query_as("SELECT count(*), coalesce(sum(row_count), 0) FROM segments")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            r
+        })
+    })
+    .join()
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retried_flush_whose_commit_landed_registers_its_files_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = small(dir.path());
+    cfg.test_lost_commit_replies = 2;
+    let (ingest, _) = Ingest::open(cfg).unwrap();
+    upload(&ingest, 1, 300).await;
+    wait_for(|| {
+        let h = ingest.health();
+        h.flushes >= 3 && h.flush_ok && !h.frozen
+    })
+    .await;
+    let mem = ingest.mem();
+    let (ids, seg_rows, mem_runs) = {
+        let m = mem.read().unwrap();
+        let ids: Vec<String> = m.version.segments.iter().map(|s| s.id.clone()).collect();
+        let rows: u64 = m.version.segments.iter().map(|s| s.row_count).sum();
+        (ids, rows, m.active.len() as u64)
+    };
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "a segment published twice: {ids:?}");
+    assert_eq!(seg_rows + mem_runs, 300, "every run stored once");
+    let h = ingest.health();
+    drop(ingest);
+    assert_eq!(
+        segment_rows_in_catalog(dir.path()),
+        (ids.len() as i64, seg_rows as i64),
+        "catalog rows match the published files"
+    );
+    let (_, stats) = Ingest::open(small(dir.path())).unwrap();
+    assert_eq!(stats.segments, ids.len());
+    assert_eq!(stats.runs as u64, mem_runs);
+    assert_eq!(stats.flushed_seq, h.flushed_seq);
+}

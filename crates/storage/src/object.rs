@@ -1,10 +1,16 @@
 //! Write-once object storage for data files: local disk or S3-compatible, chosen by URL (constitution V).
 
+use std::ops::Range;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures_util::TryStreamExt;
+use datafusion::parquet::arrow::arrow_reader::ArrowReaderOptions;
+use datafusion::parquet::arrow::async_reader::AsyncFileReader;
+use datafusion::parquet::errors::{ParquetError, Result as PqResult};
+use datafusion::parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
+use futures_util::future::BoxFuture;
+use futures_util::{FutureExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
@@ -97,6 +103,20 @@ impl Store {
         Ok(self.root.get(&self.full(rel)).await?.bytes().await?)
     }
 
+    /// Size in bytes; `NotFound` if `rel` doesn't exist.
+    pub async fn size(&self, rel: &str) -> Result<u64, StorageError> {
+        Ok(self.root.head(&self.full(rel)).await?.size)
+    }
+
+    /// A Parquet reader over `rel` that fetches only the byte ranges it reads.
+    pub fn parquet(&self, rel: &str, size: u64) -> Ranged {
+        Ranged {
+            store: self.root.clone(),
+            path: self.full(rel),
+            size,
+        }
+    }
+
     pub async fn delete(&self, rel: &str) -> Result<(), StorageError> {
         match self.root.delete(&self.full(rel)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
@@ -133,6 +153,40 @@ impl Store {
 
     pub fn describe(&self) -> String {
         format!("{}/{}", self.base.as_str().trim_end_matches('/'), self.prefix)
+    }
+}
+
+/// Ranged reads of one object, for Parquet's async reader.
+pub struct Ranged {
+    store: Arc<dyn ObjectStore>,
+    path: Path,
+    size: u64,
+}
+
+impl AsyncFileReader for Ranged {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, PqResult<Bytes>> {
+        async move {
+            self.store
+                .get_range(&self.path, range)
+                .await
+                .map_err(|e| ParquetError::External(Box::new(e)))
+        }
+        .boxed()
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, PqResult<Arc<ParquetMetaData>>> {
+        async move {
+            let size = self.size;
+            let meta = ParquetMetaDataReader::new()
+                .with_arrow_reader_options(options)
+                .load_and_finish(self, size)
+                .await?;
+            Ok(Arc::new(meta))
+        }
+        .boxed()
     }
 }
 

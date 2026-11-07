@@ -5,6 +5,7 @@
 pub mod budget;
 pub mod dedup;
 pub mod flush;
+pub mod flushed;
 pub mod hub;
 pub mod memtable;
 pub mod projects;
@@ -13,7 +14,7 @@ pub mod store;
 pub mod wal;
 mod writer;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
@@ -27,7 +28,7 @@ use tracedb_model::{
     Op, Reason, RunFields, RunHeader, RunId, RunState, RunView, Source, Status, TraceId, TraceView, Ts, merge_versions,
     validate,
 };
-use tracedb_storage::{Metastore, StorageError, Store};
+use tracedb_storage::{Metastore, SegmentMeta, StorageError, Store};
 
 pub use flush::FlushHealth;
 pub use memtable::{Mem, Version};
@@ -74,6 +75,8 @@ pub struct IngestConfig {
     pub hub_capacity: usize,
     /// Tests only: delay every flush by this much (after it has read the multi-version set).
     pub test_flush_delay: Option<Duration>,
+    /// Tests only: the first this many flush commits that land report an error, as if the reply were lost.
+    pub test_lost_commit_replies: u32,
 }
 
 impl IngestConfig {
@@ -87,6 +90,7 @@ impl IngestConfig {
             wal_roll_bytes: wal::DEFAULT_ROLL_BYTES,
             hub_capacity: hub::DEFAULT_CAPACITY,
             test_flush_delay: None,
+            test_lost_commit_replies: 0,
         }
     }
 
@@ -184,8 +188,21 @@ pub struct Health {
     pub flushed_seq: u64,
     pub flushes: u64,
     pub last_flush_at: Option<Ts>,
-    /// Registered segments found missing or unreadable at start; their runs are not served.
+    /// Registered segments found missing or unreadable, at start or while serving; their runs are not served.
+    pub damaged_segments: Vec<Damaged>,
+    /// The ids of `damaged_segments` (the M2 field).
     pub corrupt_segments: Vec<String>,
+}
+
+/// A registered segment that can't be served (M3-FR-18).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Damaged {
+    pub id: String,
+    /// `missing` or `unreadable`.
+    pub reason: String,
+    pub since: Ts,
+    #[serde(skip)]
+    pub segment: Arc<SegmentMeta>,
 }
 
 /// Test hook: `TRACEDB_TEST_CRASH_AT=<point>` aborts the process at that point of a flush.
@@ -400,7 +417,7 @@ struct Inner {
     flush_health: Arc<Mutex<FlushHealth>>,
     counters: Arc<Counters>,
     storage: Arc<Storage>,
-    corrupt: Vec<String>,
+    damaged: RwLock<BTreeMap<String, Damaged>>,
     /// Held for the life of the process: a second process on the same folder would delete our files as orphans.
     _lock: std::fs::File,
 }
@@ -457,8 +474,9 @@ impl Ingest {
             dedup,
             pending,
             mvset,
+            flushed,
             version,
-            corrupt,
+            damaged,
             stats: open_stats,
         } = recover::recover(&cfg, &storage)?;
         let flushed_seq = version.flushed_seq;
@@ -474,6 +492,7 @@ impl Ingest {
             version: Arc::new(version),
         }));
         let mvset = Arc::new(RwLock::new(mvset));
+        let flushed = Arc::new(Mutex::new(flushed));
         let unflushed = wal::unflushed_bytes(&cfg.data_dir.join("wal"), flushed_seq).unwrap_or(0);
         let counters = Arc::new(Counters {
             unflushed_wal: AtomicU64::new(unflushed),
@@ -488,6 +507,7 @@ impl Ingest {
         let flusher = flush::Flusher {
             mem: mem.clone(),
             mvset: mvset.clone(),
+            flushed: flushed.clone(),
             projects: projects.clone(),
             storage: storage.clone(),
             counters: counters.clone(),
@@ -495,6 +515,7 @@ impl Ingest {
             wal_dir: cfg.data_dir.join("wal"),
             dedup_window: Duration::from_micros(cfg.limits.dedup_window_us.max(0) as u64),
             test_delay: cfg.test_flush_delay,
+            lost_replies: std::sync::atomic::AtomicU32::new(cfg.test_lost_commit_replies),
             stop: stop.clone(),
         };
         let flusher_thread = std::thread::Builder::new()
@@ -508,6 +529,7 @@ impl Ingest {
             hub: hub.clone(),
             health: health.clone(),
             mvset: mvset.clone(),
+            flushed,
             projects: projects.clone(),
             counters: counters.clone(),
             limits: cfg.limits,
@@ -542,7 +564,7 @@ impl Ingest {
             flush_health,
             counters,
             storage,
-            corrupt,
+            damaged: RwLock::new(damaged.into_iter().map(|d| (d.id.clone(), d)).collect()),
             _lock: lock,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
@@ -622,6 +644,38 @@ impl Ingest {
         self.inner.storage.clone()
     }
 
+    /// Segments that can't be served, by id.
+    pub fn damaged(&self) -> Vec<Damaged> {
+        self.inner.damaged.read().unwrap().values().cloned().collect()
+    }
+
+    pub fn is_damaged(&self, id: &str) -> bool {
+        self.inner.damaged.read().unwrap().contains_key(id)
+    }
+
+    /// Records a segment found missing or unreadable while serving and stops serving it: later reads don't
+    /// see it, reads in flight skip it.
+    pub fn mark_damaged(&self, segment: &SegmentMeta, reason: &str) {
+        {
+            let mut d = self.inner.damaged.write().unwrap();
+            if d.contains_key(&segment.id) {
+                return;
+            }
+            tracing::error!(segment = %segment.id, reason, "a data file can't be read; its runs are not served");
+            d.insert(
+                segment.id.clone(),
+                Damaged {
+                    id: segment.id.clone(),
+                    reason: reason.to_string(),
+                    since: Ts::now(),
+                    segment: Arc::new(segment.clone()),
+                },
+            );
+        }
+        let mut mem = self.inner.mem.write().unwrap();
+        mem.version = Arc::new(mem.version.without(&segment.id));
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Change> {
         self.inner.hub.subscribe()
     }
@@ -629,9 +683,10 @@ impl Ingest {
     pub fn health(&self) -> Health {
         let error = self.inner.health.lock().unwrap().clone();
         let fh = self.inner.flush_health.lock().unwrap().clone();
+        let damaged = self.damaged();
         let mem = self.inner.mem.read().unwrap();
         Health {
-            ok: error.is_none() && fh.error.is_none() && self.inner.corrupt.is_empty(),
+            ok: error.is_none() && fh.error.is_none() && damaged.is_empty(),
             wal_ok: error.is_none(),
             flush_ok: fh.error.is_none(),
             error,
@@ -645,7 +700,8 @@ impl Ingest {
             flushed_seq: mem.version.flushed_seq,
             flushes: fh.flushes,
             last_flush_at: fh.last_flush_at,
-            corrupt_segments: self.inner.corrupt.clone(),
+            corrupt_segments: damaged.iter().map(|d| d.id.clone()).collect(),
+            damaged_segments: damaged,
         }
     }
 }

@@ -34,6 +34,17 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
 }
 
+impl StorageError {
+    /// A write-once name was already taken.
+    pub fn already_exists(&self) -> bool {
+        match self {
+            StorageError::Io(e) => e.kind() == std::io::ErrorKind::AlreadyExists,
+            StorageError::Object(object_store::Error::AlreadyExists { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
 impl From<sqlx::Error> for StorageError {
     fn from(e: sqlx::Error) -> StorageError {
         StorageError::Metastore(redact(&e.to_string()))

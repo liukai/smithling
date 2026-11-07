@@ -171,6 +171,26 @@ fn column_path(c: &str) -> Option<FPath> {
     }
 }
 
+/// `body` plus `skipped_files: [ids]` when damaged files in its scope weren't read (M3-FR-18). Not inside
+/// `warnings`: a run's `warnings` are its own.
+fn with_skipped(status: StatusCode, body: impl serde::Serialize, skipped: Vec<String>) -> Response {
+    let mut v = serde_json::to_value(body).expect("serializable");
+    if !skipped.is_empty()
+        && let Some(o) = v.as_object_mut()
+    {
+        o.insert("skipped_files".into(), json!(skipped));
+    }
+    (status, Json(v)).into_response()
+}
+
+fn not_found(message: &str, skipped: Vec<String>) -> Response {
+    with_skipped(
+        StatusCode::NOT_FOUND,
+        json!({"error": {"code": "not_found", "message": message}}),
+        skipped,
+    )
+}
+
 fn query_error(e: QueryError) -> Response {
     match e {
         QueryError::BadCursor => error(StatusCode::BAD_REQUEST, "bad_cursor", e.to_string()),
@@ -261,8 +281,8 @@ pub async fn trace(State(st): State<AppState>, Path(id): Path<String>) -> Respon
         return error(StatusCode::BAD_REQUEST, "bad_id", "trace id is not a UUID");
     };
     match st.query.trace(id).await {
-        Ok(Some(t)) => Json(t).into_response(),
-        Ok(None) => error(StatusCode::NOT_FOUND, "not_found", "no such trace"),
+        Ok(Some(t)) => with_skipped(StatusCode::OK, t, st.query.skipped_for_trace(id)),
+        Ok(None) => not_found("no such trace", st.query.skipped_for_trace(id)),
         Err(e) => query_error(e),
     }
 }
@@ -299,8 +319,17 @@ pub async fn run(State(st): State<AppState>, Path(id): Path<String>, Q(q): Q<Run
         }
     }
     match st.query.run(id, include).await {
-        Ok(Some(r)) => Json(r).into_response(),
-        Ok(None) => error(StatusCode::NOT_FOUND, "not_found", "no such run"),
+        Ok(Some(r)) => {
+            let skipped = st.query.skipped_for_trace(r.header.trace_id);
+            with_skipped(StatusCode::OK, r, skipped)
+        }
+        Ok(None) => not_found(
+            "no such run",
+            st.query.skipped(&tracedb_query::Scope {
+                run_id: Some(id),
+                ..Default::default()
+            }),
+        ),
         Err(e) => query_error(e),
     }
 }
@@ -328,7 +357,7 @@ impl FieldsQs {
 pub async fn fields(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Response {
     match q.scope() {
         Ok((project, time)) => match st.query.fields(project, time, &q.prefix).await {
-            Ok(f) => Json(f).into_response(),
+            Ok(f) => with_skipped(StatusCode::OK, f, st.query.skipped_in(project, time)),
             Err(e) => query_error(e),
         },
         Err(BadRequest(r)) => *r,
@@ -341,7 +370,7 @@ pub async fn field_values(State(st): State<AppState>, Q(q): Q<FieldsQs>) -> Resp
     };
     match q.scope() {
         Ok((project, time)) => match st.query.values(project, time, path, &q.prefix).await {
-            Ok(v) => Json(v).into_response(),
+            Ok(v) => with_skipped(StatusCode::OK, v, st.query.skipped_in(project, time)),
             Err(e) => query_error(e),
         },
         Err(BadRequest(r)) => *r,

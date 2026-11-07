@@ -199,3 +199,90 @@ async fn identity_conflicts_inside_one_batch_are_rejected() {
     assert_eq!(r.accepted, 1);
     assert_eq!(r.rejected[0].reason, Reason::IdentityConflict);
 }
+
+fn flushing(dir: &Path) -> IngestConfig {
+    let mut cfg = IngestConfig::new(dir);
+    cfg.limits = tracedb_ingest::Limits {
+        flush_age_us: 100_000,
+        dedup_window_us: 0,
+        ..tracedb_ingest::Limits::default()
+    };
+    cfg
+}
+
+async fn wait_all_flushed(ingest: &Ingest) {
+    let snap = ingest.snapshot();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let h = ingest.health();
+        if h.runs == 0 && h.flushed_seq == snap.last_seq() {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out: {h:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Deletes the saved dedup keys, so only the data files say which runs were flushed.
+fn forget_dedup_keys(dir: &Path) {
+    let url = format!("sqlite://{}", dir.join("meta.sqlite").display());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+            sqlx::query("DELETE FROM dedup_keys").execute(&pool).await.unwrap();
+            pool.close().await;
+        })
+    })
+    .join()
+    .unwrap();
+}
+
+fn again(i: u128) -> tracedb_ingest::Incoming {
+    let mut f = root(uuid(i), "2026-11-05T02:14:07Z", "r");
+    f.inputs = Some(serde_json::json!({"q": "second start"}));
+    post(f)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_start_for_a_flushed_run_joins_the_multi_version_set() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let (ingest, _) = Ingest::open(flushing(dir.path())).unwrap();
+        let first: Vec<_> = (1..=4)
+            .map(|i| post(root(uuid(i), "2026-11-05T02:14:07Z", "r")))
+            .collect();
+        assert_eq!(ingest.accept(first).await.unwrap().accepted, 4);
+        wait_all_flushed(&ingest).await;
+
+        assert_eq!(ingest.accept(vec![again(1)]).await.unwrap().accepted, 1);
+        // Only a new memtable state is added to the set.
+        assert!(ingest.multi_version().read().unwrap().contains(&uuid(1)));
+        assert!(!ingest.multi_version().read().unwrap().contains(&uuid(2)));
+        wait_all_flushed(&ingest).await;
+        // Left in the WAL for the restart: replay must mark it too.
+        let mut cfg = flushing(dir.path());
+        cfg.limits.flush_age_us = i64::MAX / 2;
+        drop(ingest);
+        let (ingest, _) = Ingest::open(cfg).unwrap();
+        assert_eq!(ingest.accept(vec![again(3)]).await.unwrap().accepted, 1);
+    }
+    forget_dedup_keys(dir.path());
+    let (ingest, stats) = Ingest::open(flushing(dir.path())).unwrap();
+    assert_eq!(stats.replayed_events, 1, "{stats:?}");
+    let mv = ingest.multi_version();
+    assert!(mv.read().unwrap().contains(&uuid(1)), "rebuilt from needs_merge rows");
+    assert!(
+        mv.read().unwrap().contains(&uuid(3)),
+        "a replayed second start hits the rebuilt filter"
+    );
+    assert_eq!(ingest.accept(vec![again(2)]).await.unwrap().accepted, 1);
+    assert!(
+        mv.read().unwrap().contains(&uuid(2)),
+        "a live second start hits the rebuilt filter"
+    );
+    assert!(!mv.read().unwrap().contains(&uuid(4)));
+}

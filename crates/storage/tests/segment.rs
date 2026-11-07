@@ -380,3 +380,38 @@ fn a_state_without_its_payload_is_never_rewritten() {
     );
     assert!(err.is_err(), "writing would silently drop the payload");
 }
+
+#[test]
+fn only_missing_or_undecodable_files_count_as_damaged() {
+    use datafusion::parquet::errors::ParquetError;
+    use tracedb_storage::StorageError;
+    use tracedb_storage::segment::damage;
+    let not_found = || object_store::Error::NotFound {
+        path: "a".into(),
+        source: "gone".into(),
+    };
+    let flaky = || object_store::Error::Generic {
+        store: "S3",
+        source: "503 Slow Down".into(),
+    };
+    assert_eq!(damage(&StorageError::Object(not_found())), Some("missing"));
+    assert_eq!(damage(&StorageError::Object(flaky())), None);
+    let pq = |e: ParquetError| StorageError::Parquet(e);
+    assert_eq!(
+        damage(&pq(ParquetError::General("bad footer".into()))),
+        Some("unreadable")
+    );
+    assert_eq!(
+        damage(&pq(ParquetError::External(Box::new(not_found())))),
+        Some("missing")
+    );
+    assert_eq!(
+        damage(&pq(ParquetError::External(Box::new(flaky())))),
+        None,
+        "a ranged read failing"
+    );
+    let io = std::io::Error::other("too many open files");
+    assert_eq!(damage(&pq(ParquetError::External(Box::new(io)))), None);
+    assert_eq!(damage(&StorageError::Format("no run_id".into())), Some("unreadable"));
+    assert_eq!(damage(&StorageError::Metastore("down".into())), None);
+}

@@ -17,6 +17,7 @@ use tracedb_model::{Op, RunEvent, RunFields, RunId, Ts, check_identity};
 
 use crate::dedup::{Dedup, DedupKey};
 use crate::flush::FlushJob;
+use crate::flushed::FlushedIds;
 use crate::hub::Hub;
 use crate::memtable::Mem;
 use crate::projects::Projects;
@@ -40,6 +41,8 @@ pub(crate) struct Shared {
     pub hub: Hub,
     pub health: Arc<Mutex<Option<String>>>,
     pub mvset: Arc<RwLock<HashSet<RunId>>>,
+    /// Run ids in data files; the flusher adds a job's runs before it clears the frozen memtable.
+    pub flushed: Arc<Mutex<FlushedIds>>,
     pub projects: Arc<RwLock<Projects>>,
     pub counters: Arc<Counters>,
     pub limits: Limits,
@@ -243,6 +246,7 @@ fn commit(
         // marked as multi-version.
         let mut mvset = sh.mvset.write().unwrap();
         let mut projects = sh.projects.write().unwrap();
+        let flushed = sh.flushed.lock().unwrap();
         for out in &mut outcomes {
             let Ok(result) = &mut out.result else { continue };
             for ev in &out.events {
@@ -252,10 +256,12 @@ fn commit(
                         if let Some(p) = &ev.fields.project {
                             projects.note(id, p);
                         }
-                        // A new state started by an update, or a run whose earlier part is frozen, has (or
-                        // may have) another version elsewhere: reads must merge it (design §4.3).
+                        // A new state started by an update, or for a run whose earlier part is frozen or in a
+                        // file, has (or may have) another version elsewhere: reads must merge it (design §4.3).
                         if change.created
-                            && (ev.op == Op::Patch || mem.frozen.as_ref().is_some_and(|f| f.contains(&id)))
+                            && (ev.op == Op::Patch
+                                || mem.frozen.as_ref().is_some_and(|f| f.contains(&id))
+                                || flushed.contains(&id))
                         {
                             mvset.insert(id);
                             change.elsewhere = true;

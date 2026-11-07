@@ -140,7 +140,17 @@ async fn metastore_contract(url: &str) {
         .await
         .unwrap();
 
-    // All or nothing: a duplicate segment id rolls back the stats, dedup keys and flushed_seq too.
+    // A retried flush whose first commit landed (its reply was lost) is "already committed": Ok, no change.
+    m.commit_flush(std::slice::from_ref(&s1), &f1, 42, &keys(42, 9_999), 0)
+        .await
+        .unwrap();
+    assert_eq!(m.flushed_seq().await.unwrap(), 42);
+    assert_eq!(m.active_segments().await.unwrap(), vec![s1.clone()]);
+    assert_eq!(m.field_stats().await.unwrap(), f1);
+    assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(42, 1_000)]);
+
+    // All or nothing: a flush that shares only some segment ids with a committed one is refused and rolls back
+    // the stats, dedup keys and flushed_seq too.
     let (s2, f2) = segment(2, 99);
     assert!(
         m.commit_flush(

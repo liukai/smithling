@@ -216,16 +216,149 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
     }
 }
 
-/// Reads core rows from `files` matching `filter`.
+/// Whether a read error says a file is missing or unreadable (not a network hiccup or a bug), and which.
+fn damage_of(e: &QueryError) -> Option<&'static str> {
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::error::DataFusionError as D;
+    use tracedb_storage::segment::{boxed_damage, damage, parquet_damage, store_damage};
+    fn external(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<&'static str> {
+        match e.downcast_ref::<D>() {
+            Some(e) => engine(e),
+            None => boxed_damage(e),
+        }
+    }
+    fn engine(e: &D) -> Option<&'static str> {
+        match e.find_root() {
+            D::ObjectStore(e) => store_damage(e),
+            D::ParquetError(e) => parquet_damage(e),
+            D::ArrowError(e, _) => match &**e {
+                ArrowError::ExternalError(inner) => external(&**inner),
+                ArrowError::IoError(..) => None,
+                _ => Some("unreadable"),
+            },
+            D::External(inner) => external(&**inner),
+            _ => None,
+        }
+    }
+    match e {
+        QueryError::Storage(e) => damage(e),
+        QueryError::Engine(e) => engine(e),
+        QueryError::BadCursor => None,
+    }
+}
+
+/// After `e` from reading only `seg`: marks it damaged if its footers or `e` say it is. True if marked.
+async fn damaged_alone(ingest: &Ingest, seg: &SegmentMeta, e: &QueryError) -> bool {
+    if !probe(ingest, &[seg]).await.is_empty() {
+        return true;
+    }
+    let Some(reason) = damage_of(e) else {
+        return false;
+    };
+    ingest.mark_damaged(seg, reason);
+    true
+}
+
+/// After a failed read: checks each file's footers, marks the missing or unreadable ones damaged (so later
+/// reads skip them) and returns their ids. Empty if every footer looks fine.
+async fn probe(ingest: &Ingest, files: &[&SegmentMeta]) -> HashSet<String> {
+    use futures_util::StreamExt;
+    let checks: Vec<_> = files
+        .iter()
+        .map(|s| {
+            let (store, seg) = (ingest.storage().store.clone(), (*s).clone());
+            async move {
+                let r = tracedb_storage::segment::check(&store, &seg).await;
+                (seg, r)
+            }
+        })
+        .collect();
+    let results: Vec<_> = futures_util::stream::iter(checks)
+        .buffer_unordered(LOOKUP_FILES)
+        .collect()
+        .await;
+    let mut bad = HashSet::new();
+    for (s, r) in results {
+        if let Some(reason) = r.err().as_ref().and_then(tracedb_storage::segment::damage) {
+            ingest.mark_damaged(&s, reason);
+            bad.insert(s.id);
+        }
+    }
+    bad
+}
+
+/// Reads core rows from `files` matching `filter`. Files known to be damaged are skipped; a read that fails
+/// because of one marks it (found by its footers, else by reading each file alone) and is retried without
+/// it (M3-FR-18).
 pub(crate) async fn read_core(
     ctx: &SessionContext,
     ingest: &Ingest,
     files: &[&SegmentMeta],
     filter: Option<DfExpr>,
 ) -> Result<Vec<StoredRow>, QueryError> {
-    if files.is_empty() {
-        return Ok(vec![]);
+    let mut files: Vec<&SegmentMeta> = files.iter().copied().filter(|s| !ingest.is_damaged(&s.id)).collect();
+    loop {
+        if files.is_empty() {
+            return Ok(vec![]);
+        }
+        match read_core_from(ctx, ingest, &files, filter.clone()).await {
+            Ok(rows) => return Ok(rows),
+            Err(e) => {
+                let mut bad = probe(ingest, &files).await;
+                // Damage past the footers: only a decoding error is worth reading each file alone for.
+                if bad.is_empty() && damage_of(&e).is_some() {
+                    bad = read_each(ctx, ingest, &files, &filter).await;
+                }
+                if bad.is_empty() {
+                    return Err(e);
+                }
+                files.retain(|s| !bad.contains(&s.id));
+            }
+        }
     }
+}
+
+/// Reads each file alone; marks those whose read fails as damaged and returns their ids.
+async fn read_each(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    files: &[&SegmentMeta],
+    filter: &Option<DfExpr>,
+) -> HashSet<String> {
+    use futures_util::StreamExt;
+    async fn read_one<'a>(
+        ctx: &SessionContext,
+        ingest: &Ingest,
+        seg: &'a SegmentMeta,
+        filter: Option<DfExpr>,
+    ) -> (&'a SegmentMeta, Option<QueryError>) {
+        (seg, read_core_from(ctx, ingest, &[seg], filter).await.err())
+    }
+    let reads: Vec<_> = files
+        .iter()
+        .map(|seg| read_one(ctx, ingest, seg, filter.clone()))
+        .collect();
+    let failed: Vec<_> = futures_util::stream::iter(reads)
+        .buffer_unordered(LOOKUP_FILES)
+        .collect()
+        .await;
+    let mut bad = HashSet::new();
+    for (seg, e) in failed {
+        if let Some(e) = e
+            && damaged_alone(ingest, seg, &e).await
+        {
+            bad.insert(seg.id.clone());
+        }
+    }
+    bad
+}
+
+async fn read_core_from(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    files: &[&SegmentMeta],
+    filter: Option<DfExpr>,
+) -> Result<Vec<StoredRow>, QueryError> {
     let store = &ingest.storage().store;
     let urls: Vec<String> = files.iter().map(|s| store.url(&s.core_path)).collect();
     let mut df = ctx.read_parquet(urls, ParquetReadOptions::default()).await?;
@@ -358,8 +491,23 @@ async fn read_tagged<'a>(
     Ok(rows.into_iter().map(|r| (seg, r)).collect())
 }
 
-/// The run ids of one file's rows matching `filter` (reads only the columns it needs).
+/// The run ids of one file's rows matching `filter` (reads only the columns it needs); none if it's damaged.
 async fn read_ids(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    seg: &SegmentMeta,
+    filter: Option<DfExpr>,
+) -> Result<Vec<RunId>, QueryError> {
+    if ingest.is_damaged(&seg.id) {
+        return Ok(vec![]);
+    }
+    match read_ids_from(ctx, ingest, seg, filter).await {
+        Err(e) if damaged_alone(ingest, seg, &e).await => Ok(vec![]),
+        r => r,
+    }
+}
+
+async fn read_ids_from(
     ctx: &SessionContext,
     ingest: &Ingest,
     seg: &SegmentMeta,
@@ -558,18 +706,25 @@ pub async fn payload(ctx: &SessionContext, ingest: &Ingest, run: RunId, scope: &
         let Some(row) = core.into_iter().next() else {
             return Ok::<_, QueryError>(None);
         };
-        let store = &ingest.storage().store;
-        let df = ctx
-            .read_parquet(store.url(&seg.payload_path), ParquetReadOptions::default())
-            .await?
-            .filter(col("run_id").eq(id_lit(run)))?;
-        let mut p = Payload::default();
-        for b in df.collect().await? {
-            if let Some((_, got)) = decode_payload(&b)?.into_iter().next() {
-                p = got;
+        let read = async {
+            let store = &ingest.storage().store;
+            let df = ctx
+                .read_parquet(store.url(&seg.payload_path), ParquetReadOptions::default())
+                .await?
+                .filter(col("run_id").eq(id_lit(run)))?;
+            let mut p = Payload::default();
+            for b in df.collect().await? {
+                if let Some((_, got)) = decode_payload(&b)?.into_iter().next() {
+                    p = got;
+                }
             }
+            Ok::<_, QueryError>(p)
+        };
+        match read.await {
+            Ok(p) => Ok(Some((row.state.first_seq, row.state.present, p))),
+            Err(e) if damaged_alone(ingest, seg, &e).await => Ok(None),
+            Err(e) => Err(e),
         }
-        Ok(Some((row.state.first_seq, row.state.present, p)))
     });
     for r in futures_util::future::join_all(reads).await {
         if let Some(v) = r? {

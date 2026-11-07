@@ -1,7 +1,8 @@
 //! `tracedb seed`: realistic research-agent traces, sent through `/runs/batch` like an agent would.
 //!
 //! Shapes (spec Story 4): depth 3–8, 20–300 steps per trace, ~5% errors, ~10% of steps finishing
-//! 30–120 s late, payloads 1–50 KB. Deterministic for a given `--seed`.
+//! 30–120 s late, payloads 1–50 KB. Shapes are deterministic for a given `--seed`; ids also depend on the
+//! base time, so seeding the same seed again (at another time) makes new runs rather than conflicting ones.
 
 use std::time::Duration;
 
@@ -77,19 +78,39 @@ struct Node {
     dur_us: i64,
 }
 
-/// Generates `n` traces starting around `base_us` (µs since epoch).
+/// Between trace starts, µs.
+const SPACING_US: i64 = 7_000_000;
+
+/// Generates `n` traces, the first starting at `base_us` (µs since epoch), one every 7 s.
 pub fn generate(seed: u64, n: usize, base_us: i64) -> Vec<GenTrace> {
     let mut rng = Rng::new(seed);
+    let mut ids = Rng::new(seed ^ Rng::new(base_us as u64).next_u64());
     (0..n)
-        .map(|i| gen_trace(&mut rng, base_us + i as i64 * 7_000_000))
+        .map(|i| gen_trace(&mut rng, &mut ids, base_us + i as i64 * SPACING_US))
         .collect()
 }
 
-fn gen_trace(rng: &mut Rng, start_us: i64) -> GenTrace {
+/// [`generate`] with every run started and finished by `now_us`: base = now − n·7 s − the longest trace
+/// (late updates included). Shapes don't depend on the base, so they are measured first.
+pub fn generate_before(seed: u64, n: usize, now_us: i64) -> Vec<GenTrace> {
+    let longest = generate(seed, n, 0)
+        .iter()
+        .enumerate()
+        .flat_map(|(i, t)| t.steps.iter().map(move |s| (i, s)))
+        .filter_map(|(i, s)| {
+            let end = s.late_patch.as_ref().map_or(&s.post, |(_, p)| p)["end_time"].as_str()?;
+            Some(tracedb_model::Ts::parse(end)?.0 - i as i64 * SPACING_US)
+        })
+        .max()
+        .unwrap_or(0);
+    generate(seed, n, now_us - n as i64 * SPACING_US - longest)
+}
+
+fn gen_trace(rng: &mut Rng, ids: &mut Rng, start_us: i64) -> GenTrace {
     let max_depth = rng.range(3, 8) as u16;
     let total = rng.range(20, 300) as usize;
     let mut nodes = vec![Node {
-        id: rng.uuid(),
+        id: ids.uuid(),
         parent: None,
         depth: 0,
         name: "research_task".into(),
@@ -100,7 +121,7 @@ fn gen_trace(rng: &mut Rng, start_us: i64) -> GenTrace {
     // A spine that reaches the full depth, then random branches within it.
     for d in 1..max_depth {
         let parent = nodes.len() - 1;
-        nodes.push(new_node(rng, parent, d, d + 1 == max_depth));
+        nodes.push(new_node(rng, ids, parent, d, d + 1 == max_depth));
     }
     while nodes.len() < total {
         let parent = loop {
@@ -111,7 +132,7 @@ fn gen_trace(rng: &mut Rng, start_us: i64) -> GenTrace {
         };
         let depth = nodes[parent].depth + 1;
         let leaf = depth + 1 == max_depth || rng.chance(0.6);
-        nodes.push(new_node(rng, parent, depth, leaf));
+        nodes.push(new_node(rng, ids, parent, depth, leaf));
     }
     // Children start after their parent, one after another.
     let mut next_child = vec![0i64; nodes.len()];
@@ -182,7 +203,7 @@ fn gen_trace(rng: &mut Rng, start_us: i64) -> GenTrace {
     }
 }
 
-fn new_node(rng: &mut Rng, parent: usize, depth: u16, leaf: bool) -> Node {
+fn new_node(rng: &mut Rng, ids: &mut Rng, parent: usize, depth: u16, leaf: bool) -> Node {
     let (name, run_type) = if leaf {
         if rng.chance(0.4) {
             ("llm".to_string(), "llm")
@@ -197,7 +218,7 @@ fn new_node(rng: &mut Rng, parent: usize, depth: u16, leaf: bool) -> Node {
         )
     };
     Node {
-        id: rng.uuid(),
+        id: ids.uuid(),
         parent: Some(parent),
         depth,
         name,

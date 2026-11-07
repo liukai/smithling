@@ -3,8 +3,8 @@
 //! runs in the multi-version set are taken out of both and counted once, merged (D-023).
 //!
 //! Counts are approximate where: a file counts whole when its time range overlaps the scope; a file cut a
-//! path's values off at its top 50; a run became multi-version during the request; or a run got a second
-//! start after its first was flushed (not in the multi-version set, D-016); or a file stopped at 10,000 paths.
+//! path's values off at its top 50; a run became multi-version during the request; a file found damaged while
+//! serving still counts in the merged runs read from it before; or a file stopped at 10,000 paths.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;

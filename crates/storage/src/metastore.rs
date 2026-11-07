@@ -236,6 +236,9 @@ impl Metastore {
 
     /// Registers a flush, all or nothing: its segments and field stats, its dedup keys, and the new
     /// `flushed_seq`. Older key sets whose newest key is before `forget_before` (µs) are deleted.
+    ///
+    /// Segment ids are minted once per flush job, so a retry whose earlier commit landed (a lost reply) finds
+    /// them all registered: that is "already committed", `Ok` with no change.
     pub async fn commit_flush(
         &self,
         segments: &[SegmentMeta],
@@ -245,6 +248,28 @@ impl Metastore {
         forget_before: i64,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
+        let mut existing = 0;
+        for s in segments {
+            existing += sqlx::query(self.sql("SELECT 1 FROM segments WHERE id = ?"))
+                .bind(&s.id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some() as usize;
+        }
+        if existing > 0 {
+            let have = sqlx::query("SELECT flushed_seq FROM state WHERE id = 1")
+                .fetch_one(&mut *tx)
+                .await?
+                .get::<i64, _>(0) as u64;
+            tx.rollback().await?;
+            if existing == segments.len() && have >= flushed_seq {
+                return Ok(());
+            }
+            return Err(StorageError::Metastore(format!(
+                "{existing} of {} segments are already registered (flushed_seq {have}, this flush {flushed_seq})",
+                segments.len()
+            )));
+        }
         let ins_seg = self.sql(
             "INSERT INTO segments (id, project, core_path, payload_path, min_start_key, max_start_key,
                  min_trace_id, max_trace_id, min_seq, max_seq, row_count, needs_merge_rows, core_bytes,
