@@ -35,7 +35,7 @@ fixtures in `tests/fixtures/`; CI in `.github/workflows/ci.yml` and `ci/cloud.ym
 
 - [X] T001 Add workspace dependencies in root `Cargo.toml`: `datafusion = { version = "55.2", default-features = false, features = ["parquet", "nested_expressions", "datetime_expressions"] }`, `sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate"] }`, `ulid = "3"`, `moka = { version = "0.12", features = ["sync"] }`; take `arrow`, `parquet` and `object_store` (must resolve to 0.13.x, backlog R-4) through DataFusion's re-exports, not as separate versions; verify with `cargo tree -d` that there is one arrow version
 - [X] T002 [P] Create `crates/storage/` (`Cargo.toml`, `src/lib.rs` with empty modules `object`, `metastore`, `segment`, `cache`, `version`) and add it to the workspace members
-- [ ] T003 [P] Add `ci/cloud.yml` (docker compose: MinIO with a `tracedb` bucket, Postgres 17 with database `tracedb`; credentials from environment variables, never echoed)
+- [X] T003 [P] *(MinIO + one-shot `bucket` service, Postgres 17; keys from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `PGPASSWORD`, which tracedb reads too; parsed, not run here: no Docker)* Add `ci/cloud.yml` (docker compose: MinIO with a `tracedb` bucket, Postgres 17 with database `tracedb`; credentials from environment variables, never echoed)
 
 **Checkpoint**: `cargo build` succeeds with the new dependencies; `cargo tree -d` shows no duplicate arrow/parquet.
 
@@ -214,8 +214,8 @@ status → three chips; results match (spec Story 2).
 
 **Independent test**: demo checks and crash test on MinIO + Postgres give the same numbers (spec Story 6).
 
-- [ ] T068 [US6] Run the storage trait tests (T007) against S3 (MinIO) and Postgres when `TRACEDB_TEST_S3_URL` / `TRACEDB_TEST_PG_URL` are set, in `crates/storage/tests/traits.rs`
-- [ ] T069 [US6] Cloud CI job in `.github/workflows/ci.yml`: start `ci/cloud.yml`, run storage trait tests, `tracedb demo --storage s3://tracedb/ci --metastore postgres://…`, and the crash harness with the same flags; compare the demo table with the local job's
+- [X] T068 [US6] *(object and catalog contract incl. `dedup_keys` with every byte value (BYTEA); fresh S3 prefix / Postgres database per run; skip with a note when unset, fail when `TRACEDB_TEST_REQUIRE_CLOUD` is set; local + SQLite pass, S3/Postgres compiled but unrun)* Run the storage trait tests (T007) against S3 (MinIO) and Postgres when `TRACEDB_TEST_S3_URL` / `TRACEDB_TEST_PG_URL` are set, in `crates/storage/tests/traits.rs`
+- [X] T069 [US6] *(job `cloud`; random masked credentials per run; demo rows compared with a local demo run in the same job (header and ms stripped); crash harness gets a per-round prefix and database from the same env; unrun: no remote CI)* Cloud CI job in `.github/workflows/ci.yml`: start `ci/cloud.yml`, run storage trait tests, `tracedb demo --storage s3://tracedb/ci --metastore postgres://…`, and the crash harness with the same flags; compare the demo table with the local job's
 - [X] T070 [US6] *(startup logs `storage_summary` in `lib.rs::serve`: URL passwords and every `AWS_*` value as `***`; the startup error is redacted too; `tracedb_storage::redact` now also hides passwords containing `/`; the test runs `serve` against an unresolvable postgres URL with `RUST_LOG=debug`)* Ensure credentials never reach logs: redact `postgres://user:pass@` and `AWS_*` values in `crates/tracedb/src/main.rs` startup logging; test in `crates/tracedb/tests/redact.rs`
 
 **Checkpoint**: cloud CI job green with the same demo numbers (SC-08).

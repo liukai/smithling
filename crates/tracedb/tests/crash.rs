@@ -32,7 +32,40 @@ fn end_item(n: u64) -> Value {
            "end_time": "2026-11-05T02:05:00.000000", "outputs": {"n": n}})
 }
 
-fn spawn(data: &std::path::Path, crash_at: Option<&str>) -> (Child, String) {
+/// With `TRACEDB_TEST_S3_URL` and `TRACEDB_TEST_PG_URL` set (CI's cloud job), each round gets its own S3 prefix
+/// and Postgres database; otherwise the defaults (files and SQLite in the data folder).
+async fn storage_flags(round: u64) -> Vec<String> {
+    let (Ok(s3), Ok(pg)) = (
+        std::env::var("TRACEDB_TEST_S3_URL"),
+        std::env::var("TRACEDB_TEST_PG_URL"),
+    ) else {
+        assert!(
+            std::env::var_os("TRACEDB_TEST_REQUIRE_CLOUD").is_none(),
+            "TRACEDB_TEST_REQUIRE_CLOUD is set but TRACEDB_TEST_S3_URL / TRACEDB_TEST_PG_URL aren't"
+        );
+        return Vec::new();
+    };
+    use sqlx::Connection;
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let name = format!("tracedb_crash_{nanos}_r{round}");
+    let mut conn = sqlx::PgConnection::connect(&pg)
+        .await
+        .expect("connect to TRACEDB_TEST_PG_URL");
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let mut metastore = url::Url::parse(&pg).expect("a postgres:// URL");
+    metastore.set_path(&name);
+    vec![
+        "--storage".into(),
+        format!("{}/{name}", s3.trim_end_matches('/')),
+        "--metastore".into(),
+        metastore.to_string(),
+    ]
+}
+
+fn spawn(data: &std::path::Path, storage: &[String], crash_at: Option<&str>) -> (Child, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));
     // Small WAL files, so flushes have whole files to trim; retries are re-sent right after the restart, well
     // inside the dedup window (rebuilt from the catalog's saved keys).
@@ -46,12 +79,19 @@ fn spawn(data: &std::path::Path, crash_at: Option<&str>) -> (Child, String) {
         "256KB",
     ])
     .args(["--dedup-window", "20s"])
+    .args(storage)
     .env("TRACEDB_TEST_WAL_ROLL", "65536");
     match crash_at {
         Some(p) => cmd.env("TRACEDB_TEST_CRASH_AT", p),
         None => cmd.env_remove("TRACEDB_TEST_CRASH_AT"),
     };
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    // On cloud storage, show the server's errors (a bad endpoint or password otherwise looks like a hang).
+    let stderr = if storage.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::inherit()
+    };
+    let mut child = cmd.stdout(Stdio::piped()).stderr(stderr).spawn().unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -149,7 +189,8 @@ async fn kill_9_loses_nothing_confirmed() {
             _ => None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let (mut child, url) = spawn(dir.path(), crash_at);
+        let storage = storage_flags(round).await;
+        let (mut child, url) = spawn(dir.path(), &storage, crash_at);
         let log = Arc::new(Mutex::new(Log::default()));
         let clients: Vec<_> = (0..4u64)
             .map(|c| tokio::spawn(client(url.clone(), c * 1_000_000 + 1, log.clone())))
@@ -184,7 +225,7 @@ async fn kill_9_loses_nothing_confirmed() {
             c.await.unwrap();
         }
 
-        let (mut child, url) = spawn(dir.path(), None);
+        let (mut child, url) = spawn(dir.path(), &storage, None);
         let log = Arc::try_unwrap(log).ok().unwrap().into_inner().unwrap();
         let http = reqwest::Client::new();
         for body in &log.unanswered {
@@ -234,7 +275,8 @@ async fn kill_9_loses_nothing_confirmed() {
             runs.len()
         );
         eprintln!(
-            "round {round}: {}; {} starts + {} ends confirmed, {} batches re-sent, {} segments; all present",
+            "round {round}{}: {}; {} starts + {} ends confirmed, {} batches re-sent, {} segments; all present",
+            storage.get(1).map_or(String::new(), |s| format!(" on {s}")),
             crash_at.map_or(format!("killed at {wait} ms"), |p| format!("crashed {p}")),
             log.confirmed_start.len(),
             log.confirmed_end.len(),

@@ -69,3 +69,54 @@ jobs:
           curl -sf localhost:7171/healthz
           curl -sf localhost:7171/ | grep -q '<div id="root">'
           docker rm -f tdb
+
+  # Same checks on S3 (MinIO) and Postgres in local containers (M2 SC-08). Credentials are random per run and masked.
+  cloud:
+    needs: ui
+    runs-on: ubuntu-latest
+    env:
+      AWS_ENDPOINT: http://127.0.0.1:9000
+      AWS_REGION: us-east-1
+      TRACEDB_TEST_S3_URL: s3://tracedb/test
+      TRACEDB_TEST_PG_URL: postgres://tracedb@127.0.0.1:5432/tracedb
+      TRACEDB_TEST_REQUIRE_CLOUD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+      - name: throwaway credentials
+        run: |
+          for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY PGPASSWORD; do
+            s=$(openssl rand -hex 20)
+            echo "::add-mask::$s"
+            echo "$v=$s" >> "$GITHUB_ENV"
+          done
+      - name: start MinIO and Postgres
+        run: |
+          docker compose -f ci/cloud.yml up -d --wait minio postgres
+          docker compose -f ci/cloud.yml run --rm bucket
+      - name: storage trait tests (S3, Postgres)
+        shell: bash
+        run: |
+        run: cargo test -p tracedb-storage --test traits
+      - name: demo checks (local storage, then S3 + Postgres)
+        shell: bash
+        run: |
+          cargo run --release -p tracedb -- demo --seed 7 | tee demo-local.txt
+          cargo run --release -p tracedb -- demo --seed 7 --storage s3://tracedb/ci --metastore "$TRACEDB_TEST_PG_URL" | tee demo-cloud.txt
+      - name: same demo table as local storage
+        shell: bash
+        run: |
+          table() { grep -v '^tracedb demo' "$1" | sed -E 's/ +[0-9]+ ms$//'; }
+          diff <(table demo-local.txt) <(table demo-cloud.txt)
+      - name: crash harness (S3 + Postgres)
+        run: cargo test --release -p tracedb --test crash -- --ignored --nocapture
+      - name: container logs
+        if: failure()
+        run: docker compose -f ci/cloud.yml logs --no-color minio postgres

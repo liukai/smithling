@@ -1,0 +1,50 @@
+# Cloud-style storage on local containers (M2 SC-08): MinIO with a `tracedb` bucket, Postgres 17 with a `tracedb`
+# database. Credentials come from the environment and are never written here:
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  MinIO root user (tracedb reads the same variables)
+#   PGPASSWORD                                 password of the `tracedb` Postgres user (tracedb reads it too)
+# Usage: docker compose -f ci/cloud.yml up -d --wait minio postgres && docker compose -f ci/cloud.yml run --rm bucket
+name: tracedb-cloud
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}
+    ports:
+      - 127.0.0.1:9000:9000
+    healthcheck:
+      test: [CMD, mc, ready, local]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: creates the bucket once MinIO is up. The keys reach it as environment, not command-line arguments.
+  bucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_ACCESS_KEY: ${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}
+      MC_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mc alias set local http://minio:9000 "$$MC_ACCESS_KEY" "$$MC_SECRET_KEY" >/dev/null && mc mb --ignore-existing local/tracedb
+    restart: "no"
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: tracedb
+      POSTGRES_DB: tracedb
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD}
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, tracedb, -d, tracedb]
+      interval: 2s
+      timeout: 5s
+      retries: 30

@@ -43,3 +43,5 @@ tempfile.workspace = true
 [dev-dependencies]
 datafusion.workspace = true
 futures-util.workspace = true
+sqlx.workspace = true
+url.workspace = true
