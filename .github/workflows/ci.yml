@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 env:
@@ -103,7 +103,6 @@ jobs:
           docker compose -f ci/cloud.yml run --rm bucket
       - name: storage trait tests (S3, Postgres)
         shell: bash
-        run: |
         run: cargo test -p tracedb-storage --test traits
       - name: demo checks (local storage, then S3 + Postgres)
         shell: bash
