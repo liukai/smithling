@@ -9,6 +9,7 @@ pub mod cursor;
 pub mod fields;
 pub mod pushdown;
 pub mod scan;
+mod search;
 pub mod tail;
 pub mod window;
 
@@ -18,9 +19,11 @@ use std::time::Instant;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use serde::Serialize;
 use tracedb_ingest::{Include, Ingest};
-use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, TimeAt, eval};
+use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, TimeAt, contains_search, eval};
+use tracedb_model::text::{Match, Text};
 use tracedb_model::{RunHeader, RunId, RunView, Status, TraceId, TraceView, Ts};
 use tracedb_storage::StorageError;
+use tracedb_storage::fts::Fts;
 use tracedb_storage::segment::start_key;
 use xxhash_rust::xxh64::xxh64;
 
@@ -80,6 +83,9 @@ pub struct QuerySpec {
     /// Count every match in `stats.matched`. Otherwise a list by start time stops reading once the page is
     /// full, and `matched` counts only the runs read.
     pub count: bool,
+    /// Only these runs: set for an aggregate whose filter searches text, to the runs it matched (`filter` is
+    /// then cleared).
+    pub runs: Option<std::sync::Arc<HashSet<RunId>>>,
 }
 
 impl QuerySpec {
@@ -112,6 +118,9 @@ pub struct RunRow {
     pub header: RunHeader,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub columns: BTreeMap<String, serde_json::Value>,
+    /// Where the filter's search matched (page rows of a query with a `search` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<Match>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -132,6 +141,11 @@ pub enum QueryWarning {
     SkippedFiles {
         ids: Vec<String>,
     },
+    /// Files in scope a search read whole because they have no text index (M2 files until backfilled).
+    #[serde(rename = "not_indexed")]
+    NotIndexedFiles {
+        files: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -144,6 +158,16 @@ pub struct PageStats {
     pub files_version_lookup: usize,
     /// Rows that search read (in `rows_read`).
     pub merge_rows: usize,
+    /// Files a text search narrowed with their index.
+    pub index_files: usize,
+    /// Files a text search read whole (no index, or only very common words).
+    pub scan_files: usize,
+    /// Runs checked against their merged text.
+    pub candidates: usize,
+    /// Payload rows read for that check.
+    pub payload_rows: usize,
+    /// Files whose index footer was already in memory.
+    pub cache_hits: usize,
     pub matched: usize,
     /// Every run in scope was read, so `matched` is the total.
     pub complete: bool,
@@ -171,6 +195,9 @@ pub struct Query {
     first_window: usize,
     version_rows: std::sync::Arc<tokio::sync::Mutex<fields::VersionRows>>,
     value_cap: usize,
+    fts: std::sync::Arc<Fts>,
+    /// Search through the text index (tests turn it off to compare with reading every file).
+    index: bool,
 }
 
 fn order_key(m: &Merged, order: OrderBy) -> Key {
@@ -193,12 +220,20 @@ impl Query {
         let ctx = SessionContext::new_with_config(cfg);
         ingest.storage().store.register(&ctx);
         Query {
+            fts: std::sync::Arc::new(Fts::new(ingest.storage().store.clone())),
+            index: true,
             ingest,
             ctx,
             first_window: window::FIRST_WINDOW_ROWS,
             version_rows: Default::default(),
             value_cap: aggregate::accum::VALUE_CAP,
         }
+    }
+
+    /// Searches by reading every file's text, never its index.
+    pub fn without_text_index(mut self) -> Query {
+        self.index = false;
+        self
     }
 
     /// Estimated rows in the first start-time window (tests use small ones to cross many windows).
@@ -220,6 +255,7 @@ impl Query {
                 .traces
                 .as_ref()
                 .map(|t| std::sync::Arc::new(t.iter().copied().collect())),
+            runs: q.runs.clone(),
             ..Scope::default()
         }
     }
@@ -246,33 +282,129 @@ impl Query {
             });
         }
         let runs = scan::collect_pinned(&self.ctx, &self.ingest, pinned, scope, pushed, stats).await?;
-        Ok(runs
-            .into_iter()
-            .filter(|m| scope.project.as_ref().is_none_or(|p| m.state.run.project == *p))
-            .filter(|m| is_root.is_none_or(|r| m.state.run.is_root == r))
-            .filter(|m| {
-                filter.is_none_or(|f| {
-                    eval(
-                        f,
-                        &Row {
-                            run: &m.state.run,
-                            attrs: &m.attrs,
-                        },
-                        now,
-                        eval_stats,
-                    )
-                })
+        let kept = |m: &Merged| {
+            scope.project.as_ref().is_none_or(|p| m.state.run.project == *p)
+                && is_root.is_none_or(|r| m.state.run.is_root == r)
+        };
+        let ok = |m: &Merged, f: Option<&Expr>, eval_stats: &mut EvalStats| {
+            f.is_none_or(|f| {
+                eval(
+                    f,
+                    &Row {
+                        run: &m.state.run,
+                        attrs: &m.attrs,
+                    },
+                    now,
+                    eval_stats,
+                )
             })
-            .collect())
+        };
+        let Some(f) = filter.filter(|f| contains_search(f)) else {
+            return Ok(runs
+                .into_iter()
+                .filter(|m| kept(m) && ok(m, filter, eval_stats))
+                .collect());
+        };
+        // Without the index: the other conditions first, then the text of the runs left.
+        let pre = search::before_text(f);
+        let ids: HashSet<RunId> = runs
+            .iter()
+            .filter(|m| kept(m) && ok(m, pre.as_ref(), eval_stats))
+            .map(|m| m.state.run.run_id)
+            .collect();
+        stats.candidates += ids.len();
+        stats.scan_files = stats.scan_files.max(stats.files_scanned);
+        let inner = scope.narrowed();
+        let need = search::Need::of(f);
+        Ok(
+            search::collect_text(self, pinned, scope, &ids, None, need, &mut |_| true, stats)
+                .await?
+                .into_iter()
+                .filter(|m| inner.matches_key(start_key(&m.state.run.dotted_order)))
+                .filter(|m| kept(m) && ok(m, Some(f), eval_stats))
+                .collect(),
+        )
+    }
+
+    /// The runs `ids` that match `filter` and `scope`, merged with their text (`held`: see
+    /// [`search::collect_text`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn matching_ids(
+        &self,
+        pinned: &scan::Pinned,
+        scope: &Scope,
+        ids: &HashSet<RunId>,
+        held: Option<&HashSet<usize>>,
+        filter: &Expr,
+        is_root: Option<bool>,
+        now: Ts,
+        stats: &mut ScanStats,
+        eval_stats: &mut EvalStats,
+    ) -> Result<Vec<Merged>, QueryError> {
+        stats.candidates += ids.len();
+        let pre = search::before_text(filter);
+        let ok = |m: &Merged, f: &Expr, eval_stats: &mut EvalStats| {
+            eval(
+                f,
+                &Row {
+                    run: &m.state.run,
+                    attrs: &m.attrs,
+                },
+                now,
+                eval_stats,
+            )
+        };
+        let mut keep = |m: &Merged| {
+            scope.matches_key(start_key(&m.state.run.dotted_order))
+                && scope.project.as_ref().is_none_or(|p| m.state.run.project == *p)
+                && is_root.is_none_or(|r| m.state.run.is_root == r)
+                && pre.as_ref().is_none_or(|p| ok(m, p, eval_stats))
+        };
+        let need = search::Need::of(filter);
+        let runs = search::collect_text(self, pinned, scope, ids, held, need, &mut keep, stats).await?;
+        Ok(runs.into_iter().filter(|m| ok(m, filter, eval_stats)).collect())
     }
 
     /// Runs one query: scope → scan → merge → filter → root/tree conditions → order → page.
     pub async fn query(&self, q: &QuerySpec) -> Result<Page, QueryError> {
-        self.select(q, q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
+        self.select(q, q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT), true)
             .await
     }
 
-    async fn select(&self, q: &QuerySpec, limit: usize) -> Result<Page, QueryError> {
+    /// The runs matching `q`'s scope, `filter` and `is_root` (not its trace conditions), if it searches text.
+    pub(crate) async fn search_set(&self, q: &QuerySpec) -> Result<Option<HashSet<RunId>>, QueryError> {
+        if !q.filter.as_ref().is_some_and(contains_search) {
+            return Ok(None);
+        }
+        let only = QuerySpec {
+            trace_filter: None,
+            tree_filter: None,
+            cursor: None,
+            columns: vec![],
+            count: true,
+            order: OrderBy::StartTime,
+            ..q.clone()
+        };
+        let page = self.select(&only, usize::MAX, false).await?;
+        Ok(Some(page.runs.into_iter().map(|r| r.header.run_id).collect()))
+    }
+
+    /// `specs` with each text search resolved to the runs it matches, for aggregates (whose file scan can't
+    /// read text).
+    pub(crate) async fn with_searches<T>(&self, specs: Vec<(QuerySpec, T)>) -> Result<Vec<(QuerySpec, T)>, QueryError> {
+        let mut out = Vec::with_capacity(specs.len());
+        for (mut q, t) in specs {
+            if let Some(runs) = self.search_set(&q).await? {
+                q.runs = Some(std::sync::Arc::new(runs));
+                q.filter = None;
+            }
+            out.push((q, t));
+        }
+        Ok(out)
+    }
+
+    /// One page; with `excerpts`, page rows of a query that searches carry where it matched.
+    pub(crate) async fn select(&self, q: &QuerySpec, limit: usize, excerpts: bool) -> Result<Page, QueryError> {
         let started = Instant::now();
         let now = Ts::now();
         let hash = q.hash();
@@ -292,24 +424,12 @@ impl Query {
             }
         }
         let (mut scan_stats, mut eval_stats) = (ScanStats::default(), EvalStats::default());
-        let pinned = scan::pin(&self.ingest, &scope);
+        let pinned = match &q.filter {
+            Some(f) if contains_search(f) => scan::pin_text(&self.ingest, &scope, &search::all(f)),
+            _ => scan::pin(&self.ingest, &scope),
+        };
         // By start time, read in windows in page order and stop once the page and one more run are found.
         let early = q.order == OrderBy::StartTime && !q.count && q.traces.is_none();
-        let mut windows = early.then(|| {
-            window::Windows::new(
-                pinned
-                    .version
-                    .segments
-                    .iter()
-                    .map(|s| &**s)
-                    .filter(|s| scope.file_in_scope(s)),
-                pinned.keys(),
-                from,
-                to,
-                q.ascending,
-                self.first_window,
-            )
-        });
         let want = limit.saturating_add(1);
         let page_order = |a: &Key, b: &Key| {
             if q.ascending {
@@ -327,34 +447,102 @@ impl Query {
                 }
             })
         };
+        // A search the index answers: its candidates, in page order, read a chunk at a time.
+        let indexed = q.filter.as_ref().filter(|_| self.index).and_then(search::indexed);
+        let mut queue: Option<std::vec::IntoIter<search::Cand>> = None;
+        if let Some((words, side)) = indexed {
+            let cscope = Scope {
+                from,
+                to,
+                ..scope.clone()
+            };
+            let key = |c: &search::Cand| Key {
+                value: c.key,
+                run_id: c.run_id,
+            };
+            let pre = q.filter.as_ref().and_then(search::before_text);
+            let mut cands: Vec<search::Cand> =
+                search::candidates(self, &pinned, &cscope, words, side, pre.as_ref(), now, &mut scan_stats)
+                    .await?
+                    .into_iter()
+                    .filter(|c| q.order != OrderBy::StartTime || after_cursor(&key(c)))
+                    .collect();
+            cands.sort_by(|a, b| page_order(&key(a), &key(b)));
+            let mut seen = HashSet::new();
+            cands.retain(|c| seen.insert(c.run_id));
+            queue = Some(cands.into_iter());
+        }
+        let mut windows = (early && queue.is_none()).then(|| {
+            window::Windows::new(
+                pinned
+                    .version
+                    .segments
+                    .iter()
+                    .map(|s| &**s)
+                    .filter(|s| scope.file_in_scope(s)),
+                pinned.keys(),
+                from,
+                to,
+                q.ascending,
+                self.first_window,
+            )
+        });
+        let traces = self.searched_traces(q, &scope, &mut scan_stats).await?;
+        let shown = q.filter.as_ref().filter(|_| excerpts).and_then(search::shown);
+        let mut matches: HashMap<RunId, Match> = HashMap::new();
+        let mut chunk = if early { want.max(64) } else { scan::IN_CHUNK };
         let mut found: Vec<(Key, Merged)> = Vec::new();
         let mut complete = true;
         loop {
-            let wscope = match windows.as_mut() {
-                None => Scope {
-                    window: ((from, to) != (scope.from, scope.to))
-                        .then(|| (from.unwrap_or(i64::MIN), to.unwrap_or(i64::MAX))),
-                    ..scope.clone()
-                },
-                Some(w) => match w.next_window() {
-                    Some(w) => Scope {
-                        window: Some(w),
-                        ..scope.clone()
-                    },
-                    None => break,
-                },
+            let runs = match (queue.as_mut(), q.filter.as_ref()) {
+                (Some(rest), Some(f)) => {
+                    let next: Vec<search::Cand> = rest.by_ref().take(chunk).collect();
+                    if next.is_empty() {
+                        break;
+                    }
+                    chunk = (chunk * 2).min(scan::IN_CHUNK);
+                    let ids: HashSet<RunId> = next.iter().map(|c| c.run_id).collect();
+                    let held: HashSet<usize> = next.iter().filter_map(|c| c.file).collect();
+                    self.matching_ids(
+                        &pinned,
+                        &scope,
+                        &ids,
+                        Some(&held),
+                        f,
+                        q.is_root,
+                        now,
+                        &mut scan_stats,
+                        &mut eval_stats,
+                    )
+                    .await?
+                }
+                _ => {
+                    let wscope = match windows.as_mut() {
+                        None => Scope {
+                            window: ((from, to) != (scope.from, scope.to))
+                                .then(|| (from.unwrap_or(i64::MIN), to.unwrap_or(i64::MAX))),
+                            ..scope.clone()
+                        },
+                        Some(w) => match w.next_window() {
+                            Some(w) => Scope {
+                                window: Some(w),
+                                ..scope.clone()
+                            },
+                            None => break,
+                        },
+                    };
+                    self.matching(
+                        &pinned,
+                        &wscope,
+                        q.filter.as_ref(),
+                        q.is_root,
+                        now,
+                        &mut scan_stats,
+                        &mut eval_stats,
+                    )
+                    .await?
+                }
             };
-            let runs = self
-                .matching(
-                    &pinned,
-                    &wscope,
-                    q.filter.as_ref(),
-                    q.is_root,
-                    now,
-                    &mut scan_stats,
-                    &mut eval_stats,
-                )
-                .await?;
             let mut keyed: Vec<(Key, Merged)> = runs
                 .into_iter()
                 .filter(|m| {
@@ -366,23 +554,44 @@ impl Query {
                 .filter(|(k, _)| after_cursor(k))
                 .collect();
             keyed.sort_by(|a, b| page_order(&a.0, &b.0));
+            // The text was only needed to decide: keep the excerpts of runs that can still be on the page.
+            let mut add = |found: &mut Vec<(Key, Merged)>, (k, mut m): (Key, Merged)| {
+                if let Some((words, side)) = shown
+                    && found.len() < want
+                    && let Some(x) = tracedb_model::text::excerpt(&Text::of(&m.state.run), words, side)
+                {
+                    matches.insert(m.state.run.run_id, x);
+                }
+                m.state.run.inputs = None;
+                m.state.run.outputs = None;
+                found.push((k, m));
+            };
 
             // Trace-level conditions, evaluated over the candidates' whole traces (no time bound: a root may
             // have started before the window, a step after it), in page order, a chunk of candidates at a time.
             if q.trace_filter.is_none() && q.tree_filter.is_none() {
-                found.extend(keyed);
+                keyed.into_iter().for_each(|r| add(&mut found, r));
             } else {
                 let mut rest = keyed.into_iter().peekable();
                 while rest.peek().is_some() && !(early && found.len() >= want) {
                     let chunk: Vec<(Key, Merged)> = rest.by_ref().take(scan::IN_CHUNK).collect();
                     let ok = self
-                        .trace_conditions(q, &scope, &chunk, now, &mut scan_stats, &mut eval_stats)
+                        .trace_conditions(q, &scope, &chunk, &traces, now, &mut scan_stats, &mut eval_stats)
                         .await?;
-                    found.extend(chunk.into_iter().filter(|(_, m)| ok.contains(&m.state.run.trace_id)));
+                    for r in chunk.into_iter().filter(|(_, m)| ok.contains(&m.state.run.trace_id)) {
+                        add(&mut found, r);
+                    }
                 }
                 if rest.peek().is_some() {
                     complete = false;
                 }
+            }
+            if let Some(rest) = queue.as_ref() {
+                if early && found.len() >= want {
+                    complete &= rest.len() == 0;
+                    break;
+                }
+                continue;
             }
             let Some(w) = windows.as_ref() else { break };
             if found.len() >= want {
@@ -390,6 +599,8 @@ impl Query {
                 break;
             }
         }
+        // Candidate chunks follow each version's start key; a merged run's may differ.
+        found.sort_by(|a, b| page_order(&a.0, &b.0));
         let matched = found.len();
         let more = found.len() > limit;
         found.truncate(limit);
@@ -405,6 +616,11 @@ impl Query {
         if !skipped.is_empty() {
             warnings.push(QueryWarning::SkippedFiles { ids: skipped });
         }
+        if !scan_stats.not_indexed.is_empty() {
+            warnings.push(QueryWarning::NotIndexedFiles {
+                files: std::mem::take(&mut scan_stats.not_indexed).into_iter().collect(),
+            });
+        }
         let rows: Vec<RunRow> = keyed
             .into_iter()
             .map(|(_, m)| {
@@ -415,6 +631,7 @@ impl Query {
                 }
                 RunRow {
                     columns: columns(&m, &q.columns),
+                    r#match: matches.remove(&m.state.run.run_id),
                     header: RunHeader::from_state(&m.state, 0),
                 }
             })
@@ -430,6 +647,11 @@ impl Query {
                 rows_merged: scan_stats.rows_merged,
                 files_version_lookup: scan_stats.files_version_lookup,
                 merge_rows: scan_stats.merge_rows,
+                index_files: scan_stats.index_files,
+                scan_files: scan_stats.scan_files,
+                candidates: scan_stats.candidates,
+                payload_rows: scan_stats.payload_rows,
+                cache_hits: scan_stats.cache_hits,
                 matched,
                 complete,
                 ms: started.elapsed().as_millis() as u64,
@@ -437,19 +659,59 @@ impl Query {
         })
     }
 
+    /// For `trace_filter` and `tree_filter`: the runs the text index says may match, by trace, if that slot's
+    /// search can use it. Not bounded in time, as trace conditions aren't.
+    async fn searched_traces(
+        &self,
+        q: &QuerySpec,
+        scope: &Scope,
+        stats: &mut ScanStats,
+    ) -> Result<[Option<HashMap<TraceId, Vec<search::Cand>>>; 2], QueryError> {
+        let mut out = [None, None];
+        for (i, f) in [&q.trace_filter, &q.tree_filter].into_iter().enumerate() {
+            let Some(f) = f.as_ref().filter(|_| self.index) else {
+                continue;
+            };
+            let Some((words, side)) = search::indexed(f) else {
+                continue;
+            };
+            let tscope = Scope {
+                project: scope.project.clone(),
+                traces: scope.traces.clone(),
+                ..Scope::default()
+            };
+            let pinned = scan::pin_text(&self.ingest, &tscope, &[(words, side)]);
+            let mut by_trace: HashMap<TraceId, Vec<search::Cand>> = HashMap::new();
+            let pre = search::before_text(f);
+            for c in search::candidates(self, &pinned, &tscope, words, side, pre.as_ref(), Ts::now(), stats).await? {
+                by_trace.entry(c.trace_id).or_default().push(c);
+            }
+            out[i] = Some(by_trace);
+        }
+        Ok(out)
+    }
+
     /// Traces of `chunk` whose root matches `trace_filter` and that hold a run matching `tree_filter`.
+    #[allow(clippy::too_many_arguments)]
     async fn trace_conditions(
         &self,
         q: &QuerySpec,
         scope: &Scope,
         chunk: &[(Key, Merged)],
+        searched: &[Option<HashMap<TraceId, Vec<search::Cand>>>; 2],
         now: Ts,
         stats: &mut ScanStats,
         eval_stats: &mut EvalStats,
     ) -> Result<HashSet<TraceId>, QueryError> {
         let mut ok: HashSet<TraceId> = chunk.iter().map(|(_, m)| m.state.run.trace_id).collect();
-        for (f, is_root) in [(&q.trace_filter, Some(true)), (&q.tree_filter, None)] {
+        for ((f, is_root), cands) in [(&q.trace_filter, Some(true)), (&q.tree_filter, None)]
+            .into_iter()
+            .zip(searched)
+        {
             let Some(f) = f else { continue };
+            if let Some(by_trace) = cands {
+                ok.retain(|t| by_trace.contains_key(t));
+            }
             if ok.is_empty() {
                 break;
             }
@@ -458,13 +720,24 @@ impl Query {
                 traces: Some(std::sync::Arc::new(ok.iter().copied().collect())),
                 ..Scope::default()
             };
-            let pinned = scan::pin(&self.ingest, &tscope);
-            ok = self
-                .matching(&pinned, &tscope, Some(f), is_root, now, stats, eval_stats)
-                .await?
-                .into_iter()
-                .map(|m| m.state.run.trace_id)
-                .collect();
+            let pinned = if contains_search(f) {
+                scan::pin_text(&self.ingest, &tscope, &search::all(f))
+            } else {
+                scan::pin(&self.ingest, &tscope)
+            };
+            let runs = match cands {
+                // Only the index's candidates in these traces are checked.
+                Some(by_trace) => {
+                    let ids: HashSet<RunId> = ok.iter().flat_map(|t| &by_trace[t]).map(|c| c.run_id).collect();
+                    self.matching_ids(&pinned, &tscope, &ids, None, f, is_root, now, stats, eval_stats)
+                        .await?
+                }
+                None => {
+                    self.matching(&pinned, &tscope, Some(f), is_root, now, stats, eval_stats)
+                        .await?
+                }
+            };
+            ok = runs.into_iter().map(|m| m.state.run.trace_id).collect();
         }
         Ok(ok)
     }

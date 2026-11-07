@@ -7,9 +7,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use tracedb_ingest::Include;
-use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, View, parse_stats};
+use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, parse_stats};
 use tracedb_model::filter::eval::visit_paths;
-use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, contains_search, parse_filter};
+use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
 use tracedb_model::{RunId, TraceId};
 use tracedb_query::{OrderBy, QueryError, QuerySpec, TimeRange};
 
@@ -73,14 +73,6 @@ fn filter_slot(slot: &str, text: &Option<String>) -> Result<Option<Expr>, BadReq
         ))
     };
     let e = parse_filter(t).map_err(|e| slot_error("bad_filter", &e.message, e.start, e.end))?;
-    if contains_search(&e) {
-        return Err(slot_error(
-            "unsupported",
-            "search() isn't answered yet (it needs the M3 text index)",
-            0,
-            t.len(),
-        ));
-    }
     let mut feedback = false;
     visit_paths(&e, &mut |p| feedback |= matches!(p, FPath::Feedback(_)));
     if feedback {
@@ -157,6 +149,7 @@ impl QueryBody {
             columns,
             traces: None,
             count: self.count,
+            runs: None,
         })
     }
 }
@@ -419,7 +412,7 @@ impl AggBody {
                 raw.insert(k.into(), v.clone());
             }
         }
-        let mut spec = match &self.stats {
+        let spec = match &self.stats {
             Some(_) if self.group_by.is_some() || self.metrics.is_some() || self.top.is_some() => {
                 return Err(bad(
                     "bad_stats",
@@ -451,11 +444,8 @@ impl AggBody {
             }
             None => serde_json::from_value::<AggSpec>(raw.into()).map_err(|e| bad("bad_stats", e.to_string()))?,
         };
-        if spec.view != View::Table || spec.compare != Compare::None {
-            return Err(bad(
-                "unsupported",
-                "series, distribution and comparison aren't answered yet",
-            ));
+        if let Compare::Filter(f) = &spec.compare {
+            filter_slot("compare.filter", &Some(tracedb_model::filter::print(f)))?;
         }
         if spec.group_by.contains(&GroupKey::FeedbackKey)
             || spec.metrics.iter().any(|m| matches!(m, Metric::AvgFeedback(_)))
@@ -475,9 +465,44 @@ impl AggBody {
                 ));
             }
         }
-        spec.bucket = Default::default();
         Ok(spec)
     }
+}
+
+/// The query and aggregate an `AggBody` asks for.
+pub(crate) fn agg_request(body: &AggBody) -> Result<(QuerySpec, AggSpec), BadRequest> {
+    let query = QueryBody {
+        project: body.project.clone(),
+        time: body.time.clone(),
+        filter: body.filter.clone(),
+        trace_filter: body.trace_filter.clone(),
+        tree_filter: body.tree_filter.clone(),
+        is_root: body.is_root,
+        ..QueryBody::default()
+    };
+    let (spec, agg) = (query.to_spec()?, body.agg()?);
+    if matches!(agg.compare, Compare::Shift(_)) && spec.time.from.is_none() {
+        return Err(bad(
+            "bad_stats",
+            "compare.shift needs a window start: time.last or time.from (--time in the CLI)",
+        ));
+    }
+    Ok((spec, agg))
+}
+
+/// Damaged files skipped, taken out of the warnings (they're written as `skipped_files`).
+pub(crate) fn take_skipped(res: &mut tracedb_query::AggResult) -> Vec<String> {
+    let skipped: Vec<String> = res
+        .warnings
+        .iter()
+        .find_map(|w| match w {
+            tracedb_query::QueryWarning::SkippedFiles { ids } => Some(ids.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    res.warnings
+        .retain(|w| !matches!(w, tracedb_query::QueryWarning::SkippedFiles { .. }));
+    skipped
 }
 
 pub async fn aggregate(
@@ -488,31 +513,13 @@ pub async fn aggregate(
         Ok(Json(b)) => b,
         Err(e) => return error(StatusCode::BAD_REQUEST, "bad_request", e.body_text()),
     };
-    let query = QueryBody {
-        project: body.project.clone(),
-        time: body.time.clone(),
-        filter: body.filter.clone(),
-        trace_filter: body.trace_filter.clone(),
-        tree_filter: body.tree_filter.clone(),
-        is_root: body.is_root,
-        ..QueryBody::default()
-    };
-    let (spec, agg) = match (query.to_spec(), body.agg()) {
-        (Ok(s), Ok(a)) => (s, a),
-        (Err(BadRequest(r)), _) | (_, Err(BadRequest(r))) => return *r,
+    let (spec, agg) = match agg_request(&body) {
+        Ok(x) => x,
+        Err(BadRequest(r)) => return *r,
     };
     match st.query.aggregate(&spec, &agg, &st.prices).await {
         Ok(mut res) => {
-            let skipped: Vec<String> = res
-                .warnings
-                .iter()
-                .find_map(|w| match w {
-                    tracedb_query::QueryWarning::SkippedFiles { ids } => Some(ids.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            res.warnings
-                .retain(|w| !matches!(w, tracedb_query::QueryWarning::SkippedFiles { .. }));
+            let skipped = take_skipped(&mut res);
             with_skipped(StatusCode::OK, res, skipped)
         }
         Err(e) => query_error(e),

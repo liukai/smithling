@@ -37,6 +37,19 @@ impl Version {
         v
     }
 
+    /// The same files, segment `id` with a text index.
+    pub fn with_fts(&self, id: &str, fts_path: &str, fts_bytes: u64) -> Version {
+        let mut v = self.clone();
+        v.id += 1;
+        for s in v.segments.iter_mut().filter(|s| s.id == id) {
+            let mut meta = (**s).clone();
+            meta.fts_path = Some(fts_path.to_string());
+            meta.fts_bytes = fts_bytes;
+            *s = Arc::new(meta);
+        }
+        v
+    }
+
     /// The same files without segment `id` (found damaged).
     pub fn without(&self, id: &str) -> Version {
         let mut v = self.clone();

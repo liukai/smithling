@@ -131,7 +131,15 @@ async fn bad_requests_name_the_problem() {
         ),
         (json!({"group_by": ["name"]}), "bad_stats"),
         (json!({"stats": "by name | count", "metrics": ["count"]}), "bad_stats"),
-        (json!({"metrics": ["count"], "view": "series"}), "unsupported"),
+        (
+            json!({"metrics": ["count"], "compare": {"filter": "eq(name"}}),
+            "bad_stats",
+        ),
+        (json!({"metrics": ["count"], "compare": {"shift": "1d"}}), "bad_stats"),
+        (
+            json!({"metrics": ["count"], "compare": {"filter": "gt(feedback.correctness, 0)"}}),
+            "unsupported",
+        ),
         (json!({"metrics": ["avg(feedback.correctness)"]}), "unsupported"),
         (
             json!({"group_by": ["metadata.a.b.c.d.e"], "metrics": ["count"]}),
@@ -229,4 +237,103 @@ async fn a_damaged_file_is_skipped_not_a_500() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["skipped_files"], json!([lost.id]));
     assert_eq!(v["totals"]["runs"], n - lost.row_count);
+}
+
+fn cells<'a>(groups: &'a Value, key: &str) -> &'a Value {
+    &groups.as_array().unwrap().iter().find(|g| g["key"][0] == key).unwrap()["cells"]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scenario_batch_a_vs_b_side_by_side_and_overlaid() {
+    const MB: u64 = 1024 * 1024;
+    let server = start_with(|c| c.limits.memtable_bytes = MB).await;
+    let s = generate(7, Ts::now().0, MB);
+    load(&format!("http://{}", server.addr), &s).await.unwrap();
+    let tag = |t: &str| format!("has(tags, {t:?})");
+    let body = |view: &str| {
+        json!({"project": scenario::PROJECT, "filter": tag(scenario::BATCH_TAG),
+               "group_by": ["name"], "metrics": ["count", "error_rate", "p95(latency)", "sum(cost)"],
+               "view": view, "compare": {"filter": tag(scenario::BATCH_B_TAG)}})
+    };
+    let (status, v) = aggregate(&server, body("table")).await;
+    assert_eq!(status, 200, "{v}");
+    let b = &v["compare"]["side_b"];
+    let (fa, fb) = (cells(&v["groups"], "fetch_url"), cells(&b["groups"], "fetch_url"));
+    assert_eq!(
+        (fa["error_rate"].clone(), fa["p95"].clone()),
+        (json!(0.14), json!(scenario::BATCH_A_FETCH_P95_MS))
+    );
+    assert_eq!(
+        (fb["error_rate"].clone(), fb["p95"].clone()),
+        (json!(0.02), json!(scenario::BATCH_B_FETCH_P95_MS))
+    );
+    assert_eq!(fb["errors"], scenario::BATCH_B_FETCH_ERRORS);
+    assert_eq!(v["totals"]["cost_pico"], scenario::BATCH_A_COST_PICO);
+    assert_eq!(b["totals"]["cost_pico"], scenario::BATCH_B_COST_PICO);
+    // Same shape, no nested comparison; groups paired with a's.
+    for k in ["query_id", "partial", "totals", "groups", "cut", "overlap", "stats"] {
+        assert!(b.get(k).is_some(), "side_b.{k}");
+    }
+    assert!(b.get("compare").is_none());
+    let keys = |g: &Value| {
+        g.as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["key"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        keys(&v["groups"]),
+        keys(&b["groups"])
+            .into_iter()
+            .take(v["groups"].as_array().unwrap().len())
+            .collect::<Vec<_>>()
+    );
+
+    let (status, v) = aggregate(&server, body("series")).await;
+    assert_eq!(status, 200, "{v}");
+    let (sa, sb) = (&v["series"], &v["compare"]["side_b"]["series"]);
+    assert_eq!((sa["offset"].clone(), sb["offset"].clone()), (json!(true), json!(true)));
+    assert_eq!(
+        sa["buckets"].as_array().unwrap().len(),
+        sb["buckets"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        (
+            sa["buckets"][0]["offset_ms"].clone(),
+            sb["buckets"][0]["offset_ms"].clone()
+        ),
+        (json!(0), json!(0))
+    );
+    assert!(sa["buckets"][0]["t"].is_null());
+
+    // A shift: the last day against the day before (batch b against batch a), on offsets from each window's start.
+    let (status, v) = aggregate(
+        &server,
+        json!({"project": scenario::PROJECT, "time": {"last": "24h"}, "group_by": ["name"], "metrics": ["count"],
+               "view": "series", "bucket": "1h", "compare": {"shift": "1d"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (sa, sb) = (&v["series"], &v["compare"]["side_b"]["series"]);
+    assert_eq!((sa["offset"].clone(), sb["offset"].clone()), (json!(true), json!(true)));
+    assert_eq!(sa["step_ms"], 3_600_000);
+    assert_eq!(sa["buckets"].as_array().unwrap().len(), 25);
+    assert_eq!(sb["buckets"].as_array().unwrap().len(), 25);
+    assert!(v["compare"]["side_b"]["totals"]["runs"].as_u64().unwrap() > 0);
+    // Distribution: fixed bins, a count per group per bin.
+    let (status, v) = aggregate(
+        &server,
+        json!({"project": scenario::PROJECT, "filter": tag(scenario::BATCH_TAG), "group_by": ["name"],
+               "metrics": ["count"], "view": "dist"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let d = &v["dist"];
+    let bins = d["bins_ms"].as_array().unwrap().len();
+    assert!(bins > 0 && d["where_per_bin"].as_array().unwrap().len() == bins);
+    assert_eq!(
+        d["per_group"].as_array().unwrap().len(),
+        v["groups"].as_array().unwrap().len()
+    );
 }

@@ -2,6 +2,7 @@
 //! publishes changes, and only then confirms. A full memtable is frozen and flushed to data files in the
 //! background (design §4.2). Readers get a consistent view of memtables and files; they never write.
 
+mod backfill;
 pub mod budget;
 pub mod dedup;
 pub mod feedback;
@@ -187,6 +188,8 @@ pub struct Health {
     pub frozen: bool,
     pub unflushed_wal_bytes: u64,
     pub segments: usize,
+    /// Data files without a text index (written by M2, until backfilled); searched by reading them.
+    pub unindexed_segments: usize,
     /// Run versions in data files.
     pub segment_rows: u64,
     pub flushed_seq: u64,
@@ -566,9 +569,13 @@ impl Ingest {
 
         let backfill = {
             let (mem, storage, projects, stop) = (mem.clone(), storage.clone(), projects.clone(), stop.clone());
+            let (health, age) = (flush_health.clone(), cfg.limits.flush_age_us.max(0) as u64);
             std::thread::Builder::new()
                 .name("tracedb-backfill".into())
-                .spawn(move || flush::backfill_projects(&mem, &storage, &projects, &stop))
+                .spawn(move || {
+                    flush::backfill_projects(&mem, &storage, &projects, &stop);
+                    backfill::run(&mem, &storage, &health, Duration::from_micros(age), &stop);
+                })
                 .map_err(OpenError::Thread)?
         };
         let inner = Inner {
@@ -758,6 +765,7 @@ impl Ingest {
             frozen: mem.frozen.is_some(),
             unflushed_wal_bytes: self.inner.counters.unflushed_wal.load(Ordering::Relaxed),
             segments: mem.version.segments.len(),
+            unindexed_segments: mem.version.segments.iter().filter(|s| s.fts_path.is_none()).count(),
             segment_rows: mem.version.segments.iter().map(|s| s.row_count).sum(),
             flushed_seq: mem.version.flushed_seq,
             flushes: fh.flushes,

@@ -48,6 +48,8 @@ pub struct AppState {
     /// Serve UI files from this folder instead of the embedded copy.
     pub ui_dir: Option<PathBuf>,
     pub prices: Arc<Prices>,
+    /// When `GET /api/aggregate/stream` sends an estimate first, and how it samples.
+    pub agg_stream: tracedb_query::aggregate::StreamOpts,
 }
 
 impl AppState {
@@ -58,6 +60,7 @@ impl AppState {
             query,
             ui_dir: None,
             prices: Arc::new(Prices::embedded()),
+            agg_stream: Default::default(),
         }
     }
 
@@ -95,6 +98,7 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/query", post(routes::api::query))
         .route("/api/aggregate", post(routes::api::aggregate))
+        .route("/api/aggregate/stream", get(routes::aggregate_stream::stream))
         .route("/api/feedback", get(routes::feedback::list))
         .route("/api/roots", get(routes::api::roots))
         .route("/api/projects", get(routes::api::projects))
@@ -162,6 +166,7 @@ pub async fn serve(
         truncated_bytes = stats.truncated_bytes,
         "data folder ready"
     );
+    state.query.warm_aggregates();
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
         "tracedb listening on http://{}   data: {}",

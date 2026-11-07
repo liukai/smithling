@@ -219,6 +219,35 @@ fn evaluates_exists_and_feedback() {
 }
 
 #[test]
+fn evaluates_search_on_the_merged_text() {
+    let st = fetch_url();
+    for (f, want) in [
+        (r#"search("429 Too Many Requests")"#, true),
+        (r#"search(error, "too many")"#, true),
+        (r#"search(outputs, "too many")"#, false),
+        (r#"search(outputs, "429")"#, true),
+        (r#"search(inputs, "429")"#, false),
+        (r#"search("Requests Too")"#, false),
+        (r#"and(search("429"), eq(name, "fetch_url"))"#, true),
+        (r#"and(search("429"), eq(name, "llm"))"#, false),
+        (r#"or(eq(name, "llm"), search("httperror"))"#, true),
+        (r#"not(search("timeout"))"#, true),
+        (r#"not(search("429"))"#, false),
+    ] {
+        assert_eq!(matches(&st, f), want, "{f}");
+    }
+    let bare = st.without_payload();
+    assert!(
+        !matches(&bare, r#"search(outputs, "429")"#),
+        "a run read without its payload has no outputs text"
+    );
+    assert!(
+        matches(&bare, r#"search(error, "429")"#),
+        "error text is in the core row"
+    );
+}
+
+#[test]
 fn mixed_types_are_counted() {
     let st = fetch_url();
     let attrs = promote(&st.run);

@@ -124,17 +124,49 @@ pub trait TextIndex: Send + Sync {
     ) -> BoxFuture<'a, Result<RowSet, StorageError>>;
 }
 
+/// Dictionary footers kept by [`Fts`]; sidecars are write-once, so a cached footer never goes stale.
+const FOOTERS: usize = 1024;
+
 /// The Parquet dictionary + postings blob implementation, reading through a [`Store`].
 pub struct Fts {
     store: Store,
+    footers: std::sync::Mutex<HashMap<String, Arc<ParquetMetaData>>>,
+}
+
+/// What [`Fts::lookup_within`] found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lookup {
+    /// `None`: every word is too common to narrow the file (all rows may match).
+    pub rows: Option<RowSet>,
+    /// The dictionary footer came from memory.
+    pub cached: bool,
 }
 
 impl Fts {
     pub fn new(store: Store) -> Fts {
-        Fts { store }
+        Fts {
+            store,
+            footers: Default::default(),
+        }
     }
 
-    async fn find(&self, stem: &str, terms: &[String], field: TextField) -> Result<RowSet, StorageError> {
+    /// [`TextIndex::lookup`], skipping words in more than `max_df` rows (their lists narrow little and cost
+    /// the most to read); if every word is that common, the rows are `None`.
+    pub async fn lookup_within(
+        &self,
+        seg: &SegmentMeta,
+        terms: &[String],
+        field: TextField,
+        max_df: u32,
+    ) -> Result<Lookup, StorageError> {
+        let stem = seg
+            .fts_path
+            .as_deref()
+            .ok_or_else(|| StorageError::NotIndexed(format!("segment {} has no text index", seg.id)))?;
+        self.find(stem, terms, field, max_df).await
+    }
+
+    async fn find(&self, stem: &str, terms: &[String], field: TextField, max_df: u32) -> Result<Lookup, StorageError> {
         let lower: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
         let mut words: Vec<&str> = lower.iter().map(|t| term(t)).collect();
         words.sort_unstable();
@@ -143,9 +175,13 @@ impl Fts {
             return Err(StorageError::NotIndexed("a text lookup needs at least one word".into()));
         }
         let dict = dict_path(stem);
-        let meta = self.footer(&dict).await?;
+        let (meta, cached) = self.footer(&dict).await?;
+        let none = Lookup {
+            rows: Some(Vec::new()),
+            cached,
+        };
         let Some((row_groups, selection)) = zones(&meta, &words) else {
-            return Ok(Vec::new());
+            return Ok(none);
         };
         let reader = DictReader {
             store: self.store.clone(),
@@ -184,7 +220,11 @@ impl Fts {
             }
         }
         if lists.len() < words.len() {
-            return Ok(Vec::new());
+            return Ok(none);
+        }
+        lists.retain(|l| l.0 <= max_df);
+        if lists.is_empty() {
+            return Ok(Lookup { rows: None, cached });
         }
         lists.sort_by_key(|l| l.0);
         let ranges: Vec<Range<u64>> = lists.into_iter().map(|l| l.1).collect();
@@ -197,16 +237,30 @@ impl Fts {
             let other = decode_list(b)?;
             rows = intersect(&rows, &other);
         }
-        Ok(rows)
+        Ok(Lookup {
+            rows: Some(rows),
+            cached,
+        })
     }
 
-    /// The dictionary's footer and page index, usually in one suffix read.
-    async fn footer(&self, dict: &str) -> Result<Arc<ParquetMetaData>, StorageError> {
+    /// The dictionary's footer and page index, usually in one suffix read; true if it was cached.
+    async fn footer(&self, dict: &str) -> Result<(Arc<ParquetMetaData>, bool), StorageError> {
+        if let Some(m) = self.footers.lock().unwrap().get(dict) {
+            return Ok((m.clone(), true));
+        }
         let (mut tail, size) = self.store.get_suffix(dict, FOOTER_READ).await?;
         loop {
             let mut r = ParquetMetaDataReader::new().with_page_index_policy(PageIndexPolicy::Optional);
             match r.try_parse_sized(&tail, size) {
-                Ok(()) => return Ok(Arc::new(r.finish()?)),
+                Ok(()) => {
+                    let meta = Arc::new(r.finish()?);
+                    let mut cache = self.footers.lock().unwrap();
+                    if cache.len() >= FOOTERS {
+                        cache.clear();
+                    }
+                    cache.insert(dict.to_string(), meta.clone());
+                    return Ok((meta, false));
+                }
                 Err(ParquetError::NeedMoreData(n)) if (n as u64) > tail.len() as u64 => {
                     tail = self.store.get_suffix(dict, n as u64).await?.0;
                 }
@@ -232,7 +286,8 @@ impl TextIndex for Fts {
                 .fts_path
                 .as_deref()
                 .ok_or_else(|| StorageError::NotIndexed(format!("segment {} has no text index", seg.id)))?;
-            self.find(stem, terms, field).await
+            let found = self.find(stem, terms, field, u32::MAX).await?;
+            Ok(found.rows.unwrap_or_default())
         }
         .boxed()
     }

@@ -22,11 +22,16 @@ pub async fn start() -> Server {
 }
 
 pub async fn start_with(tweak: impl FnOnce(&mut IngestConfig)) -> Server {
+    start_state(tweak, |_| {}).await
+}
+
+pub async fn start_state(tweak: impl FnOnce(&mut IngestConfig), state_tweak: impl FnOnce(&mut AppState)) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = IngestConfig::new(dir.path());
     tweak(&mut cfg);
     let (ingest, _) = Ingest::open(cfg).unwrap();
-    let state = AppState::new(ingest);
+    let mut state = AppState::new(ingest);
+    state_tweak(&mut state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app(state.clone());

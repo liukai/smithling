@@ -115,12 +115,21 @@ fn run(n: u64, now: Ts) -> RunFields {
                 .clone(),
         ),
         inputs: Some(json!({"messages": [{"role": "user", "content": text(n, 1, 150)}]})),
-        outputs: Some(json!({
-            "status_code": if n.is_multiple_of(50) { 429 } else { 200 },
-            "content": text(n, 2, 180),
-        })),
+        outputs: Some(if planted(n) {
+            json!({"status_code": 429, "content": text(n, 2, 180), "detail": "upstream said 429 Too Many Requests"})
+        } else {
+            json!({
+                "status_code": if n.is_multiple_of(50) { 429 } else { 200 },
+                "content": text(n, 2, 180),
+            })
+        }),
         ..Default::default()
     }
+}
+
+/// About 31 runs with a rare phrase, for text search.
+fn planted(n: u64) -> bool {
+    n % 64_513 == 11
 }
 
 struct Loaded {
@@ -610,4 +619,68 @@ async fn sc03_lists_with_late_updates_in_another_project() {
         .collect();
     measure("seed: failing roots", reqs, |v| v["runs"].is_array()).await;
     assert!(missed.is_empty(), "missed: {missed:#?}");
+}
+
+/// SC-03 text search at 2M runs: median ≤ 500 ms, p99 ≤ 5× the median, for a rare phrase (the index narrows
+/// to a few rows), a word in every run (the index is skipped; the first page stops early), and a 1% word.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore]
+async fn m3_text_search_at_2m_runs() {
+    let _serial = SERIAL.lock().await;
+    let Loaded { server, .. } = load().await;
+    let http = reqwest::Client::new();
+    let planted = (0..RUNS).filter(|n| planted(*n)).count();
+    let mut missed = Vec::new();
+    // The newest runs are in the memtable; `to` keeps a query to the files.
+    let body = |filter: &str, to: Option<&str>| json!({"project": "bench", "time": {"from": "-12h", "to": to}, "filter": filter});
+    // (label, filter, end of the time range, exact number of runs on the page if known)
+    let cases = [
+        (
+            "search: rare phrase",
+            r#"search("429 Too Many Requests")"#,
+            None,
+            Some(planted),
+        ),
+        ("search: word in all", r#"search("revenue")"#, None, None),
+        ("word in all, files", r#"search("revenue")"#, Some("-1h"), None),
+        ("1% in error, files", r#"search(error, "httperror")"#, Some("-1h"), None),
+        (
+            "phrase + name, files",
+            r#"and(search(outputs, "rate limit"), eq(name, "llm"))"#,
+            Some("-1h"),
+            None,
+        ),
+    ];
+    for (label, filter, to, want) in cases {
+        let body = body(filter, to);
+        let ok = |v: &Value| {
+            let n = v["runs"].as_array().map_or(0, Vec::len);
+            want.map_or(n > 0, |w| n == w)
+        };
+        let one: Value = http
+            .post(server.url("/api/query"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        eprintln!("{label:>22}: stats {}", one["stats"]);
+        let mut took = Vec::new();
+        for _ in 0..101 {
+            let t = Instant::now();
+            let resp = http.post(server.url("/api/query")).json(&body).send().await.unwrap();
+            assert_eq!(resp.status(), 200, "{label}");
+            let v: Value = resp.json().await.unwrap();
+            took.push(t.elapsed());
+            assert!(ok(&v), "{label}: {}", v["stats"]);
+        }
+        let (p50, p99) = (pct(&mut took, 0.5), pct(&mut took, 0.99));
+        eprintln!("{label:>22}: p50 {p50:>8.1?}  p99 {p99:>8.1?}  (n={})", took.len());
+        if p50 > Duration::from_millis(500) || p99 > p50 * 5 {
+            missed.push(format!("SC-03 {label}: p50 {p50:.1?}, p99 {p99:.1?}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
 }

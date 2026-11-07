@@ -27,7 +27,8 @@ pub fn eval(e: &Expr, row: &Row, now: Ts, stats: &mut EvalStats) -> bool {
 }
 
 /// [`eval`] with `feedback(key)` giving the run's mean score for `key` (`None`: no feedback with that key).
-/// `search` isn't evaluated here yet and matches nothing; queries with it are rejected before they run.
+/// `search` reads the run's `inputs`, `outputs` and `error`: a run read without its payload has no
+/// `inputs`/`outputs` text to match.
 pub fn eval_with(e: &Expr, row: &Row, feedback: &dyn Fn(&str) -> Option<f64>, now: Ts, stats: &mut EvalStats) -> bool {
     let ctx = Ctx { row, feedback, now };
     ctx.eval(e, stats)
@@ -42,7 +43,11 @@ struct Ctx<'a, 'r> {
 impl Ctx<'_, '_> {
     fn eval(&self, e: &Expr, stats: &mut EvalStats) -> bool {
         match e {
-            Expr::And(xs) => xs.iter().all(|x| self.eval(x, stats)),
+            // `search` last: it walks the payload text.
+            Expr::And(xs) => {
+                xs.iter().filter(|x| !contains_search(x)).all(|x| self.eval(x, stats))
+                    && xs.iter().filter(|x| contains_search(x)).all(|x| self.eval(x, stats))
+            }
             Expr::Or(xs) => xs.iter().any(|x| self.eval(x, stats)),
             Expr::Not(x) => !self.eval(x, stats),
             Expr::Has { path, value } => match (path, value) {
@@ -52,7 +57,9 @@ impl Ctx<'_, '_> {
             Expr::In { path, values } => values.iter().any(|v| self.cmp(CmpOp::Eq, path, v, stats)),
             Expr::Cmp { op, path, value } => self.cmp(*op, path, value, stats),
             Expr::Exists { path } => self.cmp(CmpOp::Neq, path, &Value::Null, stats),
-            Expr::Search { .. } => false,
+            Expr::Search { words, side, .. } => {
+                crate::text::phrase_in(&crate::text::Text::of(self.row.run), words, *side)
+            }
         }
     }
 

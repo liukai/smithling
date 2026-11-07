@@ -3,6 +3,7 @@
 //! otherwise the filter is evaluated on a run holding only the fields and attributes it reads.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use datafusion::arrow::array::{Array, FixedSizeBinaryArray, Int64Array, ListArray, StringArray, StringViewArray};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -20,8 +21,9 @@ use tracedb_model::{DEFAULT_PROJECT, Op, Run, RunEvent, RunFields, RunId, Source
 use tracedb_storage::StorageError;
 use tracedb_storage::segment::SegmentMeta;
 
+use super::progressive::Cancel;
 use super::{Accs, AggStats, Facts, KeyVal, Plan};
-use crate::scan::{Pinned, damaged_alone};
+use crate::scan::damaged_alone;
 use crate::{Query, QueryError, pushdown};
 
 /// Files read at once.
@@ -73,15 +75,20 @@ const ERROR: usize = 18;
 const START_TIME: usize = 19;
 const END_TIME: usize = 20;
 
+/// Reads `files` (in scope, not damaged); returns the ids of the files read (not those found damaged). Stops at the first batch after
+/// `cancel`, and takes no new file after `deadline` once one is read (a sample).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn scan(
     q: &Query,
-    pinned: &Pinned,
+    files: &[&SegmentMeta],
     skip: &HashSet<RunId>,
     plan: &Plan<'_>,
     accs: &mut Accs,
     stats: &mut AggStats,
     eval_stats: &mut EvalStats,
-) -> Result<(), QueryError> {
+    cancel: &Cancel,
+    deadline: Option<Instant>,
+) -> Result<Vec<String>, QueryError> {
     let pushed = plan.filter.map(|f| pushdown::compile(f, plan.now));
     let exact = match &pushed {
         None => true,
@@ -100,23 +107,29 @@ pub(crate) async fn scan(
     }
     let mut rows = Rows::new(plan, (!exact).then_some(plan.filter).flatten());
     let columns = rows.columns.clone();
-    let files: Vec<&SegmentMeta> = pinned
-        .version
-        .segments
+    let reads: Vec<_> = files
         .iter()
-        .map(|s| &**s)
-        .filter(|s| plan.scope.file_in_scope(s) && !q.ingest.is_damaged(&s.id))
+        .map(|seg| async { (seg.id.clone(), read(q, seg, filter.clone(), &columns).await) })
         .collect();
-    let reads: Vec<_> = files.iter().map(|seg| read(q, seg, filter.clone(), &columns)).collect();
     let mut done = futures_util::stream::iter(reads).buffer_unordered(FILES);
-    while let Some(batches) = done.next().await {
+    let mut read_ids = Vec::new();
+    while let Some((id, batches)) = done.next().await {
+        // A damaged file is skipped, not read: an estimate mustn't count its rows as sampled.
         let Some(batches) = batches? else { continue };
         stats.files_scanned += 1;
         for b in &batches {
+            if cancel.is_cancelled() {
+                return Ok(read_ids);
+            }
+            cancel.read(b.num_rows() as u64);
             rows.batch(b, skip, accs, stats, eval_stats)?;
         }
+        read_ids.push(id);
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            break;
+        }
     }
-    Ok(())
+    Ok(read_ids)
 }
 
 /// One file's matching rows (`None`: the file is damaged and now skipped).
@@ -385,6 +398,9 @@ impl<'p, 'a> Rows<'p, 'a> {
     fn wanted(&self) -> Vec<usize> {
         let plan = self.plan;
         let mut c = vec![RUN_ID, TRACE_ID, PROJECT, STATUS, LATENCY_MS];
+        if plan.series {
+            c.push(START_TIME);
+        }
         if plan.tokens || plan.cost {
             c.extend([INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS]);
         }
@@ -426,7 +442,8 @@ impl<'p, 'a> Rows<'p, 'a> {
             let (Some(run_id), Some(trace)) = (c.id(RUN_ID, i), c.id(TRACE_ID, i)) else {
                 continue;
             };
-            if skip.contains(&run_id) || !self.plan.row_ok(c.str(PROJECT, i), trace) {
+            if skip.contains(&run_id) || !self.plan.scope.has_run(run_id) || !self.plan.row_ok(c.str(PROJECT, i), trace)
+            {
                 continue;
             }
             if let Some(l) = &mut self.light {
@@ -453,6 +470,7 @@ impl<'p, 'a> Rows<'p, 'a> {
                 total_tokens: tok(TOTAL_TOKENS),
                 cost: None,
                 feedback: vec![],
+                start_us: c.int(START_TIME, i),
             };
             let rt = c.str(RUN_TYPE, i);
             if self.plan.cost && rt == Some("llm") {

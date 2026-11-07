@@ -690,6 +690,63 @@ pub fn decode_payload(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, Stor
         .collect()
 }
 
+/// [`decode_payload`] without `events`, for a batch of `run_id` and `inputs`, `outputs` or both (a column
+/// left out decodes as `None`).
+pub fn decode_text(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, StorageError> {
+    let c = Cols { batch };
+    let ids = c.ids("run_id")?;
+    let opt = |name: &str| batch.column_by_name(name).map(Strs::of).transpose();
+    let (inputs, outputs) = (opt("inputs")?, opt("outputs")?);
+    (0..batch.num_rows())
+        .map(|i| {
+            let parse = |s: &Option<Strs>| {
+                s.as_ref()
+                    .and_then(|s| s.get(i))
+                    .map(serde_json::from_str::<Value>)
+                    .transpose()
+            };
+            Ok((
+                uuid_at(ids, i).ok_or_else(|| StorageError::Format(format!("payload row {i} has no run_id")))?,
+                Payload {
+                    inputs: parse(&inputs)?,
+                    outputs: parse(&outputs)?,
+                    events: None,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The text index sidecar of an existing segment, from its core and payload files (backfill of M2 files).
+pub fn sidecar_of(core: Bytes, payload: Bytes) -> Result<fts::Sidecar, StorageError> {
+    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let mut rows: Vec<StoredRow> = Vec::new();
+    for b in ParquetRecordBatchReaderBuilder::try_new(core)?.build()? {
+        rows.extend(decode_core(&b?)?);
+    }
+    rows.sort_by_key(|r| r.payload_row);
+    let mut text = Vec::new();
+    for b in ParquetRecordBatchReaderBuilder::try_new(payload)?.build()? {
+        text.extend(decode_text(&b?)?);
+    }
+    if rows.len() != text.len() || rows.iter().enumerate().any(|(i, r)| r.payload_row as usize != i) {
+        return Err(StorageError::Format("core and payload rows don't pair up".into()));
+    }
+    if rows.iter().zip(&text).any(|(r, (id, _))| *id != r.state.run.run_id) {
+        return Err(StorageError::Format("core and payload rows don't pair up".into()));
+    }
+    let texts = rows.iter().zip(&text).map(|(r, (_, p))| TextRow {
+        inputs: p.inputs.as_ref(),
+        outputs: p.outputs.as_ref(),
+        error: if r.state.present & present::ERROR != 0 {
+            r.state.run.error.as_deref()
+        } else {
+            None
+        },
+    });
+    fts::build(texts)
+}
+
 /// Rows with the path, and value (as JSON text) → (value, count).
 type PathCounts = (u64, HashMap<String, (Value, u64)>);
 

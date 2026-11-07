@@ -1,3 +1,4 @@
+pub mod aggregate_stream;
 pub mod api;
 pub mod errors;
 pub mod feedback;

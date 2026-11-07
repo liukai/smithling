@@ -1,8 +1,8 @@
 //! Collecting merged runs for a scope: memtables ∪ files, with the single-version fast path (design §4.3).
 //!
 //! 1. Pin: under the memtable lock take the file set (`Version`), the frozen memtable, and copies (without
-//!    payloads) of the memtable runs in scope, with their promoted attributes (cached at apply time). One pin
-//!    can serve several narrower scopes (start-time windows).
+//!    payloads, except the text a search needs) of the memtable runs in scope, with their promoted attributes
+//!    (cached at apply time). One pin can serve several narrower scopes (start-time windows).
 //! 2. Scan the files in scope with the pushed-down filter, plus every `needs_merge` row.
 //! 3. Any run that has (or may have) more than one version is fetched whole — every version from every file
 //!    in the time scope, whatever its project (a late update may not know its project) — and merged with
@@ -17,6 +17,8 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use tracedb_ingest::store::RunStore;
 use tracedb_ingest::{Ingest, Version};
 use tracedb_model::attrs::{Attrs, promote};
+use tracedb_model::filter::Side;
+use tracedb_model::text::{Text, phrase_in};
 use tracedb_model::{RunId, RunState, TraceId, merge_versions, present};
 use tracedb_storage::segment::{SegmentMeta, decode_core, decode_payload, start_key};
 use tracedb_storage::{Payload, StoredRow};
@@ -41,10 +43,12 @@ pub struct Scope {
     /// Only runs whose merged start key is in this range, with their versions read from the whole scope (a
     /// conflicting later `dotted_order` can put a version in another window).
     pub window: Option<(i64, i64)>,
+    /// Only these runs (a search's matches, for aggregates).
+    pub runs: Option<Arc<HashSet<RunId>>>,
 }
 
 impl Scope {
-    fn narrowed(&self) -> Scope {
+    pub(crate) fn narrowed(&self) -> Scope {
         let Some((a, b)) = self.window else {
             return self.clone();
         };
@@ -83,7 +87,7 @@ impl Scope {
     }
 
     /// Files that may hold other versions of runs in scope: same time and trace bounds, any project.
-    fn file_may_hold_versions(&self, s: &SegmentMeta) -> bool {
+    pub(crate) fn file_may_hold_versions(&self, s: &SegmentMeta) -> bool {
         self.time_ok(s) && self.traces_ok(s)
     }
 
@@ -92,6 +96,11 @@ impl Scope {
             && self.trace_id.is_none_or(|t| st.run.trace_id == t)
             && self.run_id.is_none_or(|r| st.run.run_id == r)
             && self.traces.as_ref().is_none_or(|ts| ts.contains(&st.run.trace_id))
+            && self.has_run(st.run.run_id)
+    }
+
+    pub(crate) fn has_run(&self, id: RunId) -> bool {
+        self.runs.as_ref().is_none_or(|r| r.contains(&id))
     }
 
     pub(crate) fn df_filter(&self) -> Option<DfExpr> {
@@ -112,6 +121,11 @@ impl Scope {
             && ts.len() <= IN_CHUNK
         {
             parts.push(col("trace_id").in_list(ts.iter().map(|t| id_lit(*t)).collect(), false));
+        }
+        if let Some(rs) = &self.runs
+            && rs.len() <= IN_CHUNK
+        {
+            parts.push(col("run_id").in_list(rs.iter().map(|r| id_lit(*r)).collect(), false));
         }
         parts.into_iter().reduce(DfExpr::and)
     }
@@ -136,6 +150,18 @@ pub struct ScanStats {
     pub files_version_lookup: usize,
     /// Rows read by that search (included in `rows_read`).
     pub merge_rows: usize,
+    /// Files a text search narrowed with their index.
+    pub index_files: usize,
+    /// Files a text search read whole: no index (M2 files), an unreadable one, or only very common words.
+    pub scan_files: usize,
+    /// Runs a text search checked against their merged text.
+    pub candidates: usize,
+    /// Payload rows read for that check.
+    pub payload_rows: usize,
+    /// Files whose index footer was already in memory.
+    pub cache_hits: usize,
+    /// Files in scope without a text index.
+    pub not_indexed: BTreeSet<String>,
     scanned: HashSet<String>,
     looked_up: HashSet<String>,
 }
@@ -143,8 +169,10 @@ pub struct ScanStats {
 /// The file set and the memtable runs in a scope, taken together under the memtable lock.
 pub struct Pinned {
     pub version: Arc<Version>,
-    /// (start key, state without payload, promoted attributes), by start key.
+    /// (start key, state, promoted attributes), by start key. Without payloads, except as [`pin_text`] says.
     pub(crate) rows: Vec<(i64, RunState, Attrs)>,
+    /// Taken by [`pin_text`].
+    pub(crate) text: bool,
 }
 
 impl Pinned {
@@ -169,9 +197,25 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
     pin_with(ingest, scope, false).0
 }
 
+/// [`pin`], with `inputs` and `outputs` copied for the memtable versions whose own text matches one of
+/// `searches`. Leaving out the others' text changes no search's answer: a merged field comes whole from one
+/// version, and theirs match none of the phrases.
+pub(crate) fn pin_text(ingest: &Ingest, scope: &Scope, searches: &[(&[String], Side)]) -> Pinned {
+    pin_inner(ingest, scope, false, searches).0
+}
+
 /// [`pin`], plus (if `multi`) the multi-version set and every memtable version of its runs whatever the scope,
 /// and the frozen memtable, all under the memtable lock.
 pub(crate) fn pin_with(ingest: &Ingest, scope: &Scope, multi: bool) -> (Pinned, Option<Arc<RunStore>>, HashSet<RunId>) {
+    pin_inner(ingest, scope, multi, &[])
+}
+
+fn pin_inner(
+    ingest: &Ingest,
+    scope: &Scope,
+    multi: bool,
+    searches: &[(&[String], Side)],
+) -> (Pinned, Option<Arc<RunStore>>, HashSet<RunId>) {
     let mem = ingest.mem();
     let mem = mem.read().unwrap();
     let mv: HashSet<RunId> = if multi {
@@ -196,7 +240,12 @@ pub(crate) fn pin_with(ingest: &Ingest, scope: &Scope, multi: bool) -> (Pinned, 
         let in_scope = |(k, st): &(i64, &RunState)| scope.row_in_scope(*k, st) && in_project(st);
         let take = |(k, st): (i64, &RunState)| {
             let attrs = store.attrs(&st.run.run_id).cloned().unwrap_or_else(|| promote(&st.run));
-            (k, st.without_payload(), attrs)
+            let mut copy = st.without_payload();
+            if searches.iter().any(|(w, side)| phrase_in(&Text::of(&st.run), w, *side)) {
+                copy.run.inputs = st.run.inputs.clone();
+                copy.run.outputs = st.run.outputs.clone();
+            }
+            (k, copy, attrs)
         };
         if multi {
             let keep = |(k, st): &(i64, &RunState)| mv.contains(&st.run.run_id) || in_scope(&(*k, *st));
@@ -228,6 +277,7 @@ pub(crate) fn pin_with(ingest: &Ingest, scope: &Scope, multi: bool) -> (Pinned, 
     let pinned = Pinned {
         version: mem.version.clone(),
         rows,
+        text: !searches.is_empty(),
     };
     (pinned, mem.frozen.clone(), mv)
 }

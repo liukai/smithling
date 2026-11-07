@@ -451,7 +451,7 @@ async fn a_lookup_reads_the_footer_one_dictionary_page_and_one_postings_range() 
     assert!(dict_bytes > 100_000, "dictionary {dict_bytes} B");
 
     let mut by_word = HashMap::new();
-    for w in ["w123", "w9001", "w19876"] {
+    for (i, w) in ["w123", "w9001", "w19876"].into_iter().enumerate() {
         reads.lock().unwrap().requests.clear();
         let got = index.lookup(&seg, &[w.to_string()], TextField::Inputs).await.unwrap();
         assert_eq!(got, naive(&rows, &[w], TextField::Inputs));
@@ -463,12 +463,15 @@ async fn a_lookup_reads_the_footer_one_dictionary_page_and_one_postings_range() 
                 .map(|(_, n)| *n)
                 .collect()
         };
-        let (dict, post) = (on(".fts.dict.parquet"), on(".fts.post"));
-        assert_eq!(dict.len(), 2, "{w}: footer, then the page: {r:?}");
-        assert!(dict[0] <= 64 * 1024, "{w}: footer read {} B", dict[0]);
-        assert!(dict[1] <= 5 * 8 * 1024, "{w}: one page per column, {} B", dict[1]);
+        let (mut dict, post) = (on(".fts.dict.parquet"), on(".fts.post"));
+        if i == 0 {
+            assert_eq!(dict.len(), 2, "{w}: footer, then the page: {r:?}");
+            assert!(dict.remove(0) <= 64 * 1024, "{w}: footer read");
+        }
+        assert_eq!(dict.len(), 1, "{w}: the footer is read once, then kept: {r:?}");
+        assert!(dict[0] <= 5 * 8 * 1024, "{w}: one page per column, {} B", dict[0]);
         assert_eq!(post.len(), 1, "{w}: one postings range: {r:?}");
-        by_word.insert(w, dict[1]);
+        by_word.insert(w, dict[0]);
     }
     eprintln!("dictionary {dict_bytes} B; page reads {by_word:?}");
 }

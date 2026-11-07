@@ -65,18 +65,21 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         .filter(|p| data_file(p) && !registered.contains(p.as_str()))
         .cloned()
         .collect();
+    // A text index sidecar holds nothing the data files don't, so an unregistered one (a crash mid-flush or
+    // mid-backfill) is always safe to delete.
+    let sidecar = |p: &str| p.rsplit('/').next().is_some_and(|name| name.contains(".fts"));
     // A crashed flush's events are still in the WAL (it is trimmed only after the commit), so its files are safe
     // to delete. If the WAL doesn't reach back to `flushed_seq`, the catalog doesn't match these files (lost or
     // wrong `--metastore`): deleting them could lose data, so refuse instead.
     let wal_covers = crate::wal::first_seq(&cfg.data_dir.join("wal"))
         .map_err(crate::wal::WalError::from)?
         .is_some_and(|f| f <= flushed_seq + 1);
-    if !orphans.is_empty() && !wal_covers {
+    if orphans.iter().any(|p| !sidecar(p)) && !wal_covers {
         return Err(StorageError::Config(format!(
             "{} data files are not in the catalog and the WAL doesn't cover them (e.g. {}); is --metastore the \
              catalog for this --storage? Not deleting them",
-            orphans.len(),
-            orphans[0]
+            orphans.iter().filter(|p| !sidecar(p)).count(),
+            orphans.iter().find(|p| !sidecar(p)).expect("one")
         ))
         .into());
     }

@@ -166,3 +166,96 @@ async fn prints_an_aggregate_table_with_other_total_and_no_price() {
     assert_eq!(code, 1);
     assert!(err.contains("--group-by/--metrics") && err.contains("colour"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_adds_a_phrase_to_the_filter() {
+    let server = start().await;
+    let mut a = ls_child(1, 1, 11, "p");
+    a["name"] = json!("fetch_url");
+    a["tags"] = json!(["batch=a"]);
+    a["error"] = json!("HTTPError: 429 Too Many Requests");
+    let mut b = ls_child(1, 1, 12, "p");
+    b["name"] = json!("fetch_url");
+    b["outputs"] = json!({"body": "429 \"Too\" Many Requests"});
+    let mut c = ls_child(1, 1, 13, "p");
+    c["tags"] = json!(["batch=a"]);
+    c["outputs"] = json!({"body": "Too Many 429 Requests"});
+    post_batch(&server, vec![ls_root(1, "p", 1), a, b, c], vec![]).await;
+
+    let (code, out, err) = tracedb(args(&server, &["--search", "429 Too Many Requests", "--json"])).await;
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let mut ids: Vec<&str> = lines.iter().map(|r| r["run_id"].as_str().unwrap()).collect();
+    ids.sort();
+    assert_eq!(ids, [uid(11), uid(12)]);
+    assert!(lines.iter().all(|r| r["match"]["excerpt"].is_string()));
+
+    let (code, out, err) = tracedb(args(
+        &server,
+        &["--search", "429 \"too\" many", r#"has(tags, "batch=a")"#],
+    ))
+    .await;
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains(&uid(11)) && !out.contains(&uid(12)) && !out.contains(&uid(13)),
+        "{out}"
+    );
+    assert!(out.trim_end().ends_with("1 run"), "{out}");
+
+    // Errors point at the flag they came from.
+    let (code, _, err) = tracedb(args(&server, &["--search", "x", r#"eq(staus, "error")"#])).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("EXPR") && err.contains("did you mean"), "{err}");
+    assert_eq!(err.lines().nth(2), Some("     ^^^^^"), "{err}");
+    let (code, _, err) = tracedb(args(&server, &["--search", "!!", r#"eq(status, "error")"#])).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("--search") && err.contains("at least one word"), "{err}");
+    let (code, _, err) = tracedb(args(&server, &["--search", "x", r#"eq(name, "a"), eq(name, "b")"#])).await;
+    assert_eq!(code, 1, "EXPR is checked on its own, not as part of the and: {err}");
+    assert!(err.contains("EXPR"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compares_batch_a_with_batch_b_in_b_columns() {
+    const MB: u64 = 1024 * 1024;
+    let server = start_with(|c| c.limits.memtable_bytes = MB).await;
+    let s = tracedb::scenario::generate(7, tracedb_model::Ts::now().0, MB);
+    tracedb::scenario::load(&format!("http://{}", server.addr), &s)
+        .await
+        .unwrap();
+    let tag = |t: &str| format!("has(tags, {t:?})");
+    let (a, b) = (tag(tracedb::scenario::BATCH_TAG), tag(tracedb::scenario::BATCH_B_TAG));
+    let base = [
+        "--project",
+        tracedb::scenario::PROJECT,
+        "--group-by",
+        "name",
+        "--metrics",
+        "error_rate,p95(latency)",
+    ];
+    let mut rest = base.to_vec();
+    rest.extend(["--compare", b.as_str(), a.as_str()]);
+    let (code, out, err) = tracedb(args(&server, &rest)).await;
+    assert_eq!(code, 0, "{err}");
+    let words = |l: &str| l.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+    let lines: Vec<&str> = out.lines().collect();
+    let head = "name runs error_rate p95 │ b: runs error_rate p95";
+    assert_eq!(words(lines[0]), words(head), "{out}");
+    let fetch = lines.iter().find(|l| l.starts_with("fetch_url")).unwrap();
+    assert_eq!(
+        words(fetch),
+        ["fetch_url", "300", "14.0%", "31.0", "s", "│", "300", "2.0%", "9.0", "s"],
+        "{out}"
+    );
+    assert!(lines.iter().any(|l| l.starts_with("total") && l.contains('│')), "{out}");
+
+    let mut rest = base.to_vec();
+    rest.extend(["--time", "24h", "--shift", "1d"]);
+    let (code, out, err) = tracedb(args(&server, &rest)).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.lines().next().unwrap().contains("│ b:"), "{out}");
+    let mut rest = base.to_vec();
+    rest.extend(["--shift", "1d", "--compare", b.as_str()]);
+    let (code, _, err) = tracedb(args(&server, &rest)).await;
+    assert!(code == 1 && err.contains("cannot be used with"), "{err}");
+}

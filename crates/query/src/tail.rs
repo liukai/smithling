@@ -124,7 +124,7 @@ impl Query {
                     let (this, mut q) = (this.clone(), q.clone());
                     q.traces = Some(t.clone());
                     running = Some(Box::pin(async move {
-                        let res = this.select(&q, usize::MAX).await;
+                        let res = this.select(&q, usize::MAX, true).await;
                         (t, r, res)
                     }));
                 }

@@ -38,6 +38,8 @@ pub struct Facts {
     pub cost: Option<Cost>,
     /// The run's mean score per feedback key.
     pub feedback: Vec<(String, f64)>,
+    /// `start_time`, microseconds (read only for time series).
+    pub start_us: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -316,6 +318,29 @@ pub struct Cells {
     pub approximate: bool,
 }
 
+impl Cells {
+    /// An estimate from a sample of `1 / k` of the rows: counts and sums times `k`; rates, percentiles and
+    /// averages as sampled.
+    pub fn scaled(self, k: f64) -> Cells {
+        let n = |v: u64| (v as f64 * k).round() as u64;
+        Cells {
+            runs: n(self.runs),
+            finished: n(self.finished),
+            running: n(self.running),
+            errors: n(self.errors),
+            n_latency: n(self.n_latency),
+            input_tokens: self.input_tokens.map(n),
+            output_tokens: self.output_tokens.map(n),
+            total_tokens: self.total_tokens.map(n),
+            cost_pico: self.cost_pico.map(|c| (c as f64 * k).round() as i64),
+            no_price_runs: n(self.no_price_runs),
+            feedback_n: n(self.feedback_n),
+            estimated: true,
+            ..self
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +354,7 @@ mod tests {
             total_tokens: None,
             cost: None,
             feedback: vec![],
+            start_us: None,
         }
     }
 
@@ -451,6 +477,26 @@ mod tests {
     }
 
     #[test]
+    fn an_estimate_scales_counts_and_sums_not_rates_or_percentiles() {
+        let mut a = Acc::new(Keep::Values);
+        for i in 0..10 {
+            let mut f = run(if i < 3 { Status::Error } else { Status::Ok }, Some(100 * (i + 1)));
+            f.input_tokens = Some(7);
+            f.cost = Some(Cost::Computed(5));
+            a.add(&f);
+        }
+        let mut m = all_metrics();
+        m.retain(|m| *m != Metric::AvgFeedback("k".into()));
+        let c = a.finish(&m);
+        let e = c.clone().scaled(4.0);
+        assert!(e.estimated && !c.estimated);
+        assert_eq!((e.runs, e.finished, e.errors, e.n_latency), (40, 40, 12, 40));
+        assert_eq!((e.input_tokens, e.cost_pico), (Some(280), Some(200)));
+        assert_eq!((e.error_rate, e.p50, e.p95, e.p99), (c.error_rate, c.p50, c.p95, c.p99));
+        assert_eq!(c.clone().scaled(1.0), Cells { estimated: true, ..c });
+    }
+
+    #[test]
     fn bins_cover_10ms_to_an_hour() {
         assert_eq!(bin_of(0), 0);
         assert_eq!(bin_of(9), 0);
@@ -484,6 +530,7 @@ mod tests {
                 } else {
                     vec![]
                 },
+                start_us: None,
             })
             .collect();
         let of = |fs: &[Facts]| {
