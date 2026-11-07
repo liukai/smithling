@@ -4,6 +4,7 @@
 
 pub mod budget;
 pub mod dedup;
+pub mod feedback;
 pub mod flush;
 pub mod flushed;
 pub mod hub;
@@ -30,10 +31,13 @@ use tracedb_model::{
 };
 use tracedb_storage::{Metastore, SegmentMeta, StorageError, Store};
 
+pub use feedback::{Feedback, FeedbackError, FeedbackLookup, Feedbacks, KeyStat};
 pub use flush::FlushHealth;
 pub use memtable::{Mem, Version};
 pub use store::{Change, Include, RootKey};
 
+use crate::feedback::FeedbackStore;
+use crate::flushed::FlushedIds;
 use crate::hub::Hub;
 use crate::wal::WalError;
 
@@ -192,6 +196,8 @@ pub struct Health {
     pub damaged_segments: Vec<Damaged>,
     /// The ids of `damaged_segments` (the M2 field).
     pub corrupt_segments: Vec<String>,
+    /// Feedback items whose run hasn't arrived (a flushed-ids false positive can hide one).
+    pub orphan_feedback: usize,
 }
 
 /// A registered segment that can't be served (M3-FR-18).
@@ -264,6 +270,20 @@ impl Storage {
         F::Output: Send + 'static,
     {
         block_on(self.rt.0.as_ref().expect("storage runtime is running"), fut)
+    }
+
+    /// Runs `fut` on the storage runtime and awaits it from any runtime without blocking a thread.
+    pub async fn run<F>(&self, fut: F) -> F::Output
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let rt = self.rt.0.as_ref().expect("storage runtime is running");
+        match rt.spawn(fut).await {
+            Ok(v) => v,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => panic!("storage task cancelled: {e}"),
+        }
     }
 }
 
@@ -418,6 +438,8 @@ struct Inner {
     counters: Arc<Counters>,
     storage: Arc<Storage>,
     damaged: RwLock<BTreeMap<String, Damaged>>,
+    flushed: Arc<Mutex<FlushedIds>>,
+    feedback: FeedbackStore,
     /// Held for the life of the process: a second process on the same folder would delete our files as orphans.
     _lock: std::fs::File,
 }
@@ -493,6 +515,7 @@ impl Ingest {
         }));
         let mvset = Arc::new(RwLock::new(mvset));
         let flushed = Arc::new(Mutex::new(flushed));
+        let feedback = FeedbackStore::load(storage.clone())?;
         let unflushed = wal::unflushed_bytes(&cfg.data_dir.join("wal"), flushed_seq).unwrap_or(0);
         let counters = Arc::new(Counters {
             unflushed_wal: AtomicU64::new(unflushed),
@@ -529,7 +552,7 @@ impl Ingest {
             hub: hub.clone(),
             health: health.clone(),
             mvset: mvset.clone(),
-            flushed,
+            flushed: flushed.clone(),
             projects: projects.clone(),
             counters: counters.clone(),
             limits: cfg.limits,
@@ -565,6 +588,8 @@ impl Ingest {
             counters,
             storage,
             damaged: RwLock::new(damaged.into_iter().map(|d| (d.id.clone(), d)).collect()),
+            flushed,
+            feedback,
             _lock: lock,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
@@ -680,10 +705,47 @@ impl Ingest {
         self.inner.hub.subscribe()
     }
 
+    /// Stores feedback items in one catalog transaction; confirmed once committed.
+    pub async fn put_feedback(&self, items: Vec<Feedback>) -> Result<Vec<Feedback>, FeedbackError> {
+        self.inner.feedback.put(items).await
+    }
+
+    /// Replaces the given fields of a stored item.
+    pub async fn patch_feedback(&self, id: &str, patch: serde_json::Value) -> Result<Feedback, FeedbackError> {
+        self.inner.feedback.patch(id, patch).await
+    }
+
+    /// Every stored item for these runs, by run, oldest first.
+    pub async fn feedback_for_runs(&self, runs: Vec<RunId>) -> Result<Vec<Feedback>, FeedbackError> {
+        self.inner.feedback.for_runs(runs).await
+    }
+
+    /// The in-memory feedback index (`run_id → (key, score)`).
+    pub fn feedback(&self) -> Feedbacks {
+        self.inner.feedback.index()
+    }
+
+    /// Runs some feedback points at that are in neither memtable and not in the flushed-ids filter. A filter
+    /// false positive (about 1%) makes a missing run look present; there are no false "missing".
+    pub fn feedback_runs_missing(&self) -> Vec<RunId> {
+        let mut ids = self.feedback().run_ids();
+        {
+            let mem = self.inner.mem.read().unwrap();
+            ids.retain(|id| !mem.active.contains(id) && !mem.frozen.as_ref().is_some_and(|f| f.contains(id)));
+            // Same lock order as the writer (memtables, then the filter); the flusher adds to the filter before
+            // it drops the frozen memtable, so a run in flight is in one of them.
+            let flushed = self.inner.flushed.lock().unwrap();
+            ids.retain(|id| !flushed.contains(id));
+        }
+        ids
+    }
+
     pub fn health(&self) -> Health {
         let error = self.inner.health.lock().unwrap().clone();
         let fh = self.inner.flush_health.lock().unwrap().clone();
         let damaged = self.damaged();
+        let fb = self.feedback();
+        let orphan_feedback = self.feedback_runs_missing().iter().map(|r| fb.items(r)).sum();
         let mem = self.inner.mem.read().unwrap();
         Health {
             ok: error.is_none() && fh.error.is_none() && damaged.is_empty(),
@@ -702,6 +764,7 @@ impl Ingest {
             last_flush_at: fh.last_flush_at,
             corrupt_segments: damaged.iter().map(|d| d.id.clone()).collect(),
             damaged_segments: damaged,
+            orphan_feedback,
         }
     }
 }

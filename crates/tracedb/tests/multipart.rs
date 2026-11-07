@@ -211,18 +211,29 @@ async fn attachments_are_rejected_by_name_and_the_run_is_stored() {
 }
 
 #[tokio::test]
-async fn unknown_and_feedback_parts_are_rejected_by_name_and_the_rest_stored() {
+async fn unknown_parts_are_rejected_by_name_and_feedback_parts_stored() {
     let server = common::start().await;
     let (post, _) = full_root(1);
     let id = post["id"].as_str().unwrap().to_string();
     let mut parts = item_parts("post", &post);
     parts.push(json_part(format!("post.{id}.bogus"), &json!({})));
     parts.push(json_part("something", &json!({})));
+    // The id comes from the part name when the body has none.
     parts.push(json_part(
         "feedback.5b0c0000-0000-4000-8000-000000000001",
-        &json!({"run_id": id, "key": "correctness", "score": 0}),
+        &json!({"run_id": id, "key": "correctness", "score": 0, "comment": "gave up"}),
     ));
-    let r = send_ok(&server, &parts, false).await;
+    parts.push(json_part(
+        "feedback.5b0c0000-0000-4000-8000-000000000002",
+        &json!({"run_id": id, "score": 1}),
+    ));
+    parts.push(Part {
+        name: "feedback.5b0c0000-0000-4000-8000-000000000003".into(),
+        content_type: "application/json".into(),
+        data: b"{not json".to_vec(),
+        with_length: true,
+    });
+    let r = send_ok(&server, &parts, true).await;
     assert_eq!(r["accepted"], 1);
     assert_eq!(
         reasons(&r),
@@ -230,12 +241,26 @@ async fn unknown_and_feedback_parts_are_rejected_by_name_and_the_rest_stored() {
             (format!("post.{id}.bogus"), "unknown_part".into()),
             ("something".into(), "unknown_part".into()),
             (
-                "feedback.5b0c0000-0000-4000-8000-000000000001".into(),
-                "feedback_not_stored".into()
+                "feedback.5b0c0000-0000-4000-8000-000000000002".into(),
+                "bad_feedback".into()
+            ),
+            (
+                "feedback.5b0c0000-0000-4000-8000-000000000003".into(),
+                "bad_feedback".into()
             ),
         ]
     );
     assert!(stored(&server, &id).is_some());
+    let rows: Value = reqwest::get(server.url(&format!("/api/feedback?run_id={id}")))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = rows["feedback"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["id"], "5b0c0000-0000-4000-8000-000000000001");
+    assert_eq!(rows[0]["comment"], "gave up");
 }
 
 #[tokio::test]

@@ -46,7 +46,11 @@ async fn unsupported_paths_are_explicit() {
         .send()
         .await
         .unwrap();
-    assert_eq!(fb.status(), 501, "a 404 would make the SDK retry");
+    assert_eq!(
+        fb.status(),
+        400,
+        "bad feedback is final; a 501 would be re-raised into agent code"
+    );
     let mp = http.post(server.url("/runs/multipart")).body("x").send().await.unwrap();
     assert_eq!(mp.status(), 400, "a 404 makes the SDK fall back, a 415 drops the batch");
 }
@@ -126,10 +130,12 @@ async fn healthz_has_every_contract_field() {
         "segments",
         "last_flush_at",
         "corrupt_segments",
+        "orphan_feedback",
     ] {
         assert!(h.get(k).is_some(), "/healthz lacks {k}: {h}");
     }
     assert_eq!(h["ok"], true);
     assert_eq!(h["frozen"], false);
     assert_eq!(h["corrupt_segments"], json!([]));
+    assert_eq!(h["orphan_feedback"], 0);
 }

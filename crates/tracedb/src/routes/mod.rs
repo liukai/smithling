@@ -1,5 +1,6 @@
 pub mod api;
 pub mod errors;
+pub mod feedback;
 pub mod ingest;
 pub mod multipart;
 pub mod tail;

@@ -124,3 +124,10 @@ export const getFields = (s: FieldScope, prefix: string) =>
   get<{ fields: FieldInfo[]; complete: boolean }>(`/api/fields${qs({ project: s.project, time: s.time, prefix })}`);
 export const getFieldValues = (s: FieldScope, path: string, prefix: string) =>
   get<FieldValues>(`/api/fields/values${qs({ project: s.project, time: s.time, path, prefix })}`);
+
+/** One feedback key in scope: how many items, mean score (null when none has a score). */
+export interface FeedbackKey { key: string; count: number; avg: number | null }
+
+export const getFeedbackKeys = (s: FieldScope) =>
+  get<{ keys: FeedbackKey[] }>(`/api/feedback${qs({ keys: "true", project: s.project, time: s.time })}`);
+export const getOrphanFeedbackCount = () => get<{ orphan_feedback?: number }>("/healthz").then((h) => h.orphan_feedback ?? 0);

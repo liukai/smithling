@@ -1,7 +1,8 @@
 //! `POST /runs/multipart`: the LangSmith SDK's multipart upload, plain or zstd (contracts/http-api.md).
 //!
 //! The body is parsed as it arrives. Run parts are assembled per `(op, id)` and go through the same mapping and
-//! writer as `/runs/batch`; other parts are drained without buffering and rejected by name.
+//! writer as `/runs/batch`; `feedback.{id}` parts are stored as `POST /feedback`; other parts are drained without
+//! buffering and rejected by name.
 
 use axum::Json;
 use axum::body::Body;
@@ -11,11 +12,12 @@ use axum::response::{IntoResponse, Response};
 use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 use tokio_stream::StreamExt;
-use tracedb_model::{Op, Source};
+use tracedb_ingest::Feedback;
+use tracedb_model::{Op, Source, Ts};
 use zstd::stream::raw::{DParameter, Decoder, InBuffer, Operation, OutBuffer};
 
 use crate::langsmith_map::Dialect;
-use crate::routes::errors::{accept_error, error};
+use crate::routes::errors::{accept_error, error, feedback_error};
 use crate::routes::ingest::accept_items;
 use crate::{AppState, MAX_BODY_BYTES};
 
@@ -30,7 +32,7 @@ enum Kind {
     Base(Op, String),
     Field(Op, String, String),
     Attachment,
-    Feedback,
+    Feedback(String),
     Unknown,
 }
 
@@ -46,13 +48,13 @@ fn kind(name: &str) -> Kind {
         (Some(op), _, Some(id), None) => Kind::Base(op, id.to_string()),
         (Some(op), _, Some(id), Some(f)) if FIELDS.contains(&f) => Kind::Field(op, id.to_string(), f.to_string()),
         (None, Some("attachment"), Some(_), Some(n)) if !n.is_empty() => Kind::Attachment,
-        (None, Some("feedback"), Some(_), None) => Kind::Feedback,
+        (None, Some("feedback"), Some(id), None) => Kind::Feedback(id.to_string()),
         _ => Kind::Unknown,
     }
 }
 
 fn keep(name: &str) -> bool {
-    matches!(kind(name), Kind::Base(..) | Kind::Field(..))
+    matches!(kind(name), Kind::Base(..) | Kind::Field(..) | Kind::Feedback(..))
 }
 
 pub struct Part {
@@ -363,6 +365,7 @@ async fn parse(headers: &HeaderMap, body: Body) -> Result<Vec<Part>, Fail> {
 
 struct Assembled {
     items: Vec<(Op, Value)>,
+    feedback: Vec<Feedback>,
     rejected: Vec<Value>,
 }
 
@@ -371,6 +374,8 @@ fn assemble(parts: Vec<Part>) -> Result<Assembled, Fail> {
     type BaseAndFields = (Map<String, Value>, Map<String, Value>);
     let mut runs: IndexMap<(Op, String), BaseAndFields> = IndexMap::new();
     let mut rejected = Vec::new();
+    let mut feedback = Vec::new();
+    let now = Ts::now();
     for Part { name, data } in parts {
         let reason = match kind(&name) {
             k @ (Kind::Base(..) | Kind::Field(..)) => {
@@ -390,9 +395,17 @@ fn assemble(parts: Vec<Part>) -> Result<Assembled, Fail> {
                 }
                 continue;
             }
+            Kind::Feedback(id) => {
+                let parsed = serde_json::from_slice(data.as_deref().unwrap_or_default())
+                    .map_err(|e| format!("bad JSON: {e}"))
+                    .and_then(|v| Feedback::from_upload(v, Some(&id), now).map_err(|e| e.to_string()));
+                match parsed {
+                    Ok(f) => feedback.push(f),
+                    Err(detail) => rejected.push(json!({"part": name, "reason": "bad_feedback", "detail": detail})),
+                }
+                continue;
+            }
             Kind::Attachment => "attachment_not_stored",
-            // Stored from unit 9 (T101); the SDK only sends these when `/info` has a version.
-            Kind::Feedback => "feedback_not_stored",
             Kind::Unknown => "unknown_part",
         };
         rejected.push(json!({"part": name, "reason": reason}));
@@ -407,7 +420,11 @@ fn assemble(parts: Vec<Part>) -> Result<Assembled, Fail> {
         .collect();
     // As in a JSON batch: every post, then every patch.
     items.sort_by_key(|(op, _)| *op == Op::Patch);
-    Ok(Assembled { items, rejected })
+    Ok(Assembled {
+        items,
+        feedback,
+        rejected,
+    })
 }
 
 pub async fn runs_multipart(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
@@ -431,6 +448,10 @@ pub async fn runs_multipart(State(st): State<AppState>, headers: HeaderMap, body
         rejected_parts = assembled.rejected.len(),
         "POST /runs/multipart"
     );
+    // Feedback first: idempotent by id, so a retry after a catalog error re-sends nothing that could double.
+    if let Err(e) = st.ingest.put_feedback(assembled.feedback).await {
+        return feedback_error(&e);
+    }
     let items = assembled.items.iter().map(|(op, v)| (*op, v));
     match accept_items(&st, items, Source::LsBatch, Dialect::LangSmith).await {
         Ok(r) => {
@@ -463,7 +484,7 @@ mod tests {
         assert_eq!(kind("post."), Kind::Unknown);
         assert_eq!(kind(&format!("attachment.{id}.screenshot.png")), Kind::Attachment);
         assert_eq!(kind(&format!("attachment.{id}")), Kind::Unknown);
-        assert_eq!(kind(&format!("feedback.{id}")), Kind::Feedback);
+        assert_eq!(kind(&format!("feedback.{id}")), Kind::Feedback(id.into()));
         assert_eq!(kind("put.x"), Kind::Unknown);
     }
 

@@ -77,6 +77,35 @@ pub struct DedupKeys {
     pub keys: Vec<u8>,
 }
 
+/// One `feedback` row (data-model §3). `raw` is the whole stored item; the other columns are its parts, for SQL.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FeedbackRow {
+    pub id: String,
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    pub key: String,
+    pub score: Option<f64>,
+    /// JSON.
+    pub value: Option<String>,
+    pub comment: Option<String>,
+    /// JSON.
+    pub correction: Option<String>,
+    /// JSON `feedback_source`.
+    pub source: Option<String>,
+    pub created_at: i64,
+    pub modified_at: i64,
+    pub raw: String,
+}
+
+/// What the in-memory feedback index holds per row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedbackKey {
+    pub id: String,
+    pub run_id: String,
+    pub key: String,
+    pub score: Option<f64>,
+}
+
 #[derive(Clone)]
 pub struct Metastore {
     pool: AnyPool,
@@ -384,6 +413,84 @@ impl Metastore {
             return Err(StorageError::Metastore(format!("no segment {segment_id}")));
         }
         Ok(())
+    }
+}
+
+impl Metastore {
+    /// Inserts or replaces rows by `id`, all in one transaction.
+    pub async fn put_feedback(&self, rows: &[FeedbackRow]) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let ins = self.sql(
+            "INSERT INTO feedback (id, run_id, trace_id, key, score, value, comment, correction, source,
+                 created_at, modified_at, raw)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET run_id = excluded.run_id, trace_id = excluded.trace_id,
+                 key = excluded.key, score = excluded.score, value = excluded.value, comment = excluded.comment,
+                 correction = excluded.correction, source = excluded.source, created_at = excluded.created_at,
+                 modified_at = excluded.modified_at, raw = excluded.raw",
+        );
+        for r in rows {
+            sqlx::query(sqlx::AssertSqlSafe(ins.0.clone()))
+                .bind(&r.id)
+                .bind(&r.run_id)
+                .bind(r.trace_id.clone())
+                .bind(&r.key)
+                .bind(r.score)
+                .bind(r.value.clone())
+                .bind(r.comment.clone())
+                .bind(r.correction.clone())
+                .bind(r.source.clone())
+                .bind(r.created_at)
+                .bind(r.modified_at)
+                .bind(&r.raw)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The stored item (`raw`) with this id.
+    pub async fn feedback_raw(&self, id: &str) -> Result<Option<String>, StorageError> {
+        Ok(sqlx::query(self.sql("SELECT raw FROM feedback WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|r| r.get(0)))
+    }
+
+    /// Every stored item (`raw`) for these runs, by run, oldest first.
+    pub async fn feedback_for_runs(&self, run_ids: &[String]) -> Result<Vec<String>, StorageError> {
+        let mut out = Vec::new();
+        for chunk in run_ids.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(", ");
+            let q = self.placeholders(&format!(
+                "SELECT raw FROM feedback WHERE run_id IN ({marks}) ORDER BY run_id, created_at, id"
+            ));
+            // Only `?` marks are formatted in; the ids are bound.
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(q));
+            for id in chunk {
+                query = query.bind(id);
+            }
+            out.extend(query.fetch_all(&self.pool).await?.iter().map(|r| r.get::<String, _>(0)));
+        }
+        Ok(out)
+    }
+
+    /// Id, run, key and score of every row, for the in-memory index.
+    pub async fn feedback_keys(&self) -> Result<Vec<FeedbackKey>, StorageError> {
+        let rows = sqlx::query("SELECT id, run_id, key, score FROM feedback")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| FeedbackKey {
+                id: r.get(0),
+                run_id: r.get(1),
+                key: r.get(2),
+                score: r.get(3),
+            })
+            .collect())
     }
 }
 

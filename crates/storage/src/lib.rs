@@ -12,7 +12,7 @@ pub mod metastore;
 pub mod object;
 pub mod segment;
 
-pub use metastore::{DedupKeys, Metastore, redact};
+pub use metastore::{DedupKeys, FeedbackKey, FeedbackRow, Metastore, redact};
 pub use object::Store;
 pub use segment::{FieldStat, Payload, SegmentMeta, StoredRow, Version, Written};
 

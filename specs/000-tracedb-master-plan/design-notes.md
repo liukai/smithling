@@ -143,7 +143,7 @@ Endpoints (all accept batches):
 - Unchanged in 0.14.17: `/info` drives the choice; with `use_multipart_endpoint: false` the SDK sends `POST /runs/batch`;
   zstd is used only for multipart and only if `/info` sets `instance_flags.zstd_compression_enabled`; `RunTree.patch`
   still re-sends full `events`. The SDK retries `408, 425, 429, 500, 502, 503, 504` and honours `Retry-After`.
-- Feedback: multipart part `feedback.{id}` by default; with multipart off, the SDK calls `POST /feedback` instead.
+- Feedback: `POST /feedback` JSON whenever `/info` has an empty `version` (tracedb's), so that is the default; a `feedback.{id}` multipart part only with a versioned `/info` ([D-027](decisions.md#d-027)).
 - The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (M5) is a cheap add-on.
 - Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
 

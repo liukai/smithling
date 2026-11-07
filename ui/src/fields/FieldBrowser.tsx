@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react";
-import { type FieldInfo, type FieldScope, getFields } from "../api";
+import { type FeedbackKey, type FieldInfo, type FieldScope, getFeedbackKeys, getFields, getOrphanFeedbackCount } from "../api";
+import { parse } from "../query/parse";
 import type { Expr } from "../query/ast";
 import { canBeColumn } from "../views/Table";
 import { DEBOUNCE_MS, ValueList, fmtCount } from "./ValueList";
+
+/** `exists(feedback.<key>)`, or null when the key can't be written as a filter path. */
+function feedbackExists(key: string): Expr | null {
+  const r = parse(`exists(feedback.${key})`);
+  return r.ok && r.expr.t === "exists" && r.expr.path === `feedback.${key}` ? r.expr : null;
+}
 
 /** The paths runs in scope have, most common first, with their types; open one to see its values. */
 export function FieldBrowser({ scope, onPick, onColumn }: {
@@ -16,6 +23,16 @@ export function FieldBrowser({ scope, onPick, onColumn }: {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const { project, time } = scope;
+
+  const [feedback, setFeedback] = useState<{ keys: FeedbackKey[]; orphaned: number } | null>(null);
+
+  useEffect(() => {
+    let on = true;
+    Promise.all([getFeedbackKeys({ project, time }), getOrphanFeedbackCount()])
+      .then(([k, orphaned]) => { if (on) setFeedback({ keys: k.keys, orphaned }); })
+      .catch(() => { if (on) setFeedback(null); });
+    return () => { on = false; };
+  }, [project, time]);
 
   useEffect(() => {
     let on = true;
@@ -45,6 +62,26 @@ export function FieldBrowser({ scope, onPick, onColumn }: {
           </li>
         ))}
       </ul>
+      {feedback && (feedback.keys.length > 0 || feedback.orphaned > 0) && (
+        <section className="feedback-keys" aria-label="feedback">
+          <div className="muted">feedback.{feedback.orphaned > 0 && ` (${fmtCount(feedback.orphaned)} orphaned)`}</div>
+          <ul>
+            {feedback.keys.map((k) => {
+              const pick = k.avg === null ? null : feedbackExists(k.key);
+              return (
+                <li key={k.key} className="field">
+                  <div className="field-head">
+                    {pick
+                      ? <button className="field-path" title="runs with a score for this key" onClick={() => onPick(pick, false)}>feedback.{k.key}</button>
+                      : <span className="field-path" title={k.avg === null ? "no scores, only values" : "not a filterable key"}>feedback.{k.key}</span>}
+                    <span className="field-types muted">{k.avg === null ? "value" : "number"} {fmtCount(k.count)}{k.avg !== null && ` · avg ${k.avg.toFixed(2)}`}</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {fields?.length === 0 && !error && <div className="muted">no fields{prefix ? ` starting with ${prefix}` : ""}</div>}
       {!complete && <div className="muted">some files list only their first 10,000 paths</div>}
     </section>

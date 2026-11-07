@@ -6,13 +6,13 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracedb_ingest::{AcceptError, AcceptResult, Incoming, Rejected};
+use tracedb_ingest::{AcceptError, AcceptResult, Feedback, Incoming, Rejected};
 use tracedb_model::validate::Reject;
-use tracedb_model::{Op, Source};
+use tracedb_model::{Op, Source, Ts};
 
 use crate::AppState;
 use crate::langsmith_map::{Dialect, incoming};
-use crate::routes::errors::{accept_error, error};
+use crate::routes::errors::{accept_error, feedback_error};
 
 pub const BATCH_SIZE_LIMIT: usize = 100;
 pub const BATCH_SIZE_LIMIT_BYTES: usize = 20 * 1024 * 1024;
@@ -63,12 +63,22 @@ pub async fn update_run(State(st): State<AppState>, Path(run_id): Path<String>, 
     submit(&st, [(Op::Patch, &v)], Source::LsSingle, Dialect::LangSmith).await
 }
 
-pub async fn feedback() -> Response {
-    error(
-        StatusCode::NOT_IMPLEMENTED,
-        "unsupported",
-        "feedback is supported from M3",
-    )
+pub async fn feedback(State(st): State<AppState>, Json(v): Json<Value>) -> Response {
+    let item = match Feedback::from_upload(v, None, Ts::now()) {
+        Ok(f) => f,
+        Err(e) => return feedback_error(&e),
+    };
+    match st.ingest.put_feedback(vec![item]).await {
+        Ok(mut stored) => Json(stored.remove(0)).into_response(),
+        Err(e) => feedback_error(&e),
+    }
+}
+
+pub async fn update_feedback(State(st): State<AppState>, Path(id): Path<String>, Json(v): Json<Value>) -> Response {
+    match st.ingest.patch_feedback(&id, v).await {
+        Ok(f) => Json(f).into_response(),
+        Err(e) => feedback_error(&e),
+    }
 }
 
 #[derive(Deserialize)]

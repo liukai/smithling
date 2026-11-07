@@ -214,8 +214,9 @@ Feedback { id, run_id, trace_id?, key, score?: f64, value?: JSON, comment?, corr
 FeedbackIndex: HashMap<RunId, SmallVec<(key, score)>>     # loaded at start from the catalog; ~40 B per item
 ```
 
-Orphaned feedback = rows whose `run_id` isn't found by a run lookup in the request's scope. They are listed, never
-dropped.
+Orphaned feedback = rows whose `run_id` is in neither memtable nor the flushed-ids filter (a 1% false positive can
+hide one; an orphan has no run, so no project or time). They are listed, never dropped. The index is
+`HashMap<RunId, Vec<(id, key, score)>>` (the id, so a retried or patched item replaces its entry).
 
 ## 9. 🟠 In-memory structures (changes)
 

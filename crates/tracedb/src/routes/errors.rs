@@ -5,7 +5,7 @@ use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use tracedb_ingest::AcceptError;
+use tracedb_ingest::{AcceptError, FeedbackError};
 
 pub fn error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
     (
@@ -27,5 +27,15 @@ pub fn accept_error(e: &AcceptError) -> Response {
             with_retry_after(error(StatusCode::SERVICE_UNAVAILABLE, "storage", e.to_string()), 5)
         }
         AcceptError::Closed => error(StatusCode::SERVICE_UNAVAILABLE, "closed", e.to_string()),
+    }
+}
+
+pub fn feedback_error(e: &FeedbackError) -> Response {
+    match e {
+        FeedbackError::Bad(m) => error(StatusCode::BAD_REQUEST, "bad_feedback", m.clone()),
+        FeedbackError::NotFound(_) => error(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+        FeedbackError::Storage(_) => {
+            with_retry_after(error(StatusCode::SERVICE_UNAVAILABLE, "storage", e.to_string()), 5)
+        }
     }
 }

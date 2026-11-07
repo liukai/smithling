@@ -18,10 +18,16 @@ const VALUES: Record<string, { value: unknown; count: number }[]> = {
   tags: [{ value: "batch=2026-11-05-a", count: 200 }],
 };
 
-function setup(path: string) {
+const KEYS = [
+  { key: "correctness", count: 2, avg: 0 }, { key: "helpfulness", count: 1, avg: null }, { key: "user rating", count: 1, avg: 1 },
+];
+
+function setup(path: string, feedback: { keys: unknown[]; orphans: number } = { keys: [], orphans: 0 }) {
   history.replaceState(null, "", path);
   const bodies: Body[] = [];
   const calls = mockFetch({
+    "/api/feedback": () => ({ keys: feedback.keys }),
+    "/healthz": () => ({ ok: true, orphan_feedback: feedback.orphans }),
     "/api/query": (_u, b) => { bodies.push(b); return queryPage([header(1)]); },
     "/api/projects": () => [{ name: "p", runs: 3 }],
     "/api/fields/values": (u) => {
@@ -76,6 +82,32 @@ describe("field browser", () => {
     act(() => within(browser()).getByRole("button", { name: "v7" }).click());
     await waitFor(() => expect(last(bodies).filter).toBe('eq(metadata.prompt_version, "v7")'));
     expect(chips()).toEqual(["metadata.prompt_version = v7"]);
+  });
+
+  it("has a feedback. section with keys, counts and orphans; a key adds exists(feedback.<key>)", async () => {
+    const { bodies, calls } = setup("/?project=p&time=12h", { keys: KEYS, orphans: 1 });
+    act(() => screen.getByRole("button", { name: "fields" }).click());
+    const section = () => within(browser()).getByRole("region", { name: "feedback" });
+    await waitFor(() => expect(section().textContent).toContain("(1 orphaned)"));
+    const keyRows = [...section().querySelectorAll(".field")].map((li) => li.textContent);
+    expect(keyRows).toEqual([
+      "feedback.correctnessnumber 2 · avg 0.00", "feedback.helpfulnessvalue 1", "feedback.user ratingnumber 1 · avg 1.00",
+    ]);
+    expect(calls).toContain("/api/feedback?keys=true&project=p&time=12h");
+    // Only keys with scores and a filterable name are clickable.
+    expect(within(section()).getAllByRole("button").map((b) => b.textContent)).toEqual(["feedback.correctness"]);
+
+    act(() => within(section()).getByRole("button", { name: "feedback.correctness" }).click());
+    await waitFor(() => expect(last(bodies).filter).toBe("exists(feedback.correctness)"));
+  });
+
+  it("shows no feedback section when no feedback is stored", async () => {
+    const { calls } = setup("/");
+    act(() => screen.getByRole("button", { name: "fields" }).click());
+    await waitFor(() => expect(fieldRows()).toHaveLength(4));
+    await waitFor(() => expect(calls.filter((c) => c.startsWith("/api/feedback") || c === "/healthz")).toHaveLength(2));
+    await act(async () => {});
+    expect(within(browser()).queryByRole("region", { name: "feedback" })).toBeNull();
   });
 
   it("filters list fields with has(), keeps numbers typed, and Alt-click excludes", async () => {

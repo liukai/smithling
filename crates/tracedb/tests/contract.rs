@@ -30,13 +30,10 @@ async fn recorded_sdk_traffic_is_fully_accepted_and_merged() {
         let http = reqwest::Client::new();
 
         let mut multipart = 0;
+        let mut feedback_calls = 0;
         for line in std::fs::read_to_string(dir.join("requests.jsonl")).unwrap().lines() {
             let req: Value = serde_json::from_str(line).unwrap();
             let (method, path) = (req["method"].as_str().unwrap(), req["path"].as_str().unwrap());
-            // Feedback is stored from unit 9 (T101); until then `/feedback` answers 501.
-            if path.starts_with("/feedback") {
-                continue;
-            }
             let url = server.url(path);
             let resp = match (method, req["body_b64"].as_str()) {
                 ("GET", _) => http.get(url).send().await.unwrap(),
@@ -62,6 +59,9 @@ async fn recorded_sdk_traffic_is_fully_accepted_and_merged() {
                     "{version}: {path} rejected items: {body}"
                 );
             }
+            if path.starts_with("/feedback") {
+                feedback_calls += 1;
+            }
         }
 
         assert_eq!(
@@ -77,6 +77,54 @@ async fn recorded_sdk_traffic_is_fully_accepted_and_merged() {
             expected.len(),
             "{version}: run count"
         );
+        let expected_feedback: Vec<Value> = match std::fs::read_to_string(dir.join("expected-feedback.json")) {
+            Ok(s) => serde_json::from_str(&s).unwrap(),
+            Err(_) => Vec::new(),
+        };
+        assert_eq!(
+            feedback_calls > 0,
+            !expected_feedback.is_empty(),
+            "{version}: feedback calls replayed: {feedback_calls}"
+        );
+        let mut stored_feedback = 0u64;
+        for want in &expected_feedback {
+            let run = want["run_id"].as_str().unwrap();
+            let rows: Value = http
+                .get(server.url(&format!("/api/feedback?run_id={run}")))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let got = rows["feedback"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == want["id"])
+                .unwrap_or_else(|| panic!("{version}: feedback {} not stored: {rows}", want["id"]));
+            for (k, v) in want.as_object().unwrap() {
+                assert_eq!(&got[k], v, "{version}: feedback {} field {k}", want["id"]);
+            }
+            stored_feedback += 1;
+        }
+        let health = server.state.ingest.health();
+        assert_eq!(health.orphan_feedback, 0, "{version}: every feedback's run arrived");
+        let keys: Value = http
+            .get(server.url("/api/feedback?keys=true"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let total: u64 = keys["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(total, stored_feedback, "{version}: feedback rows stored (SC-08)");
         for want in &expected {
             let id = want["run_id"].as_str().unwrap().parse().unwrap();
             let got = snap

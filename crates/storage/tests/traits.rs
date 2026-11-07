@@ -6,7 +6,7 @@
 use bytes::Bytes;
 use sqlx::Connection;
 use tracedb_storage::segment::FieldStat;
-use tracedb_storage::{DedupKeys, Metastore, SegmentMeta, Store};
+use tracedb_storage::{DedupKeys, FeedbackKey, FeedbackRow, Metastore, SegmentMeta, Store};
 use uuid::Uuid;
 
 fn env_url(var: &str) -> Option<String> {
@@ -219,6 +219,78 @@ async fn metastore_contract(url: &str) {
     m.save_dedup_keys(&keys(70, 1_900)).await.unwrap();
     assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(70, 1_900)]);
     assert_eq!(m.flushed_seq().await.unwrap(), 70);
+    feedback_contract(&m).await;
+}
+
+fn fb_row(id: &str, run: &str, score: Option<f64>, at: i64) -> FeedbackRow {
+    FeedbackRow {
+        id: id.into(),
+        run_id: run.into(),
+        trace_id: None,
+        key: "correctness".into(),
+        score,
+        value: Some("{\"v\":1}".into()),
+        comment: Some("c".into()),
+        correction: None,
+        source: Some("{\"type\":\"api\"}".into()),
+        created_at: at,
+        modified_at: at,
+        raw: format!("{{\"id\":\"{id}\",\"at\":{at}}}"),
+    }
+}
+
+/// Rows keyed by `id` (a retry replaces), read by run and id, listed for the index.
+async fn feedback_contract(m: &Metastore) {
+    assert!(m.feedback_keys().await.unwrap().is_empty());
+    m.put_feedback(&[fb_row("f1", "r1", Some(0.0), 2), fb_row("f2", "r1", None, 1)])
+        .await
+        .unwrap();
+    m.put_feedback(&[fb_row("f1", "r2", Some(0.5), 3)]).await.unwrap();
+    assert_eq!(
+        m.feedback_raw("f1").await.unwrap(),
+        Some(fb_row("f1", "r2", None, 3).raw)
+    );
+    assert_eq!(m.feedback_raw("nope").await.unwrap(), None);
+    assert_eq!(
+        m.feedback_for_runs(&["r1".into()]).await.unwrap(),
+        vec![fb_row("f2", "r1", None, 1).raw]
+    );
+    m.put_feedback(&[fb_row("f3", "r1", None, 0)]).await.unwrap();
+    assert_eq!(
+        m.feedback_for_runs(&["r2".into(), "r1".into(), "r9".into()])
+            .await
+            .unwrap(),
+        vec![
+            fb_row("f3", "r1", None, 0).raw,
+            fb_row("f2", "r1", None, 1).raw,
+            fb_row("f1", "r2", None, 3).raw
+        ]
+    );
+    let mut keys = m.feedback_keys().await.unwrap();
+    keys.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(
+        keys,
+        vec![
+            FeedbackKey {
+                id: "f1".into(),
+                run_id: "r2".into(),
+                key: "correctness".into(),
+                score: Some(0.5)
+            },
+            FeedbackKey {
+                id: "f2".into(),
+                run_id: "r1".into(),
+                key: "correctness".into(),
+                score: None
+            },
+            FeedbackKey {
+                id: "f3".into(),
+                run_id: "r1".into(),
+                key: "correctness".into(),
+                score: None
+            },
+        ]
+    );
 }
 
 /// The catalog as M2 left it (schema_version 1), with one registered segment.

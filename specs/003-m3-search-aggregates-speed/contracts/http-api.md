@@ -33,7 +33,7 @@ Parts, by name:
 | `post.{run_id}` / `patch.{run_id}` | JSON: the run minus large fields | base of the item |
 | `post.{run_id}.{field}` / `patch.{run_id}.{field}` | JSON, `field ∈ inputs, outputs, events, extra, error, serialized` | merged into the item |
 | `attachment.{run_id}.{name}` | raw bytes | **rejected** `attachment_not_stored`; the run is stored without it |
-| `feedback.{id}` | JSON feedback | stored as `POST /feedback` |
+| `feedback.{id}` | JSON feedback | stored as `POST /feedback`; an invalid one (bad JSON included) is **rejected** `bad_feedback` with `detail` |
 | anything else | — | **rejected** `unknown_part` |
 
 Parts may come in any order. Each assembled item goes through the same mapping, validation and writer as
@@ -50,10 +50,10 @@ Item-level rejections (validation, identity conflict) are reported as in M2's `/
 | Status | When |
 |---|---|
 | `202` | parsed; per-part and per-item rejections listed |
-| `400 bad_multipart` | missing boundary, malformed part headers, bad JSON in a part, zstd decode error |
+| `400 bad_multipart` | missing boundary, malformed part headers, bad JSON in a run part, zstd decode error |
 | `413` | decoded body over 50 MB |
 | `429` + `Retry-After` | as M2 (queue or memtable full) |
-| `503` + `Retry-After` | as M2 (WAL failure) |
+| `503` + `Retry-After` | as M2 (WAL failure); catalog failure storing feedback parts (`storage`) |
 
 Never `404` or `415` for a multipart request: the SDK falls back to `/runs/batch` (dropping feedback) on `404` and
 drops the batch on `415`.
@@ -65,7 +65,8 @@ drops the batch on `415`.
  "comment": "gave up on 429", "feedback_source": {"type": "api", "metadata": {}}, "created_at": "2026-11-06T08:10:00Z"}
 ```
 
-- `id`, `run_id` and `key` are required; `id` is generated if missing.
+- `run_id` (a UUID) and a non-empty `key` are required; `id` is generated if missing; `score` is a number, a bool
+  (1 / 0) or null; `created_at` is kept if given, `modified_at` is the write time.
 - Unknown fields are kept verbatim.
 - The run doesn't have to exist (stored as orphan until it does).
 
@@ -73,10 +74,11 @@ drops the batch on `415`.
 |---|---|
 | `200` | the stored feedback (`created_at`, `modified_at` filled) |
 | `400 bad_feedback` | missing `run_id` or `key`, or `score` not a number |
-| `503` | catalog unavailable (the SDK retries) |
+| `503 storage` | catalog unavailable (`Retry-After`; the SDK retries) |
 
 A retry with the same `id` replaces the row (idempotent). `PATCH /feedback/{id}` replaces the fields given and
-returns `200` with the row, or `404` if no such id.
+returns `200` with the row, or `404` if no such id. A multipart `feedback.{id}` part is stored the same way (the
+part name gives the `id` when the body has none); an invalid one is rejected per part as `bad_feedback`.
 
 ## Query
 
