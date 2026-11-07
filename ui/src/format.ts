@@ -26,3 +26,16 @@ export function fmtBytes(n: number): string {
 export function elapsedSince(iso: string | null, now: number): number | null {
   return iso ? Math.max(0, now - new Date(iso).getTime()) : null;
 }
+
+/** Picodollars as dollars, rounded half up to the cent; null (no price) is a dash, never $0. */
+export function fmtCost(pico: number | null): string {
+  if (pico == null) return "—";
+  const cents = Math.floor(pico / 1e10 + 0.5);
+  return `$${Math.floor(cents / 100).toLocaleString("en-US")}.${String(cents % 100).padStart(2, "0")}`;
+}
+
+export function fmtPct(r: number | null): string {
+  return r == null ? "—" : `${(r * 100).toFixed(1)}%`;
+}
+
+export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;

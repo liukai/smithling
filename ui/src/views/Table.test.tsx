@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { header, mockFetch, queryPage } from "../testutil";
+import { FakeEventSource, header, mockFetch, queryPage } from "../testutil";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -101,5 +101,22 @@ describe("table view", () => {
     act(() => screen.getByRole("button", { name: "Samples" }).click());
     await waitFor(() => expect(params().view).toBeUndefined());
     expect(params().cols).toBe("metadata.prompt_version");
+  });
+
+  it("shows a run that stops matching a live Table view with its new column values", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const id = header(1).run_id;
+    const bodies = setup("/?view=table&cols=metadata.prompt_version&live=1", (b) => queryPage(
+      b.filter === `eq(run_id, "${id}")`
+        ? [{ ...row(1, { "metadata.prompt_version": "v8" }), status: "ok", last_seq: 50 }]
+        : [row(1, { "metadata.prompt_version": "v7" })]));
+    act(() => FakeEventSource.last!.emit("hello"));
+    await waitFor(() => expect(cells()).toContain("v7"));
+
+    act(() => FakeEventSource.last!.emit("left", [id]));
+    await waitFor(() => expect(cells()).toContain("v8"));
+    expect(screen.getByText("no longer matching")).toBeTruthy();
+    expect(screen.getByText("✓ ok")).toBeTruthy();
+    expect(last(bodies)).toEqual({ filter: `eq(run_id, "${id}")`, columns: ["metadata.prompt_version"], limit: 1 });
   });
 });

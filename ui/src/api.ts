@@ -52,19 +52,80 @@ export interface ProjectInfo {
   runs: number;
 }
 
+/** Where the query's search matched: `start..end` count characters (code points) of `excerpt`. */
+export interface Match { path: string; excerpt: string; start: number; end: number }
+
 export interface QueryRun extends RunHeader {
   columns?: Record<string, unknown>;
+  match?: Match;
 }
 
 export type QueryWarning =
   | { kind: "mixed_types"; path: string; counts: Record<string, number> }
   | { kind: "not_indexed"; path: string; runs: number }
+  | { kind: "not_indexed"; files: string[] }
+  | { kind: "skipped_files"; ids: string[] }
   | { kind: "identity_conflict"; run_id: string };
+
+export interface PageStats {
+  files_total: number;
+  files_scanned: number;
+  rows_read: number;
+  rows_merged: number;
+  index_files?: number;
+  scan_files?: number;
+  candidates?: number;
+  payload_rows?: number;
+  cache_hits?: number;
+  matched: number;
+  complete?: boolean;
+  ms: number;
+}
 
 export interface QueryPage {
   runs: QueryRun[];
   next_cursor: string | null;
   warnings: QueryWarning[];
+  stats?: PageStats;
+}
+
+/** One group's figures; latency in ms, cost in picodollars. Missing values are null, never 0. */
+export interface Cells {
+  runs: number;
+  finished: number;
+  running: number;
+  errors: number;
+  error_rate: number | null;
+  p50: number | null;
+  p95: number | null;
+  p99: number | null;
+  n_latency: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cost_pico: number | null;
+  no_price_runs: number;
+  feedback_avg: number | null;
+  feedback_n: number;
+  estimated: boolean;
+  /** Percentiles came from a histogram. */
+  approximate: boolean;
+}
+
+/** `where` is filter text selecting exactly the group's runs; null when no filter can say it. */
+export interface AggGroup { key: unknown[]; cells: Cells | null; where: string | null }
+
+export interface AggResult {
+  query_id: string;
+  partial: boolean;
+  sampled_pct?: number;
+  totals: Cells;
+  groups: AggGroup[];
+  cut: boolean;
+  overlap: boolean;
+  warnings?: QueryWarning[];
+  skipped_files?: string[];
+  stats: { files_scanned: number; clean_rows: number; dirty_runs: number; ms: number };
 }
 
 export interface FieldInfo {
@@ -105,6 +166,10 @@ const get = <T>(path: string) => fetch(path).then((r) => json<T>(r));
 export const postQuery = (body: object) =>
   fetch("/api/query", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
     .then((r) => json<QueryPage>(r));
+
+export const postAggregate = (body: object) =>
+  fetch("/api/aggregate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then((r) => json<AggResult>(r));
 
 export const getProjects = () => get<ProjectInfo[]>("/api/projects");
 export const getTrace = (id: string) => get<TraceView>(`/api/traces/${id}`);

@@ -239,16 +239,125 @@ describe("query panel", () => {
   });
 });
 
+describe("search", () => {
+  const box = () => screen.getByLabelText("search") as HTMLInputElement;
+  const searchFor = (text: string) => {
+    fireEvent.change(box(), { target: { value: text } });
+    fireEvent.submit(box());
+  };
+
+  it("adds a search chip in This run from the search box, and the box follows the chip", async () => {
+    const bodies = setup(`/?filter=${encodeURIComponent('has(tags, "batch=a")')}`);
+    await waitFor(() => expect(bodies.length).toBe(1));
+
+    searchFor('"429 Too Many Requests"');
+    await waitFor(() => expect(last(bodies).filter).toBe('and(has(tags, "batch=a"), search("429 Too Many Requests"))'));
+    expect(chips("This run")).toEqual(["tags has batch=a", 'search "429 Too Many Requests"']);
+    expect(params()).toEqual({ filter: 'has(tags, "batch=a")', q: "429 Too Many Requests" });
+    expect(box().value).toBe("429 Too Many Requests");
+
+    searchFor("rate limit");
+    await waitFor(() => expect(last(bodies).filter).toBe('and(has(tags, "batch=a"), search("rate limit"))'));
+    expect(chips("This run")).toEqual(["tags has batch=a", 'search "rate limit"']);
+
+    act(() => screen.getByRole("button", { name: 'remove search "rate limit"' }).click());
+    await waitFor(() => expect(last(bodies).filter).toBe('has(tags, "batch=a")'));
+    expect(params().q).toBeUndefined();
+    expect(box().value).toBe("");
+  });
+
+  it("keeps the box's search when other chips are added", async () => {
+    const bodies = setup("/?q=429", () => page([header(1, { name: "fetch_url" })]));
+    await waitFor(() => expect(rowNames()).toEqual(["fetch_url"]));
+    act(() => within(screen.getAllByRole("row")[1]).getByText("fetch_url").click());
+    await waitFor(() => expect(last(bodies).filter).toBe('and(eq(name, "fetch_url"), search("429"))'));
+    expect(chips("This run")).toEqual(['search "429"', "name = fetch_url"]);
+    expect(params()).toEqual({ filter: 'eq(name, "fetch_url")', q: "429" });
+    expect(box().value).toBe("429");
+  });
+
+  it("round-trips the search chip through the text form", async () => {
+    const bodies = setup(`/?q=${encodeURIComponent("429 Too Many Requests")}`);
+    await waitFor(() => expect(last(bodies)?.filter).toBe('search("429 Too Many Requests")'));
+    expect(chips("This run")).toEqual(['search "429 Too Many Requests"']);
+    expect(box().value).toBe("429 Too Many Requests");
+
+    act(() => screen.getByRole("button", { name: "Text" }).click());
+    const text = screen.getByLabelText("This run filter") as HTMLTextAreaElement;
+    expect(text.value).toBe('search("429 Too Many Requests")');
+    fireEvent.change(text, { target: { value: 'and(eq(name, "fetch_url"), search(outputs, "rate limit"), search("HTTPError"))' } });
+    act(() => screen.getByRole("button", { name: "Run" }).click());
+    await waitFor(() => expect(last(bodies).filter).toBe('and(eq(name, "fetch_url"), search(outputs, "rate limit"), search("HTTPError"))'));
+    expect(params()).toEqual({ filter: 'and(eq(name, "fetch_url"), search(outputs, "rate limit"))', q: "HTTPError" });
+    expect(box().value).toBe("HTTPError");
+
+    act(() => screen.getByRole("button", { name: "Panel" }).click());
+    expect(chips("This run")).toEqual(["name = fetch_url", 'search outputs "rate limit"', 'search "HTTPError"']);
+    act(() => screen.getByRole("button", { name: "Text" }).click());
+    expect((screen.getByLabelText("This run filter") as HTMLTextAreaElement).value)
+      .toBe('and(eq(name, "fetch_url"), search(outputs, "rate limit"), search("HTTPError"))');
+  });
+
+  it("replaces the box's own search, not another one", async () => {
+    const bodies = setup(`/?q=a&filter=${encodeURIComponent('search("b")')}`);
+    await waitFor(() => expect(last(bodies)?.filter).toBe('and(search("b"), search("a"))'));
+    searchFor("c");
+    await waitFor(() => expect(last(bodies).filter).toBe('and(search("b"), search("c"))'));
+    expect(params()).toEqual({ filter: 'search("b")', q: "c" });
+  });
+
+  it("moves a negated search chip out of the box", async () => {
+    const bodies = setup("/?q=429");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    act(() => screen.getByRole("button", { name: 'negate search "429"' }).click());
+    await waitFor(() => expect(last(bodies).filter).toBe('not(search("429"))'));
+    expect(params()).toEqual({ filter: 'not(search("429"))' });
+    expect(box().value).toBe("");
+  });
+
+  it("refuses a search with no words", async () => {
+    const bodies = setup("/");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    searchFor("!!");
+    expect(screen.getByRole("alert").textContent).toBe("search needs at least one word");
+    expect(bodies.length).toBe(1);
+    expect(params().q).toBeUndefined();
+  });
+
+  it("shows each match's excerpt with the matched characters marked, in Samples and Table", async () => {
+    // Offsets count characters: the emoji is one, though two UTF-16 units.
+    const hit = { ...header(1, { name: "fetch_url" }), match: { path: "error", excerpt: "…🙂 HTTPError: 429 Too Many", start: 14, end: 17 } };
+    setup("/?q=429", () => page([hit, header(2)], null, [{ kind: "not_indexed", files: ["a", "b"] }, { kind: "skipped_files", ids: ["s1"] }]));
+    await waitFor(() => expect(document.querySelector("td.excerpt mark")?.textContent).toBe("429"));
+    const cell = document.querySelector("td.excerpt")!;
+    expect(cell.textContent).toBe("error…🙂 HTTPError: 429 Too Many");
+    expect(screen.getByText("2 files have no text index yet; the search read them whole")).toBeTruthy();
+    expect(screen.getByText("1 damaged file was skipped: s1")).toBeTruthy();
+
+    act(() => screen.getByRole("button", { name: "Table" }).click());
+    await waitFor(() => expect(params().view).toBe("table"));
+    await waitFor(() => expect(document.querySelector("td.excerpt mark")?.textContent).toBe("429"));
+  });
+});
+
 describe("url state", () => {
   it("round-trips every parameter", () => {
-    const url = '/?project=p&time=12h&filter=eq(status,%20%22ok%22)&trace=gt(latency,%2030)&tree=eq(status,%20%22error%22)&root=1&order=latency.desc&limit=10&cols=name,metadata.v&view=table&live=1';
+    const url = '/?project=p&time=12h&filter=eq(status,%20%22ok%22)&q=429%20Too%20Many%20Requests&trace=gt(latency,%2030)&tree=eq(status,%20%22error%22)&root=1&order=latency.desc&limit=10&cols=name,metadata.v&view=stats&by=name,metadata.v&m=count,p99(latency)&top=5&bucket=5m&live=1';
     const { q, m1 } = fromUrl(url.slice(1));
     expect(m1).toBe(false);
     expect(q).toEqual({
-      project: "p", time: "12h", filter: 'eq(status, "ok")', trace: "gt(latency, 30)", tree: 'eq(status, "error")', root: true,
-      order: { by: "latency", dir: "desc" }, limit: 10, cols: ["name", "metadata.v"], view: "table", live: true,
+      project: "p", time: "12h", filter: 'eq(status, "ok")', q: "429 Too Many Requests", trace: "gt(latency, 30)", tree: 'eq(status, "error")', root: true,
+      order: { by: "latency", dir: "desc" }, limit: 10, cols: ["name", "metadata.v"], view: "stats",
+      by: ["name", "metadata.v"], m: ["count", "p99(latency)"], top: 5, bucket: "5m", live: true,
     });
     expect(toUrl(q)).toBe(url);
+  });
+
+  it("reads every view, and defaults the stats", () => {
+    for (const v of ["samples", "table", "stats", "series", "dist"]) expect(fromUrl(`?view=${v}`).q.view).toBe(v);
+    const { q } = fromUrl("?view=nope&top=99");
+    expect(q).toMatchObject({ view: "samples", by: [], m: ["count", "error_rate", "p95(latency)", "sum(cost)"], top: 10 });
+    expect(toUrl({ ...q, view: "stats" })).toBe("/?view=stats");
   });
 
   it("marks project-only links as M2, so they don't read as M1", () => {

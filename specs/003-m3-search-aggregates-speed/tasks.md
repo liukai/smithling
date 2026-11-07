@@ -200,12 +200,12 @@ the panel, text form, API and CLI.
 
 ### Tests for User Story 1 (unit 10: UI search)
 
-- [ ] T049 [P] [US1] 🟠 UI tests `ui/src/query/Panel.test.tsx`: typing in the search box adds a `search("…")` chip in "This run"; chip ⇄ text round trip; `q=` survives a URL round trip; Samples rows render the excerpt with `start..end` marked
+- [x] T049 [P] [US1] 🟠 UI tests `ui/src/query/Panel.test.tsx`: typing in the search box adds a `search("…")` chip in "This run"; chip ⇄ text round trip; `q=` survives a URL round trip; Samples rows render the excerpt with `start..end` marked — unit 10 (6 tests under `search`; the box's chip is the last enabled `search(any, …)` in This run; `q` and `filter` stay separate in the URL, joined by `filterOf`)
 
 ### Implementation for User Story 1 (unit 10)
 
-- [ ] T050 [US1] 🟢 `ui/src/query/SearchBox.tsx` wired into `ui/src/query/Panel.tsx`, `ui/src/query/chips.ts` and `ui/src/query/url.ts` (`q` "is the search box text; it becomes a `search("…")` chip in the `filter` slot")
-- [ ] T051 [US1] 🟠 Excerpts in `ui/src/views/Samples.tsx` and `ui/src/views/Table.tsx`; `match` and new `stats` types in `ui/src/api.ts`
+- [x] T050 [US1] 🟢 `ui/src/query/SearchBox.tsx` wired into `ui/src/query/Panel.tsx`, `ui/src/query/chips.ts` and `ui/src/query/url.ts` (`q` "is the search box text; it becomes a `search("…")` chip in the `filter` slot") — unit 10 (quotes around the box text are dropped; a text with no words is refused inline; negating or disabling the box chip moves it to `filter`)
+- [x] T051 [US1] 🟠 Excerpts in `ui/src/views/Samples.tsx` and `ui/src/views/Table.tsx`; `match` and new `stats` types in `ui/src/api.ts` — unit 10 (offsets sliced by code point; `not_indexed {files}` and `skipped_files` warnings; `PageStats` typed, not shown)
 
 **Checkpoint (demo)**: quickstart step 5 (first `curl`: 31, all `fetch_url`, with `match`), step 6 search and crash
 lines, step 2.1 in the browser; crash harness 10/10.
@@ -250,12 +250,12 @@ in the table and the charts (spec Story 2).
 
 ### Tests for User Story 2 (unit 10: Stats tab)
 
-- [ ] T065 [P] [US2] 🟢 UI tests `ui/src/stats/StatsPanel.test.tsx`: group-by (≤ 2) and metric pickers → `AggSpec`; stats-line *Text* view round trip; table shows `n` next to pNN and "12 runs had no price"; clicking a cell opens Samples with the group's `where` chips (error-rate cell also `eq(status, "error")`); view tabs keep the query; `view=`, `by=`, `m=`, `top=` round trip
+- [x] T065 [P] [US2] 🟢 UI tests `ui/src/stats/StatsPanel.test.tsx`: group-by (≤ 2) and metric pickers → `AggSpec`; stats-line *Text* view round trip; table shows `n` next to pNN and "12 runs had no price"; clicking a cell opens Samples with the group's `where` chips (error-rate cell also `eq(status, "error")`); view tabs keep the query; `view=`, `by=`, `m=`, `top=` round trip — unit 10 (10 tests, incl. the old result not drawn under new headers while the next loads)
 
 ### Implementation for User Story 2 (unit 10)
 
-- [ ] T066 [US2] 🟢 `ui/src/stats/StatsPanel.tsx` and `ui/src/stats/StatsTable.tsx` (unit 10): pickers, *Text* stats line, table with click-through; aggregate client in `ui/src/api.ts`
-- [ ] T067 [US2] 🟠 View tabs and URL in `ui/src/views/Runs.tsx`, `ui/src/query/url.ts` and `ui/src/route.ts` (unit 10): `QueryState.view` widens to `samples | table | stats | series | dist`; `by`, `m`, `top`, `bucket` params (M3-FR-08)
+- [x] T066 [US2] 🟢 `ui/src/stats/StatsPanel.tsx` and `ui/src/stats/StatsTable.tsx` (unit 10): pickers, *Text* stats line, table with click-through; aggregate client in `ui/src/api.ts` — unit 10 (cost half-up to cents, `—` when no price, never $0; totals row opens the whole query; `(other)` with `where: null` isn't clickable; `series`/`dist` render the table until unit 11)
+- [x] T067 [US2] 🟠 View tabs and URL in `ui/src/views/Runs.tsx`, `ui/src/query/url.ts` and `ui/src/route.ts` (unit 10): `QueryState.view` widens to `samples | table | stats | series | dist`; `by`, `m`, `top`, `bucket` params (M3-FR-08) — unit 10 (Stats tab; `m` omitted when default, `top` when 10; `bucket` kept in the URL, not sent until unit 11; live toggle hidden on stats views; `route.ts` needed no change)
 
 ### Tests for User Story 2 (unit 11: charts)
 
@@ -437,11 +437,11 @@ T119–T120 ship with unit 10; T121–T122 with unit 13.
 
 ### Tests for User Story 7 (unit 10)
 
-- [ ] T119 [P] [US7] 🟠 UI tests `ui/src/views/Live.test.tsx` and `ui/src/views/Table.test.tsx`: arrivals while scrolled down with live on are held behind an "N new" pill; a run that stops matching a live Table view shows its new column values (M3-FR-20)
+- [x] T119 [P] [US7] 🟠 UI tests `ui/src/views/Live.test.tsx` and `ui/src/views/Table.test.tsx`: arrivals while scrolled down with live on are held behind an "N new" pill; a run that stops matching a live Table view shows its new column values (M3-FR-20) — unit 10 (3 Live tests, 1 Table test)
 
 ### Implementation for User Story 7 (unit 10)
 
-- [ ] T120 [US7] 🟠 `ui/src/views/Samples.tsx` and `ui/src/live.ts`: buffer arrivals while scrolled behind an "N new" pill; `leave()` refetches the shown columns
+- [x] T120 [US7] 🟠 `ui/src/views/Samples.tsx` and `ui/src/live.ts`: buffer arrivals while scrolled behind an "N new" pill; `leave()` refetches the shown columns — unit 10 (held runs released by the pill or by scrolling back to the top; `left` drops held ids; the Table refetch is `POST /api/query` `eq(run_id, …)` + columns per run; `live.ts` needed no change)
 
 ### Tests for User Story 7 (unit 13)
 

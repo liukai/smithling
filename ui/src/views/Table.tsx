@@ -4,6 +4,7 @@ import { ATTR_ROOTS, type Expr, type Value } from "../query/ast";
 import { parse } from "../query/parse";
 import { navigate } from "../route";
 import { StatusBadge } from "../StatusBadge";
+import { Excerpt } from "./Excerpt";
 
 /** Fields the server fills in `columns`; any metadata, inputs or outputs path works too. */
 const COLUMN_FIELDS = ["status", "name", "model", "latency", "total_tokens", "tags"];
@@ -53,11 +54,13 @@ function AddColumn({ cols, onCols }: { cols: string[]; onCols: (cols: string[]) 
 }
 
 /** Runs with the columns the user chose; any cell value filters on click. */
-export function Table({ rows, cols, left, empty, onCell, onCols }: {
+export function Table({ rows, cols, left, empty, matched, onCell, onCols }: {
   rows: QueryRun[];
   cols: string[];
   left: ReadonlySet<string>;
   empty: string | null;
+  /** Show the search's excerpts. */
+  matched: boolean;
   onCell: (e: MouseEvent, x: Expr) => void;
   onCols: (cols: string[]) => void;
 }) {
@@ -65,7 +68,7 @@ export function Table({ rows, cols, left, empty, onCell, onCols }: {
     <table className="runs">
       <thead>
         <tr>
-          <th>status</th><th>name</th>
+          <th>status</th><th>name</th>{matched && <th>match</th>}
           {cols.map((c) => (
             <th key={c}>
               <span className="col-name">{c}</span>
@@ -86,11 +89,12 @@ export function Table({ rows, cols, left, empty, onCell, onCols }: {
               {left.has(r.run_id) && <span className="left-mark">no longer matching</span>}
             </td>
             <td className="name"><Cell path="name" value={r.name} onCell={onCell} /></td>
+            {matched && <td className="excerpt">{r.match && <Excerpt m={r.match} />}</td>}
             {cols.map((c) => <td key={c}><Cell path={c} value={r.columns?.[c]} onCell={onCell} /></td>)}
             <td />
           </tr>
         ))}
-        {empty && <tr><td colSpan={cols.length + 3} className="muted">{empty}</td></tr>}
+        {empty && <tr><td colSpan={cols.length + (matched ? 4 : 3)} className="muted">{empty}</td></tr>}
       </tbody>
     </table>
   );

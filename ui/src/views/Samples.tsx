@@ -2,31 +2,26 @@ import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } fr
 import { ApiError, type QueryRun, type QueryWarning, getRunHeader, postQuery } from "../api";
 import { EmptyState } from "../EmptyState";
 import { elapsedSince, fmtLatency, fmtTime, fmtTokens } from "../format";
-import { compareRuns, mergeLive, subscribe } from "../live";
+import { compareRuns, mergeLive, subscribe, upsert } from "../live";
 import type { Expr } from "../query/ast";
+import { print } from "../query/print";
 import { type Order, type QueryState, toBody } from "../query/url";
 import { navigate } from "../route";
 import { StatusBadge } from "../StatusBadge";
+import { warningText } from "../warnings";
+import { Excerpt } from "./Excerpt";
 import { Table } from "./Table";
 
 type Conn = "on" | "retry" | "closed";
 const CONN: Record<Conn, string> = { on: "● live", retry: "○ reconnecting", closed: "○ live unavailable" };
 type Live = { kind: "runs"; runs: QueryRun[] } | { kind: "left"; ids: string[] };
-
-function warningText(w: QueryWarning): string {
-  switch (w.kind) {
-    case "mixed_types":
-      return `${w.path}: mixed types (${Object.entries(w.counts).map(([t, n]) => `${t} ${n}`).join(", ")}); only values of the compared type match`;
-    case "not_indexed":
-      return `${w.path} isn't indexed; read the payloads of ${w.runs} runs`;
-    case "identity_conflict":
-      return `run ${w.run_id} has conflicting versions`;
-  }
-}
+/** Scrolled further than this, new live runs wait behind the "N new" pill instead of shifting the rows. */
+const SCROLLED_PX = 40;
 
 /**
  * Runs matching the query, newest first by default, paged by cursor as you scroll; as samples or as a table.
- * Live: loads after the stream's `hello`, merges `runs`, marks shown runs that `left`, reloads on `resync`.
+ * Live: loads after the stream's `hello`, merges `runs` (new ones wait behind a pill while scrolled down),
+ * marks shown runs that `left`, reloads on `resync`.
  */
 export function Samples({ q, onCols, onFilter, onFilterError }: {
   q: QueryState;
@@ -56,31 +51,52 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
   /** Per run, the latest `left` lookup; a newer `runs` for it cancels the lookup. */
   const leaving = useRef(new Map<string, number>());
   const token = useRef(0);
+  /** New live runs held while scrolled down. */
+  const held = useRef(new Map<string, QueryRun>());
+  const [heldN, setHeldN] = useState(0);
   const busy = useRef(false);
   const sentinel = useRef<HTMLDivElement>(null);
   const onFilterErrorRef = useRef(onFilterError);
   onFilterErrorRef.current = onFilterError;
-  const order: Order = useMemo(() => JSON.parse(bodyKey).order, [bodyKey]);
+  const { order, columns } = useMemo(() => JSON.parse(bodyKey) as { order: Order; columns?: string[] }, [bodyKey]);
 
-  /** Shows the new state of shown runs that no longer match, marked so. */
+  /** Shows the new state (and column values) of shown runs that no longer match, marked so. */
   const leave = useCallback((ids: Iterable<string>, shown: QueryRun[]) => {
     const g = gen.current;
     const on = new Set(shown.map((r) => r.run_id));
+    const latest = (id: string): Promise<QueryRun | null> => (columns
+      ? postQuery({ filter: print({ t: "cmp", op: "eq", path: "run_id", value: id }), columns, limit: 1 }).then((p) => p.runs[0] ?? null)
+      : getRunHeader(id));
     for (const id of [...ids].filter((i) => on.has(i))) {
       const t = ++token.current;
       leaving.current.set(id, t);
-      getRunHeader(id).catch(() => null).then((r) => {
+      latest(id).catch(() => null).then((r) => {
         if (g !== gen.current || leaving.current.get(id) !== t) return;
         leaving.current.delete(id);
         setLeft((l) => new Set(l).add(id));
-        if (r) setRows((rs) => rs.map((x) => (x.run_id === id && x.last_seq <= r.last_seq ? { ...r, columns: x.columns } : x)).sort(compareRuns(order)));
+        if (r) setRows((rs) => rs.map((x) => (x.run_id === id && x.last_seq <= r.last_seq ? { ...r, columns: r.columns ?? x.columns } : x)).sort(compareRuns(order)));
       });
     }
+  }, [order, columns]);
+
+  const showHeld = useCallback((scroll: boolean) => {
+    const runs = [...held.current.values()];
+    held.current.clear();
+    setHeldN(0);
+    setRows((rs) => mergeLive(rs, runs, order, cursorRef.current !== null));
+    if (scroll) window.scrollTo({ top: 0 });
   }, [order]);
+
+  useEffect(() => {
+    if (!q.live) return;
+    const on = () => { if (window.scrollY <= SCROLLED_PX && held.current.size) showHeld(false); };
+    window.addEventListener("scroll", on);
+    return () => window.removeEventListener("scroll", on);
+  }, [q.live, showHeld]);
 
   const fetchPage = useCallback(async (after: string | null) => {
     const g = after ? gen.current : ++gen.current;
-    if (!after) queued.current = [];
+    if (!after) { queued.current = []; held.current.clear(); setHeldN(0); }
     busy.current = true;
     try {
       const page = await postQuery({ ...JSON.parse(bodyKey), cursor: after ?? undefined });
@@ -134,8 +150,20 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
       onResync: load,
       // A stream that can't open (a bad query, say) still gets the view loaded, so its error shows.
       onConnected: (c, closed) => { setConn(c ? "on" : closed ? "closed" : "retry"); if (!c && !loaded) load(); },
-      onRuns: (runs) => {
-        if (queued.current) return void queued.current.push({ kind: "runs", runs });
+      onRuns: (all) => {
+        if (queued.current) return void queued.current.push({ kind: "runs", runs: all });
+        let runs = all;
+        const shown = new Set(rowsRef.current.map((r) => r.run_id));
+        if (window.scrollY > SCROLLED_PX || held.current.size) {
+          const end = rowsRef.current[rowsRef.current.length - 1];
+          const more = cursorRef.current !== null, cmp = compareRuns(order);
+          const fresh = runs.filter((r) => !shown.has(r.run_id) && !(more && end && cmp(r, end) > 0));
+          if (fresh.length) {
+            upsert(held.current, fresh);
+            setHeldN(held.current.size);
+          }
+          runs = runs.filter((r) => shown.has(r.run_id));
+        }
         const ids = new Set(runs.map((r) => r.run_id));
         for (const id of ids) leaving.current.delete(id);
         setLeft((l) => ([...l].some((id) => ids.has(id)) ? new Set([...l].filter((id) => !ids.has(id))) : l));
@@ -143,6 +171,9 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
       },
       onLeft: (ids) => {
         if (queued.current) return void queued.current.push({ kind: "left", ids });
+        const before = held.current.size;
+        ids.forEach((id) => held.current.delete(id));
+        if (held.current.size !== before) setHeldN(held.current.size);
         leave(ids, rowsRef.current);
       },
     });
@@ -170,7 +201,8 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
     onFilter(expr, e.altKey);
   };
   const hint = "click to filter, Alt-click to exclude";
-  const unfiltered = !q.project && !q.time && !q.filter && !q.trace && !q.tree && !q.root;
+  const unfiltered = !q.project && !q.time && !q.filter && !q.q && !q.trace && !q.tree && !q.root;
+  const matched = rows.some((r) => r.match);
 
   const empty = loaded && !error && rows.length === 0
     ? (filterError ? "The query has an error; open Text to see it." : "No runs match this query.")
@@ -183,14 +215,17 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
         {q.live && <span className={conn === "on" ? "live on" : "live off"}>{CONN[conn]}</span>}
         <span className="count">{rows.length}{cursor ? "+" : ""} run{rows.length === 1 && !cursor ? "" : "s"}</span>
       </div>
+      {q.live && heldN > 0 && (
+        <button className="pill" onClick={() => showHeld(true)}>{heldN} new run{heldN === 1 ? "" : "s"} ↑</button>
+      )}
       {error && <div className="error-banner">{error}</div>}
       {warnings.map((w, i) => <div key={i} className="warning">{warningText(w)}</div>)}
       {q.view === "table" ? (
-        <Table rows={rows} cols={q.cols} left={left} empty={empty} onCell={click} onCols={onCols} />
+        <Table rows={rows} cols={q.cols} left={left} empty={empty} matched={matched} onCell={click} onCols={onCols} />
       ) : (
         <table className="runs">
           <thead>
-            <tr><th>status</th><th>name</th><th>start</th><th>latency</th><th>tokens</th><th>project</th><th>tags</th></tr>
+            <tr><th>status</th><th>name</th>{matched && <th>match</th>}<th>start</th><th>latency</th><th>tokens</th><th>project</th><th>tags</th></tr>
           </thead>
           <tbody>
             {rows.map((r) => (
@@ -207,6 +242,7 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
                     <button className="clickable" title={hint} onClick={(e) => click(e, { t: "cmp", op: "eq", path: "name", value: r.name })}>{r.name}</button>
                   )}
                 </td>
+                {matched && <td className="excerpt">{r.match && <Excerpt m={r.match} />}</td>}
                 <td>{fmtTime(r.start_time)}</td>
                 <td>{r.status === "running" ? `${fmtLatency(elapsedSince(r.start_time, now))}…` : fmtLatency(r.latency_ms)}</td>
                 <td>{fmtTokens(r.total_tokens)}</td>
@@ -218,7 +254,7 @@ export function Samples({ q, onCols, onFilter, onFilterError }: {
                 </td>
               </tr>
             ))}
-            {empty && <tr><td colSpan={7} className="muted">{empty}</td></tr>}
+            {empty && <tr><td colSpan={matched ? 8 : 7} className="muted">{empty}</td></tr>}
           </tbody>
         </table>
       )}

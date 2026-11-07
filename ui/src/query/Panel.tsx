@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { type ProjectInfo, getProjects } from "../api";
 import { ChipEditor, ChipView } from "./Chip";
 import { type Rows, chip } from "./chips";
+import { SearchBox } from "./SearchBox";
 import { ROW_LABEL, type SlotError, TextEditor } from "./TextEditor";
 import { DEFAULT_LIMIT, type Order, type QueryState, SLOTS, type Slot } from "./url";
 
@@ -16,7 +17,7 @@ const LIMITS = [10, 25, DEFAULT_LIMIT, 100, 200];
 
 export type Mode = "panel" | "text";
 
-export function Panel({ q, rows, mode, drafts, errors, onQuery, onRows, onMode, onDrafts, onRunText }: {
+export function Panel({ q, rows, mode, drafts, errors, onQuery, onRows, onSearch, onMode, onDrafts, onRunText }: {
   q: QueryState;
   rows: Rows;
   mode: Mode;
@@ -24,6 +25,7 @@ export function Panel({ q, rows, mode, drafts, errors, onQuery, onRows, onMode, 
   errors: Partial<Record<Slot, SlotError>>;
   onQuery: (patch: Partial<QueryState>) => void;
   onRows: (rows: Rows) => void;
+  onSearch: (text?: string) => void;
   onMode: (m: Mode) => void;
   onDrafts: (d: Record<Slot, string>) => void;
   onRunText: () => void;
@@ -57,6 +59,7 @@ export function Panel({ q, rows, mode, drafts, errors, onQuery, onRows, onMode, 
             {q.time && !TIMES.some(([v]) => v === q.time) && <option value={q.time}>last {q.time}</option>}
           </select>
         </label>
+        <SearchBox value={q.q} onSearch={onSearch} />
         <button className="mode" onClick={() => onMode(mode === "panel" ? "text" : "panel")}>{mode === "panel" ? "Text" : "Panel"}</button>
       </div>
 

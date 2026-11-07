@@ -4,7 +4,12 @@ import { App } from "../App";
 import { FakeEventSource, header, mockFetch, queryPage } from "../testutil";
 
 beforeEach(() => { FakeEventSource.last = null; vi.stubGlobal("EventSource", FakeEventSource); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); scrollTo(0); });
+
+function scrollTo(y: number) {
+  Object.defineProperty(window, "scrollY", { value: y, configurable: true });
+  window.dispatchEvent(new Event("scroll"));
+}
 
 type Body = Record<string, unknown>;
 const id = (n: number) => header(n).run_id;
@@ -121,5 +126,60 @@ describe("live toggle", () => {
     act(() => es().emit("left", [id(2)]));
     await act(async () => resolve(queryPage([header(2), header(1)])));
     await waitFor(() => expect(rows()).toEqual(["task-3 ● run", "task-2 ✓ ok left", "task-1 ✓ ok"]));
+  });
+
+  it("holds new runs behind an N new pill while scrolled down, and shows them on click", async () => {
+    const top = vi.fn();
+    vi.stubGlobal("scrollTo", top);
+    setup("/?live=1");
+    act(() => es().emit("hello"));
+    await waitFor(() => expect(rows()).toEqual(["task-2 ● run", "task-1 ● run"]));
+
+    scrollTo(400);
+    act(() => es().emit("runs", [header(3), header(4), header(1, { status: "ok", last_seq: 10 })]));
+    await waitFor(() => expect(rows()).toEqual(["task-2 ● run", "task-1 ✓ ok"]));
+    expect(screen.getByRole("button", { name: "2 new runs ↑" })).toBeTruthy();
+
+    act(() => es().emit("runs", [header(3, { status: "ok", last_seq: 20 })]));
+    act(() => es().emit("left", [id(4)]));
+    await waitFor(() => screen.getByRole("button", { name: "1 new run ↑" }));
+    expect(rows()).toEqual(["task-2 ● run", "task-1 ✓ ok"]);
+
+    act(() => screen.getByRole("button", { name: "1 new run ↑" }).click());
+    await waitFor(() => expect(rows()).toEqual(["task-3 ✓ ok", "task-2 ● run", "task-1 ✓ ok"]));
+    expect(top).toHaveBeenCalledWith({ top: 0 });
+    expect(screen.queryByRole("button", { name: /new run/ })).toBeNull();
+
+    scrollTo(0);
+    act(() => es().emit("runs", [header(5)]));
+    await waitFor(() => expect(rows()[0]).toBe("task-5 ● run"));
+    expect(screen.queryByRole("button", { name: /new run/ })).toBeNull();
+  });
+
+  it("drops held runs on resync", async () => {
+    const { bodies } = setup("/?live=1");
+    act(() => es().emit("hello"));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    scrollTo(400);
+    act(() => es().emit("runs", [header(3)]));
+    await waitFor(() => screen.getByRole("button", { name: "1 new run ↑" }));
+    act(() => es().emit("resync"));
+    await waitFor(() => expect(bodies.length).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /new run/ })).toBeNull());
+  });
+
+  it("drops every held run that stops matching, and shows held runs on scrolling back to the top", async () => {
+    vi.stubGlobal("scrollTo", vi.fn());
+    setup("/?live=1");
+    act(() => es().emit("hello"));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    scrollTo(400);
+    act(() => es().emit("runs", [header(3), header(4), header(5)]));
+    await waitFor(() => screen.getByRole("button", { name: "3 new runs ↑" }));
+    act(() => es().emit("left", [id(3), id(4)]));
+    await waitFor(() => screen.getByRole("button", { name: "1 new run ↑" }));
+    act(() => scrollTo(0));
+    await waitFor(() => expect(rows()).toEqual(["task-5 ● run", "task-2 ● run", "task-1 ● run"]));
+    expect(screen.queryByRole("button", { name: /new run/ })).toBeNull();
   });
 });
