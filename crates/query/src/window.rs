@@ -134,6 +134,8 @@ mod tests {
             core_bytes: 0,
             payload_bytes: 0,
             created_at: 0,
+            fts_path: None,
+            fts_bytes: 0,
         }
     }
 

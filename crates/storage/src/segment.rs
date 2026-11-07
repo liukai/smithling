@@ -29,6 +29,7 @@ use tracedb_model::{Op, PayloadSizes, RunEvent, RunFields, RunId, RunState, Sour
 
 use datafusion::parquet::arrow::ParquetRecordBatchStreamBuilder;
 
+use crate::fts::{self, Sidecar, TextRow};
 use crate::object::Ranged;
 use crate::{StorageError, Store};
 
@@ -56,6 +57,11 @@ pub struct SegmentMeta {
     pub core_bytes: u64,
     pub payload_bytes: u64,
     pub created_at: i64,
+    /// Text index stem: the sidecar is `<stem>.dict.parquet` + `<stem>.post`. `None` for M2 files.
+    #[serde(default)]
+    pub fts_path: Option<String>,
+    #[serde(default)]
+    pub fts_bytes: u64,
 }
 
 /// Per segment, per path and type: how many rows have it, and its most common values.
@@ -100,6 +106,7 @@ pub struct Written {
     pub stats: Vec<FieldStat>,
     pub core: Bytes,
     pub payload: Bytes,
+    pub fts: Sidecar,
 }
 
 pub fn core_schema() -> SchemaRef {
@@ -195,9 +202,11 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
     let dir = folder(project);
     let core_path = format!("{dir}/{day}/seg-{id}.core.parquet");
     let payload_path = format!("{dir}/{day}/seg-{id}.payload.parquet");
+    let fts_path = format!("{dir}/{day}/seg-{id}.fts");
 
     let core = encode_core(&rows)?;
     let payload = encode_payload(&rows)?;
+    let fts = fts::build(rows.iter().map(TextRow::of))?;
     let stats = field_stats(&id, rows.iter().map(|v| (&v.state, &v.attrs)));
     let keys: Vec<i64> = rows.iter().map(|r| start_key(&r.state.run.dotted_order)).collect();
     let meta = SegmentMeta {
@@ -216,12 +225,15 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
         core_bytes: core.len() as u64,
         payload_bytes: payload.len() as u64,
         created_at: created_at.0,
+        fts_path: Some(fts_path),
+        fts_bytes: fts.bytes(),
     };
     Ok(Written {
         meta,
         stats,
         core,
         payload,
+        fts,
     })
 }
 

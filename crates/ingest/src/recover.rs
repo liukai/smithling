@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tracedb_model::{Op, RunId, Ts};
-use tracedb_storage::{DedupKeys, SegmentMeta, StorageError, segment};
+use tracedb_storage::{DedupKeys, SegmentMeta, StorageError, fts, segment};
 
 use crate::dedup::{self, Dedup, DedupKey};
 use crate::flushed::FlushedIds;
@@ -48,13 +48,21 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
 
     // Files written by a flush that crashed before its catalog commit were never registered.
     let present: HashSet<&str> = objects.iter().map(String::as_str).collect();
-    let registered: HashSet<&str> = segments
-        .iter()
-        .flat_map(|s| [s.core_path.as_str(), s.payload_path.as_str()])
-        .collect();
+    let mut registered: HashSet<String> = HashSet::new();
+    for s in &segments {
+        registered.extend([s.core_path.clone(), s.payload_path.clone()]);
+        if let Some(stem) = &s.fts_path {
+            registered.extend([fts::dict_path(stem), fts::post_path(stem)]);
+        }
+    }
+    let data_file = |p: &str| {
+        [".parquet", ".post"]
+            .iter()
+            .any(|ext| p.ends_with(ext) || p.contains(&format!("{ext}.tmp-")))
+    };
     let orphans: Vec<String> = objects
         .iter()
-        .filter(|p| (p.ends_with(".parquet") || p.contains(".parquet.tmp-")) && !registered.contains(p.as_str()))
+        .filter(|p| data_file(p) && !registered.contains(p.as_str()))
         .cloned()
         .collect();
     // A crashed flush's events are still in the WAL (it is trimmed only after the commit), so its files are safe

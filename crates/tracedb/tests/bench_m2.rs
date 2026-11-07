@@ -231,6 +231,24 @@ fn dir_bytes(dir: &std::path::Path) -> HashMap<String, u64> {
     out
 }
 
+/// Bytes of the text index sidecars (`*.fts.dict.parquet`, `*.fts.post`) under `dir`.
+fn fts_bytes(dir: &std::path::Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let e = e.unwrap();
+            let md = e.metadata().unwrap();
+            if md.is_dir() {
+                stack.push(e.path());
+            } else if e.file_name().to_string_lossy().contains(".fts.") {
+                total += md.len();
+            }
+        }
+    }
+    total
+}
+
 /// Current process RSS, if `ps` may run here (report only: M2 sets no RSS limit, only the memtable size).
 fn rss() -> String {
     std::process::Command::new("ps")
@@ -349,11 +367,15 @@ async fn m2_latencies_and_footprint_at_2m_runs() {
     let on_disk: u64 = disk.values().sum();
     let mut parts: Vec<_> = disk.iter().collect();
     parts.sort();
+    let index = fts_bytes(&server.dir.path().join("data"));
+    let pct = |b: u64| b as f64 * 100.0 / raw_json as f64;
     eprintln!(
-        "disk {:.2} GB = {:.0}% of raw JSON {:.2} GB; by dir: {}",
+        "disk {:.2} GB = {:.0}% of raw JSON {:.2} GB (files {:.1}%, text index {:.1}%); by dir: {}",
         on_disk as f64 / 1e9,
-        on_disk as f64 * 100.0 / raw_json as f64,
+        pct(on_disk),
         raw_json as f64 / 1e9,
+        pct(on_disk - index),
+        pct(index),
         parts
             .iter()
             .map(|(k, v)| format!("{k} {:.2} GB", **v as f64 / 1e9))

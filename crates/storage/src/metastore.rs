@@ -7,7 +7,7 @@ use sqlx::{AnyPool, Row};
 use crate::StorageError;
 use crate::segment::{FieldStat, SegmentMeta};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const MIGRATION: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS state (
@@ -44,6 +44,28 @@ const DEDUP_TABLE: &str = "CREATE TABLE IF NOT EXISTS dedup_keys (
         flushed_seq BIGINT PRIMARY KEY,
         newest_at BIGINT NOT NULL,
         keys BLOB NOT NULL)";
+
+/// schema_version 1 → 2 (data-model §3): the text index columns and the feedback table, in the transaction that
+/// moves the version.
+const V2: &[&str] = &[
+    "ALTER TABLE segments ADD COLUMN fts_path  TEXT",
+    "ALTER TABLE segments ADD COLUMN fts_bytes BIGINT",
+    "CREATE TABLE IF NOT EXISTS feedback (
+        id          TEXT PRIMARY KEY,
+        run_id      TEXT NOT NULL,
+        trace_id    TEXT,
+        key         TEXT NOT NULL,
+        score       DOUBLE PRECISION,
+        value       TEXT,
+        comment     TEXT,
+        correction  TEXT,
+        source      TEXT,
+        created_at  BIGINT NOT NULL,
+        modified_at BIGINT NOT NULL,
+        raw         TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS feedback_run ON feedback (run_id)",
+    "CREATE INDEX IF NOT EXISTS feedback_key ON feedback (key)",
+];
 
 /// The dedup keys of one flush's events, packed by the caller (the catalog doesn't read them).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,19 +116,32 @@ impl Metastore {
             .fetch_optional(&m.pool)
             .await?
             .map(|r| r.get(0));
-        match have {
-            None => {
-                sqlx::query(m.sql("INSERT INTO state (id, schema_version, flushed_seq) VALUES (1, ?, 0)"))
-                    .bind(SCHEMA_VERSION)
-                    .execute(&m.pool)
+        // A new catalog starts at version 1 and is upgraded like an M2 one, so both take the same path.
+        if have.is_none() {
+            sqlx::query("INSERT INTO state (id, schema_version, flushed_seq) VALUES (1, 1, 0)")
+                .execute(&m.pool)
+                .await?;
+        }
+        match have.unwrap_or(1) {
+            1 => {
+                let mut tx = m.pool.begin().await?;
+                // Taken first, so a second process opening the same catalog waits, then sees version 2.
+                let moved = sqlx::query("UPDATE state SET schema_version = 2 WHERE id = 1 AND schema_version = 1")
+                    .execute(&mut *tx)
                     .await?;
+                if moved.rows_affected() == 1 {
+                    for stmt in V2 {
+                        sqlx::query(*stmt).execute(&mut *tx).await?;
+                    }
+                }
+                tx.commit().await?;
             }
-            Some(v) if v != SCHEMA_VERSION => {
+            SCHEMA_VERSION => {}
+            v => {
                 return Err(StorageError::Metastore(format!(
                     "catalog schema version {v}, this tracedb understands {SCHEMA_VERSION}"
                 )));
             }
-            Some(_) => {}
         }
         Ok(m)
     }
@@ -145,7 +180,8 @@ impl Metastore {
     pub async fn active_segments(&self) -> Result<Vec<SegmentMeta>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, project, core_path, payload_path, min_start_key, max_start_key, min_trace_id, max_trace_id,
-                    min_seq, max_seq, row_count, needs_merge_rows, core_bytes, payload_bytes, created_at
+                    min_seq, max_seq, row_count, needs_merge_rows, core_bytes, payload_bytes, created_at,
+                    fts_path, fts_bytes
              FROM segments WHERE state = 'active' ORDER BY min_seq",
         )
         .fetch_all(&self.pool)
@@ -171,6 +207,8 @@ impl Metastore {
                     core_bytes: r.get::<i64, _>(12) as u64,
                     payload_bytes: r.get::<i64, _>(13) as u64,
                     created_at: r.get(14),
+                    fts_path: r.get(15),
+                    fts_bytes: r.get::<Option<i64>, _>(16).unwrap_or(0) as u64,
                 })
             })
             .collect()
@@ -273,8 +311,8 @@ impl Metastore {
         let ins_seg = self.sql(
             "INSERT INTO segments (id, project, core_path, payload_path, min_start_key, max_start_key,
                  min_trace_id, max_trace_id, min_seq, max_seq, row_count, needs_merge_rows, core_bytes,
-                 payload_bytes, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 payload_bytes, created_at, fts_path, fts_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         for s in segments {
             sqlx::query(sqlx::AssertSqlSafe(ins_seg.0.clone()))
@@ -293,6 +331,8 @@ impl Metastore {
                 .bind(s.core_bytes as i64)
                 .bind(s.payload_bytes as i64)
                 .bind(s.created_at)
+                .bind(s.fts_path.clone())
+                .bind(s.fts_path.as_ref().map(|_| s.fts_bytes as i64))
                 .execute(&mut *tx)
                 .await?;
         }
@@ -329,6 +369,20 @@ impl Metastore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Records a sidecar written after the segment's flush (backfill): one segment per transaction.
+    pub async fn set_fts(&self, segment_id: &str, fts_path: &str, fts_bytes: u64) -> Result<(), StorageError> {
+        let r = sqlx::query(self.sql("UPDATE segments SET fts_path = ?, fts_bytes = ? WHERE id = ?"))
+            .bind(fts_path)
+            .bind(fts_bytes as i64)
+            .bind(segment_id)
+            .execute(&self.pool)
+            .await?;
+        if r.rows_affected() != 1 {
+            return Err(StorageError::Metastore(format!("no segment {segment_id}")));
+        }
         Ok(())
     }
 }

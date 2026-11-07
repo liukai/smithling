@@ -3,9 +3,11 @@
 //! - [`object::Store`]: write-once data files on local disk or S3-compatible storage.
 //! - [`metastore::Metastore`]: the catalog of segments and field stats (SQLite or Postgres).
 //! - [`segment`]: the Parquet core + payload format and its decoder.
+//! - [`fts`]: the per-segment text index sidecar behind [`fts::TextIndex`].
 //!
 //! Reads go through DataFusion; its Parquet metadata cache plays the role of design §5's `Cache`.
 
+pub mod fts;
 pub mod metastore;
 pub mod object;
 pub mod segment;
@@ -28,6 +30,9 @@ pub enum StorageError {
     Arrow(#[from] datafusion::arrow::error::ArrowError),
     #[error("bad data file: {0}")]
     Format(String),
+    /// The text index can't answer this lookup (no sidecar, or no words); the caller scans instead.
+    #[error("not indexed: {0}")]
+    NotIndexed(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("io: {0}")]

@@ -14,7 +14,7 @@ use futures_util::{FutureExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
+use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 use url::Url;
 
 use crate::StorageError;
@@ -64,6 +64,17 @@ impl Store {
         })
     }
 
+    /// Any `ObjectStore` under `prefix`, for tests (an in-memory or request-counting store): DataFusion can't
+    /// read through it, as [`Store::register`] has no real URL for it.
+    pub fn with_object_store(root: Arc<dyn ObjectStore>, prefix: &str) -> Store {
+        Store {
+            root,
+            prefix: Path::from(prefix.trim_matches('/')),
+            base: Url::parse("tracedb-object-store://").expect("valid"),
+            local_dir: None,
+        }
+    }
+
     fn full(&self, rel: &str) -> Path {
         rel.split('/')
             .filter(|p| !p.is_empty())
@@ -101,6 +112,22 @@ impl Store {
 
     pub async fn get(&self, rel: &str) -> Result<Bytes, StorageError> {
         Ok(self.root.get(&self.full(rel)).await?.bytes().await?)
+    }
+
+    /// The last `n` bytes of `rel` (all of it if shorter), and its size.
+    pub async fn get_suffix(&self, rel: &str, n: u64) -> Result<(Bytes, u64), StorageError> {
+        let opts = GetOptions {
+            range: Some(GetRange::Suffix(n)),
+            ..Default::default()
+        };
+        let r = self.root.get_opts(&self.full(rel), opts).await?;
+        let size = r.meta.size;
+        Ok((r.bytes().await?, size))
+    }
+
+    /// Several ranges of `rel` in one request (the store may merge nearby ones).
+    pub async fn get_ranges(&self, rel: &str, ranges: &[Range<u64>]) -> Result<Vec<Bytes>, StorageError> {
+        Ok(self.root.get_ranges(&self.full(rel), ranges).await?)
     }
 
     /// Size in bytes; `NotFound` if `rel` doesn't exist.

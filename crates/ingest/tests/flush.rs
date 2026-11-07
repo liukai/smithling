@@ -24,9 +24,13 @@ fn wal_files(dir: &Path) -> usize {
 }
 
 async fn upload(ingest: &Ingest, from: u128, n: u128) {
+    upload_with(ingest, from, n, |_| serde_json::json!({"q": "x".repeat(400)})).await
+}
+
+async fn upload_with(ingest: &Ingest, from: u128, n: u128, inputs: impl Fn(u128) -> serde_json::Value) {
     for i in from..from + n {
         let mut f = root(uuid(i), "2026-11-05T02:00:00Z", "r");
-        f.inputs = Some(serde_json::json!({"q": "x".repeat(400)}));
+        f.inputs = Some(inputs(i));
         loop {
             match ingest.accept(vec![post(f.clone())]).await {
                 Ok(r) => {
@@ -186,4 +190,92 @@ async fn a_retried_flush_whose_commit_landed_registers_its_files_once() {
     assert_eq!(stats.segments, ids.len());
     assert_eq!(stats.runs as u64, mem_runs);
     assert_eq!(stats.flushed_seq, h.flushed_seq);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_new_file_gets_a_text_index_registered_in_the_same_commit() {
+    use tracedb_storage::fts::{self, Fts, TextField, TextIndex};
+    use tracedb_storage::{Store, segment};
+    let dir = tempfile::tempdir().unwrap();
+    let (ingest, _) = Ingest::open(small(dir.path())).unwrap();
+    upload_with(
+        &ingest,
+        1,
+        300,
+        |i| serde_json::json!({"q": format!("needle{i} {}", "x".repeat(400))}),
+    )
+    .await;
+    wait_for(|| ingest.health().segments >= 2 && !ingest.health().frozen).await;
+    let segs: Vec<_> = {
+        let mem = ingest.mem();
+        let m = mem.read().unwrap();
+        m.version.segments.iter().map(|s| (**s).clone()).collect()
+    };
+    drop(ingest);
+
+    let data = dir.path().join("data");
+    let store = Store::local(&data).unwrap();
+    let index = Fts::new(store.clone());
+    let mut hits = Vec::new();
+    for s in &segs {
+        let stem = s.fts_path.clone().expect("every new file has a sidecar");
+        assert_eq!(
+            stem,
+            s.core_path.replace(".core.parquet", ".fts"),
+            "beside its core file"
+        );
+        let (dict, post) = (data.join(fts::dict_path(&stem)), data.join(fts::post_path(&stem)));
+        assert!(stem.ends_with(&format!("seg-{}.fts", s.id)));
+        let bytes = std::fs::metadata(&dict).unwrap().len() + std::fs::metadata(&post).unwrap().len();
+        assert_eq!(s.fts_bytes, bytes);
+        for row in index
+            .lookup(s, &["needle77".to_string()], TextField::Inputs)
+            .await
+            .unwrap()
+        {
+            let ids = segment::run_ids(store.get(&s.core_path).await.unwrap()).unwrap();
+            hits.push(ids[row as usize]);
+        }
+    }
+    assert_eq!(hits, vec![uuid(77)], "the one run with that word");
+    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
+    let unindexed: i64 = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+                let n = sqlx::query_scalar("SELECT count(*) FROM segments WHERE fts_path IS NULL OR fts_bytes IS NULL")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                n
+            })
+    })
+    .join()
+    .unwrap();
+    assert_eq!(unindexed, 0);
+
+    // Sidecars put by a flush that never committed are orphans like its data files.
+    let day = data.join("p-00000000/2026-11-06");
+    std::fs::create_dir_all(&day).unwrap();
+    let orphans = [
+        day.join("seg-X.fts.dict.parquet"),
+        day.join("seg-X.fts.post"),
+        day.join("seg-Z.fts-01JD0000000000000000000000.post"),
+        day.join(".seg-Y.fts.post.tmp-01JD0000000000000000000000"),
+    ];
+    for o in &orphans {
+        std::fs::write(o, b"half written").unwrap();
+    }
+    let (ingest, stats) = Ingest::open(small(dir.path())).unwrap();
+    assert_eq!(stats.orphans_removed, orphans.len());
+    assert!(orphans.iter().all(|o| !o.exists()));
+    for s in &segs {
+        let stem = s.fts_path.as_deref().unwrap();
+        assert!(data.join(fts::dict_path(stem)).exists() && data.join(fts::post_path(stem)).exists());
+    }
+    assert!(ingest.health().ok);
 }

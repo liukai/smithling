@@ -1,8 +1,8 @@
 //! The flusher: frozen memtable → Parquet files → catalog → WAL trim (design §4.2).
 //!
-//! The order is the whole safety argument. Files are written first (a crash leaves orphans, deleted on
-//! start); then one metastore transaction registers them, saves the events' dedup keys and moves
-//! `flushed_seq` (a crash after it means replay skips `seq ≤ flushed_seq`); only then are WAL files deleted.
+//! The order is the whole safety argument. Files are written first, each segment's text index sidecar after
+//! its core and payload files (a crash leaves orphans, deleted on start); then one metastore transaction
+//! registers them, saves the events' dedup keys and moves `flushed_seq` (a crash after it means replay skips `seq ≤ flushed_seq`); only then are WAL files deleted.
 //! At every step each confirmed event, and its dedup key, is in the WAL, in the catalog, or both.
 //!
 //! A job's files and segment ids are made once and reused by every retry, so a retry after a commit that
@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use tracedb_model::attrs::promote;
 use tracedb_model::{RunId, Ts};
+use tracedb_storage::fts;
 use tracedb_storage::segment::{self, Version as Row};
 use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError, Written};
 
@@ -149,14 +150,20 @@ impl Flusher {
         let stats: Vec<FieldStat> = p.written.iter().flat_map(|w| w.stats.iter().cloned()).collect();
         let store = self.storage.store.clone();
         if !p.stored {
+            // Core, payload, then the text index sidecar (dictionary, postings), each with the crash point after it.
             let files: Vec<_> = p
                 .written
                 .iter()
-                .map(|w| {
-                    (
-                        (w.meta.core_path.clone(), w.core.clone()),
-                        (w.meta.payload_path.clone(), w.payload.clone()),
-                    )
+                .flat_map(|w| {
+                    let mut f = vec![
+                        (w.meta.core_path.clone(), w.core.clone(), Some("during_put")),
+                        (w.meta.payload_path.clone(), w.payload.clone(), None),
+                    ];
+                    if let Some(stem) = &w.meta.fts_path {
+                        f.push((fts::dict_path(stem), w.fts.dict.clone(), None));
+                        f.push((fts::post_path(stem), w.fts.post.clone(), Some("after_fts_put")));
+                    }
+                    f
                 })
                 .collect();
             self.storage.block(async move {
@@ -167,19 +174,19 @@ impl Flusher {
                         Err(e) if e.already_exists() => Ok(()),
                         r => r,
                     };
-                    for ((core_path, core), (payload_path, payload)) in &files {
-                        stored(store.put_new(core_path, core.clone()).await)?;
-                        crash_point("during_put");
-                        stored(store.put_new(payload_path, payload.clone()).await)?;
+                    for (path, bytes, point) in &files {
+                        stored(store.put_new(path, bytes.clone()).await)?;
+                        if let Some(point) = point {
+                            crash_point(point);
+                        }
                     }
                     Ok::<_, StorageError>(())
                 }
                 .await;
                 if let Err(e) = put {
                     // Best effort: these files were never registered.
-                    for ((core_path, _), (payload_path, _)) in &files {
-                        let _ = store.delete(core_path).await;
-                        let _ = store.delete(payload_path).await;
+                    for (path, ..) in &files {
+                        let _ = store.delete(path).await;
                     }
                     return Err(e);
                 }

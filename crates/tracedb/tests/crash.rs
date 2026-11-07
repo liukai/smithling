@@ -3,9 +3,10 @@
 //! Each round: start `tracedb serve` with a tiny memtable (so data is flushed to files all the time), upload
 //! from several clients (starts, then updates), kill -9 at a random moment, restart, re-send every batch
 //! that never got an answer (as an SDK retry would), then check every confirmed item is present, merged,
-//! and stored exactly once. Five rounds kill at a random moment of the upload; the other five make the server
-//! abort itself at a chosen point of a flush (SC-05): between the two file puts, between the puts and the
-//! catalog commit, after the commit before the WAL trim, in the middle of the trim, and after it.
+//! and stored exactly once. Four rounds kill at a random moment of the upload; the other six make the server
+//! abort itself at a chosen point of a flush (SC-05): between the two file puts, after the text index put,
+//! between the puts and the catalog commit, after the commit before the WAL trim, in the middle of the trim,
+//! and after it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -157,6 +158,23 @@ async fn client(url: String, first: u64, log: Arc<Mutex<Log>>) {
     }
 }
 
+/// Data files by segment (`seg-<ulid>`): which kinds exist (`core.parquet`, `fts.post`, …).
+fn segment_files(dir: &std::path::Path) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().filter_map(Result::ok) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.file_type().unwrap().is_dir() {
+                stack.push(e.path());
+            } else if let Some((stem, kind)) = name.strip_prefix("seg-").and_then(|n| n.split_once('.')) {
+                out.entry(stem.to_string()).or_default().push(kind.to_string());
+            }
+        }
+    }
+    out
+}
+
 async fn all_runs(url: &str) -> HashMap<String, Value> {
     let mut out = HashMap::new();
     let mut cursor: Option<String> = None;
@@ -181,6 +199,7 @@ async fn all_runs(url: &str) -> HashMap<String, Value> {
 async fn kill_9_loses_nothing_confirmed() {
     for round in 0..10u64 {
         let crash_at = match round {
+            4 => Some("after_fts_put"),
             5 => Some("during_put"),
             6 => Some("after_put"),
             7 => Some("after_commit"),
@@ -225,7 +244,27 @@ async fn kill_9_loses_nothing_confirmed() {
             c.await.unwrap();
         }
 
+        // The crashed flush's files (the newest segment id), its sidecar included, were never committed.
+        let crashed = (storage.is_empty() && crash_at == Some("after_fts_put")).then(|| {
+            let files = segment_files(&dir.path().join("data"));
+            let newest = files.keys().max().cloned().expect("a flush was under way");
+            let mut kinds = files[&newest].clone();
+            kinds.sort();
+            assert_eq!(
+                kinds,
+                ["core.parquet", "fts.dict.parquet", "fts.post", "payload.parquet"],
+                "round {round}: crashed after all four puts"
+            );
+            newest
+        });
         let (mut child, url) = spawn(dir.path(), &storage, None);
+        if let Some(stem) = crashed {
+            let files = segment_files(&dir.path().join("data"));
+            assert!(
+                !files.contains_key(&stem),
+                "round {round}: orphan {stem} files left after restart"
+            );
+        }
         let log = Arc::try_unwrap(log).ok().unwrap().into_inner().unwrap();
         let http = reqwest::Client::new();
         for body in &log.unanswered {

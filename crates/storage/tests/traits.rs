@@ -107,6 +107,8 @@ fn segment(n: u128, seq: u64) -> (SegmentMeta, Vec<FieldStat>) {
         core_bytes: 4_096,
         payload_bytes: 8_192,
         created_at: 1_762_300_000_000_000,
+        fts_path: n.is_multiple_of(2).then(|| format!("eval-agent-1/2026-11-05/{id}.fts")),
+        fts_bytes: if n.is_multiple_of(2) { 1_234 } else { 0 },
     };
     let stats = vec![FieldStat {
         segment_id: id,
@@ -219,6 +221,97 @@ async fn metastore_contract(url: &str) {
     assert_eq!(m.flushed_seq().await.unwrap(), 70);
 }
 
+/// The catalog as M2 left it (schema_version 1), with one registered segment.
+const M2_CATALOG: &[&str] = &[
+    "CREATE TABLE state (id INTEGER PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL,
+        flushed_seq BIGINT NOT NULL)",
+    "CREATE TABLE segments (id TEXT PRIMARY KEY, project TEXT NOT NULL, core_path TEXT NOT NULL,
+        payload_path TEXT NOT NULL, min_start_key BIGINT NOT NULL, max_start_key BIGINT NOT NULL,
+        min_trace_id TEXT NOT NULL, max_trace_id TEXT NOT NULL, min_seq BIGINT NOT NULL, max_seq BIGINT NOT NULL,
+        row_count BIGINT NOT NULL, needs_merge_rows BIGINT NOT NULL, core_bytes BIGINT NOT NULL,
+        payload_bytes BIGINT NOT NULL, tier INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'active',
+        created_at BIGINT NOT NULL)",
+    "CREATE INDEX segments_scope ON segments (project, max_start_key)",
+    "CREATE TABLE field_stats (segment_id TEXT NOT NULL, path TEXT NOT NULL, type TEXT NOT NULL,
+        count BIGINT NOT NULL, top_values TEXT NOT NULL, other_count BIGINT NOT NULL,
+        PRIMARY KEY (segment_id, path, type))",
+    "INSERT INTO state (id, schema_version, flushed_seq) VALUES (1, 1, 42)",
+    "INSERT INTO segments (id, project, core_path, payload_path, min_start_key, max_start_key, min_trace_id,
+        max_trace_id, min_seq, max_seq, row_count, needs_merge_rows, core_bytes, payload_bytes, created_at)
+     VALUES ('seg-m2', 'p', 'p-1/d/seg-m2.core.parquet', 'p-1/d/seg-m2.payload.parquet', 1, 2,
+        '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 1, 42, 10, 0, 100, 200, 5)",
+];
+
+async fn migration_contract(url: &str, pg: bool) {
+    sqlx::any::install_default_drivers();
+    let connect = if pg { url.to_string() } else { format!("{url}?mode=rwc") };
+    let pool = sqlx::AnyPool::connect(&connect).await.unwrap();
+    for stmt in M2_CATALOG {
+        sqlx::query(*stmt).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let m = Metastore::open(url).await.unwrap();
+    let segs = m.active_segments().await.unwrap();
+    assert_eq!(segs.len(), 1);
+    assert_eq!(
+        (segs[0].fts_path.as_deref(), segs[0].fts_bytes),
+        (None, 0),
+        "an M2 file has no sidecar"
+    );
+    assert_eq!(m.flushed_seq().await.unwrap(), 42);
+
+    m.set_fts("seg-m2", "p-1/d/seg-m2.fts-01", 777).await.unwrap();
+    let segs = m.active_segments().await.unwrap();
+    assert_eq!(
+        (segs[0].fts_path.as_deref(), segs[0].fts_bytes),
+        (Some("p-1/d/seg-m2.fts-01"), 777)
+    );
+    assert!(
+        m.set_fts("seg-nope", "x", 1).await.is_err(),
+        "an unknown segment is an error"
+    );
+    drop(m);
+
+    let pool = sqlx::AnyPool::connect(url).await.unwrap();
+    let v: i64 = sqlx::query_scalar("SELECT schema_version FROM state WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(v, 2, "schema_version 1 → 2, in place");
+    sqlx::query(
+        "INSERT INTO feedback (id, run_id, trace_id, key, score, value, comment, correction, source, created_at,
+             modified_at, raw)
+         VALUES ('f1', 'r1', NULL, 'correctness', 0.5, NULL, 'ok', NULL, '{}', 1, 2, '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let score: f64 = sqlx::query_scalar("SELECT score FROM feedback WHERE run_id = 'r1' AND key = 'correctness'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(score, 0.5);
+    let indexes: Vec<String> = sqlx::query_scalar(if pg {
+        "SELECT indexname::text FROM pg_indexes WHERE tablename = 'feedback' ORDER BY indexname"
+    } else {
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'feedback' AND sql IS NOT NULL
+         ORDER BY name"
+    })
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        indexes.contains(&"feedback_run".to_string()) && indexes.contains(&"feedback_key".to_string()),
+        "{indexes:?}"
+    );
+    pool.close().await;
+
+    // Reopening a v2 catalog changes nothing.
+    let m = Metastore::open(url).await.unwrap();
+    assert_eq!(m.active_segments().await.unwrap()[0].fts_bytes, 777);
+}
+
 #[tokio::test]
 async fn local_object_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -238,6 +331,20 @@ async fn s3_object_store() {
 async fn sqlite_metastore() {
     let dir = tempfile::tempdir().unwrap();
     metastore_contract(&format!("sqlite://{}", dir.path().join("meta.sqlite").display())).await;
+}
+
+#[tokio::test]
+async fn sqlite_catalog_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    migration_contract(&format!("sqlite://{}", dir.path().join("meta.sqlite").display()), false).await;
+}
+
+#[tokio::test]
+async fn postgres_catalog_migration() {
+    let Some(base) = env_url("TRACEDB_TEST_PG_URL") else {
+        return;
+    };
+    migration_contract(&fresh_pg(&base).await, true).await;
 }
 
 #[tokio::test]
