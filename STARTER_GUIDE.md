@@ -84,6 +84,9 @@ for the wire format). Not its code. The ground rules ([constitution](.specify/me
 
 Each milestone takes one slice of the problem, ends with something you can use, and sets up the next one:
 
+**Colors in every chart below**: green = new in that step · orange = changed or improved · grey = unchanged from
+before · dashed blue = planned, not built yet.
+
 ```mermaid
 flowchart TB
     P["Problem: agent traces are hard to see, store and query"]:::old
@@ -116,16 +119,26 @@ Live status always lives in the [roadmap](specs/000-tracedb-master-plan/roadmap.
 
 ```mermaid
 flowchart TB
-    A["Agent + LangSmith SDK"]
-    B["HTTP upload: /runs/batch, /runs/multipart"]
-    C["Writer: dedup, number, WAL, fsync"]
-    D["Memtable: fresh runs, queryable now"]
-    E["Flusher: memtable → Parquet files + text index"]
-    F["Catalog: which files exist (SQLite / Postgres)"]
-    G["Query: prune, scan, merge, filter, aggregate"]
-    H["Browser UI · CLI"]
-    A --> B --> C --> D --> E --> F --> G --> H
+    subgraph W["Write path"]
+        direction LR
+        A["Agent +<br/>LangSmith SDK"] -- "HTTP upload" --> C["Writer<br/>dedup, WAL, fsync"]
+        C --> D["Memtable<br/>queryable now"]
+        D --> E["Flusher<br/>Parquet + text index"]
+        E -.-> K["Compactor<br/>merge small files (M4)"]:::plan
+    end
+    subgraph R["Read path"]
+        direction LR
+        G["Query<br/>catalog, prune, scan, merge"] --> H["Browser UI · CLI<br/>you debug the agent"]
+        G -.-> I["Agent tools over MCP<br/>an agent debugs it (M5)"]:::plan
+    end
+    W --> R
+    classDef plan fill:#e3f2fd,stroke:#1565c0,color:#1b1b1b,stroke-dasharray: 4 3
 ```
+
+Dashed boxes are not built yet. Today the flusher's files (listed in the catalog: SQLite / Postgres) go straight to
+the read path, unmerged; compaction ([M4](#m4-follow-through-found-it--fixed-it-and-prevented-it)) closes that gap.
+Agent tools ([M5](#m5-zero-instrumentation--agents-agents-debugging-agents)) let an AI agent read the same traces you
+read in the UI.
 
 Everything runs in **one process**. The storage layout is designed so the data files can sit on S3 and the catalog
 on Postgres (cloud mode) with the same binary.
@@ -512,4 +525,6 @@ Things worth watching while you play:
 | see status, decisions, what's next | [roadmap](specs/000-tracedb-master-plan/roadmap.md), [decision log](specs/000-tracedb-master-plan/decisions.md) |
 | read the code, milestone by milestone | starter guides for [M1](specs/001-m1-see-agent-trace-live/starter-guide.md), [M2](specs/002-m2-durable-storage-query-builder/starter-guide.md), [M3](specs/003-m3-search-aggregates-speed/starter-guide.md) (in that order: each builds on the last) |
 | see how tracedb maps to SmithDB | [design notes §2](specs/000-tracedb-master-plan/design-notes.md) |
+| learn why columnar storage is fast, with a runnable example | [SECRET_OF_COLUMNAR_DB.md](SECRET_OF_COLUMNAR_DB.md) |
+| compare the storage engine with RocksDB | [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) |
 | change something | the milestone's `spec.md` → `design.md` → `tasks.md`, and the tests named in its starter guide |

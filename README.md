@@ -7,7 +7,8 @@ machine (or, in cloud mode, in S3-compatible storage and Postgres).
 Status: **M3, "search, aggregates and speed"**: built and passed locally; performance work (the full 2M-run bench,
 idle memory) deferred until before M4. Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
 New to the project? [STARTER_GUIDE.md](STARTER_GUIDE.md) explains the problem, the architecture and how each
-milestone built on the last.
+milestone built on the last. Background: [SECRET_OF_COLUMNAR_DB.md](SECRET_OF_COLUMNAR_DB.md) (columnar storage, with
+a runnable example) and [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) (the storage engine, for RocksDB people).
 
 ## Run it
 
