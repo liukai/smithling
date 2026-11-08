@@ -12,8 +12,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use smithling_model::{Op, RunEvent, RunFields, RunId, Ts, check_identity};
 use tokio::sync::{OwnedSemaphorePermit, oneshot};
-use tracedb_model::{Op, RunEvent, RunFields, RunId, Ts, check_identity};
 
 use crate::dedup::{Dedup, DedupKey};
 use crate::flush::FlushJob;
@@ -310,8 +310,8 @@ fn probe(it: &Incoming, now: Ts) -> RunEvent {
 }
 
 /// Identity conflict between two items for the same new run in one group.
-fn ident_conflict(first: &RunFields, f: &RunFields) -> Option<tracedb_model::Reject> {
-    use tracedb_model::{Reason, Reject};
+fn ident_conflict(first: &RunFields, f: &RunFields) -> Option<smithling_model::Reject> {
+    use smithling_model::{Reason, Reject};
     let differs = |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(x), Some(y)) if x != y);
     let field = if f.trace_id.is_some() && first.trace_id.is_some() && f.trace_id != first.trace_id {
         "trace_id"

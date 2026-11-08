@@ -70,9 +70,9 @@ export function ChipEditor({ initial, onSave, onCancel }: { initial?: Expr; onSa
 
   return (
     <form className="chip-editor" onSubmit={save}>
-      <input aria-label="field" list="tracedb-fields" placeholder="field" value={field} autoFocus
+      <input aria-label="field" list="smithling-fields" placeholder="field" value={field} autoFocus
         onChange={(e) => { setField(e.target.value); setError(null); }} />
-      <datalist id="tracedb-fields">{SUGGEST.map((f) => <option key={f} value={f} />)}</datalist>
+      <datalist id="smithling-fields">{SUGGEST.map((f) => <option key={f} value={f} />)}</datalist>
       <select aria-label="operator" value={op} onChange={(e) => { setOp(e.target.value as EditOp); setError(null); }}>
         {OPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>

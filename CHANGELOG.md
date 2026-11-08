@@ -2,8 +2,8 @@
 
 Milestones, key decisions and changes someone would look up later, newest first. Each milestone is tagged (`m1`,
 `m2`, …), so `git checkout m2` shows the code as it was then. The full reasoning behind a decision is in the
-[decision log](specs/000-tracedb-master-plan/decisions.md); plans and status are in the
-[roadmap](specs/000-tracedb-master-plan/roadmap.md).
+[decision log](specs/000-smithling-master-plan/decisions.md); plans and status are in the
+[roadmap](specs/000-smithling-master-plan/roadmap.md).
 
 **Keeping it current** (CI checks the first rule on every pull request, see `scripts/check-changelog.sh`):
 
@@ -20,15 +20,18 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Changed
 
+- **Renamed to Smithling** (was tracedb): crates `smithling-*`, binary `smithling`, `SMITHLING_*` environment
+  variables, default data folder `./.smithling`. Existing `./.tracedb` folders can be renamed or passed with `--data`
+  ([D-037](specs/000-smithling-master-plan/decisions.md#d-037)). Entries below use the old name.
 - The `tracedb` crate is split into `tracedb-server` (the HTTP API and UI), `tracedb-tools` (seed, query, demo,
   bench) and the `tracedb` binary; `--no-default-features` builds a serve-only binary
-  ([D-034](specs/000-tracedb-master-plan/decisions.md#d-034)).
+  ([D-034](specs/000-smithling-master-plan/decisions.md#d-034)).
 - Storage parts stay concrete types until a second implementation is needed; only the text index is a trait
-  ([D-035](specs/000-tracedb-master-plan/decisions.md#d-035)).
+  ([D-035](specs/000-smithling-master-plan/decisions.md#d-035)).
 - CI: runs on pushes to `main` or `master`, with a read-only token; the full 2M-run bench is started by hand until
   it's re-evaluated (roadmap D3-1); pull requests must update this file.
 - Specs brought in line with the built code (about 100 fixes); four earlier changes that had no decision-log entry
-  were logged retroactively ([D-030](specs/000-tracedb-master-plan/decisions.md#d-030)–D-033).
+  were logged retroactively ([D-030](specs/000-smithling-master-plan/decisions.md#d-030)–D-033).
 - M3 tasks T121 and T124 reopened: written but never run outside macOS (roadmap D3-3, D3-5).
 
 ### Added
@@ -41,7 +44,7 @@ Milestones, key decisions and changes someone would look up later, newest first.
 - UI: a new look (navy header, sky-blue accents) across the views, charts and JSON viewer.
 - A draft spec for **M5: disaggregated trace database** (ingest, read workers and compaction as separate services
   over shared storage); the agents milestone becomes M6
-  ([D-036](specs/000-tracedb-master-plan/decisions.md#d-036)).
+  ([D-036](specs/000-smithling-master-plan/decisions.md#d-036)).
 - Roadmap backlog: ideas not yet in the system (typed columns for hot JSON paths, cost-based condition order,
   result cache, a Vortex benchmark, bounded attribute promotion) and a scale / failure-modes checklist.
 - `LICENSE` (MIT), `SECURITY.md`, this changelog.
@@ -53,26 +56,26 @@ Milestones, key decisions and changes someone would look up later, newest first.
 ### Added
 
 - Text search over inputs, outputs and errors, with a small inverted index written next to every data file
-  ([D-026](specs/000-tracedb-master-plan/decisions.md#d-026)).
+  ([D-026](specs/000-smithling-master-plan/decisions.md#d-026)).
 - Stats: group by any field with count, error rate, p50/p95/p99 latency, tokens, cost and feedback average; Time
   series, Distribution and Compare views. Slow grouped queries send an estimate first, then the exact answer.
 - The LangSmith SDK works on its default settings: multipart and zstd uploads
-  ([D-030](specs/000-tracedb-master-plan/decisions.md#d-030)); attachment parts are rejected by name, the run is kept
-  ([D-031](specs/000-tracedb-master-plan/decisions.md#d-031)).
+  ([D-030](specs/000-smithling-master-plan/decisions.md#d-030)); attachment parts are rejected by name, the run is kept
+  ([D-031](specs/000-smithling-master-plan/decisions.md#d-031)).
 - Feedback is stored, filtered on and averaged, even when it arrives before its run
-  ([D-027](specs/000-tracedb-master-plan/decisions.md#d-027)).
+  ([D-027](specs/000-smithling-master-plan/decisions.md#d-027)).
 - Cost from a local price list; `tracedb bench`; a 32 MB cache for file footers, index and payload pages; a damaged
   data file is skipped and named instead of failing every query.
 
 ### Changed
 
 - Defaults: 64 MB memtable measured as heap, 2-minute flush age, 16-byte dedup fingerprints with a cap, jemalloc
-  ([D-028](specs/000-tracedb-master-plan/decisions.md#d-028)).
+  ([D-028](specs/000-smithling-master-plan/decisions.md#d-028)).
 - Lists and single-run lookups reuse merged rows and read payloads by row number
-  ([D-029](specs/000-tracedb-master-plan/decisions.md#d-029)); a second start for an already-flushed run is
-  merged correctly ([D-025](specs/000-tracedb-master-plan/decisions.md#d-025)).
+  ([D-029](specs/000-smithling-master-plan/decisions.md#d-029)); a second start for an already-flushed run is
+  merged correctly ([D-025](specs/000-smithling-master-plan/decisions.md#d-025)).
 - End-to-end first, performance later: the full 2M-run bench and the idle-memory target are deferred, not dropped
-  ([D-032](specs/000-tracedb-master-plan/decisions.md#d-032), [D-033](specs/000-tracedb-master-plan/decisions.md#d-033)).
+  ([D-032](specs/000-smithling-master-plan/decisions.md#d-032), [D-033](specs/000-smithling-master-plan/decisions.md#d-033)).
 
 `tracedb demo` passes all 10 checks. Not verified here: the cloud CI job, the UI in a real browser, the
 no-outbound check under strace.
@@ -95,12 +98,12 @@ no-outbound check under strace.
 
 ### Changed
 
-- Promoted JSON values live in one `attrs` column ([D-012](specs/000-tracedb-master-plan/decisions.md#d-012)); one
-  evaluator decides every filter after the merge ([D-017](specs/000-tracedb-master-plan/decisions.md#d-017)).
+- Promoted JSON values live in one `attrs` column ([D-012](specs/000-smithling-master-plan/decisions.md#d-012)); one
+  evaluator decides every filter after the merge ([D-017](specs/000-smithling-master-plan/decisions.md#d-017)).
 - Lists read the newest slice of time first and stop at a full page
-  ([D-021](specs/000-tracedb-master-plan/decisions.md#d-021)); dedup keys are saved in the catalog instead of
-  keeping old WAL files ([D-022](specs/000-tracedb-master-plan/decisions.md#d-022)); the dedup window is 10 minutes
-  ([D-008](specs/000-tracedb-master-plan/decisions.md#d-008)).
+  ([D-021](specs/000-smithling-master-plan/decisions.md#d-021)); dedup keys are saved in the catalog instead of
+  keeping old WAL files ([D-022](specs/000-smithling-master-plan/decisions.md#d-022)); the dedup window is 10 minutes
+  ([D-008](specs/000-smithling-master-plan/decisions.md#d-008)).
 
 At 2M runs: filtered lists p50 29–53 ms, opening a trace 6 ms, disk 19% of the raw JSON.
 

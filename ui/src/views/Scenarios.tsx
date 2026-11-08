@@ -13,12 +13,12 @@ export interface Scenario {
   question: string;
   /** What the demo data planted, so the result can be checked by eye. */
   expect: string;
-  /** The runs view's URL parameters; none when tracedb can't answer it yet. */
+  /** The runs view's URL parameters; none when smithling can't answer it yet. */
   params?: Record<string, string>;
   missing?: string;
 }
 
-/** The SmithDB post's seven questions, asked of `tracedb demo`'s overnight-eval data, plus the batch comparison. */
+/** The SmithDB post's seven questions, asked of `smithling demo`'s overnight-eval data, plus the batch comparison. */
 export const SCENARIOS: Scenario[] = [
   {
     n: 1, title: "Show me this one", question: "Open the slowest failed task of batch a, then any step's full input.",
@@ -105,12 +105,12 @@ export function ScenariosPage() {
           <h2>Scenarios</h2>
           <p className="muted">
             The questions from LangChain's <a href="https://www.langchain.com/blog/introducing-smithdb">SmithDB post</a>,
-            asked of the demo data. Load it once with <code>tracedb demo --url {window.location.origin}</code>, then
+            asked of the demo data. Load it once with <code>smithling demo --url {window.location.origin}</code>, then
             open a question or download its answer as JSON.
           </p>
         </div>
         <button className="btn" disabled={busy !== null}
-          onClick={() => run("all", async () => save("tracedb-scenarios.json", await Promise.all(ready.map(answer))))}>
+          onClick={() => run("all", async () => save("smithling-scenarios.json", await Promise.all(ready.map(answer))))}>
           {busy === "all" ? "Downloading…" : "Download all"}
         </button>
       </div>
@@ -128,7 +128,7 @@ export function ScenariosPage() {
                   <a className="btn primary" href={toUrl(stateOf(s))}
                     onClick={(e) => { e.preventDefault(); navigate(toUrl(stateOf(s))); }}>Open</a>
                   <button className="btn" disabled={busy !== null}
-                    onClick={() => run(s.n, async () => save(`tracedb-scenario-${s.n}-${slug(s)}.json`, await answer(s)))}>
+                    onClick={() => run(s.n, async () => save(`smithling-scenario-${s.n}-${slug(s)}.json`, await answer(s)))}>
                     {busy === s.n ? "Downloading…" : "Download JSON"}
                   </button>
                 </div>

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use tracedb_storage::{FieldStat, SegmentMeta};
+use smithling_storage::{FieldStat, SegmentMeta};
 
 use crate::store::RunStore;
 

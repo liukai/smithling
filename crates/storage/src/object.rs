@@ -70,7 +70,7 @@ impl Store {
         Store {
             root,
             prefix: Path::from(prefix.trim_matches('/')),
-            base: Url::parse("tracedb-object-store://").expect("valid"),
+            base: Url::parse("smithling-object-store://").expect("valid"),
             local_dir: None,
         }
     }

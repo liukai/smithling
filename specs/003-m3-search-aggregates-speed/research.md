@@ -1,6 +1,6 @@
 # Research: M3 — Search, aggregates and speed
 
-Phase 0 decisions for M3. Master decisions ([000 research](../000-tracedb-master-plan/research.md)) and M2's
+Phase 0 decisions for M3. Master decisions ([000 research](../000-smithling-master-plan/research.md)) and M2's
 ([M2 research](../002-m2-durable-storage-query-builder/research.md)) still hold unless a topic says it changes them.
 Format: decision, why, what else was considered. Code references are to branch `002-m2-durable-storage-query-builder`
 at `6e77f12`; crate versions were checked against the offline registry on 2026-11-06; SDK behaviour against the
@@ -30,7 +30,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   - Behind a `TextIndex` trait in `storage` (`write(rows) -> Sidecar`, `lookup(seg, terms, field) -> RowSet`).
 - **Why**:
   - SmithDB's index is per segment with term zones and postings chunked apart from the dictionary
-    ([design-notes §6](../000-tracedb-master-plan/design-notes.md#6-full-text-search)); this is that shape on top of
+    ([design-notes §6](../000-smithling-master-plan/design-notes.md#6-full-text-search)); this is that shape on top of
     the Parquet reader we already have (parquet 59.3.2 via DataFusion 55.2.0), so it works the same on S3 with range
     reads (constitution V).
   - The roadmap's "scan + per-segment bloom" plan can't meet the 500 ms target: Parquet blooms match whole column
@@ -41,14 +41,14 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
     or a phrase's candidate set passes ~50k rows.
   - Size estimate: about +12% of today's files, so disk goes from 19% to about 31–35% of the raw JSON (target ≤ 50%).
     *Measured*: the index is 0.2% of raw JSON on the bench load and 6.9% on prose-like payloads, both under the
-    target ([D-026](../000-tracedb-master-plan/decisions.md#d-026)).
+    target ([D-026](../000-smithling-master-plan/decisions.md#d-026)).
     Phrase latency estimate: 50–200 ms median at 2M runs.
 - **Considered**: tantivy (not in the offline registry; no `object_store` directory, so it can't range-read S3);
   `fst` dictionaries (the whole file must be fetched before a lookup); Parquet bloom filters on payload columns (whole
   values only); scan only (1–3 s); roaring bitmaps for postings (not in the offline registry; delta + bit-pack in
   ~100 lines is enough at segment scale).
 - **Changes a recorded decision**: roadmap 2026-11-05 "custom search index is backlog; v0 uses scan + per-segment
-  bloom". Logged as [D-026](../000-tracedb-master-plan/decisions.md#d-026).
+  bloom". Logged as [D-026](../000-smithling-master-plan/decisions.md#d-026).
 
 ## 🟢 M3-R2. Words: Unicode word boundaries, lower case, JSON string and scalar leaves
 - **Decision**: tokenize every string and scalar leaf of `inputs`, `outputs` (JSON) and the `error` text with
@@ -76,7 +76,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 - Excerpt: the field path, and ±80 characters around the first match, cut on character boundaries.
 - Old M2 folders: `segments.fts_path` is nullable; a background backfill writes sidecars for M2 files when idle
   (one file at a time, write-once object, then catalog update).
-- **Why**: the index stays a pruning device; the one evaluator ([D-017](../000-tracedb-master-plan/decisions.md#d-017))
+- **Why**: the index stays a pruning device; the one evaluator ([D-017](../000-smithling-master-plan/decisions.md#d-017))
   still decides, so results can't differ by where data lives (FR-03: "no false matches").
 - **Considered**: answering from postings alone (wrong for multi-version runs and phrases); indexing the memtable
   (rebuilt per write; the memtable is small enough to scan).
@@ -95,7 +95,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
     files.
 - **Prerequisite fix (unit 1)**: a second *start* for a run already on disk isn't marked multi-version
   ([writer.rs:250](../../crates/ingest/src/writer.rs#L250), [flush.rs:101](../../crates/ingest/src/flush.rs#L101),
-  [D-016](../000-tracedb-master-plan/decisions.md#d-016)). Lists tolerate it; the clean side would count the run
+  [D-016](../000-smithling-master-plan/decisions.md#d-016)). Lists tolerate it; the clean side would count the run
   twice. The writer keeps an in-memory bloom filter of every flushed run id (≈2.4 MB for 2M ids at 1% false
   positives, rebuilt at start from the files' `run_id` columns); a start that creates a new memtable state and hits
   it joins the multi-version set. A false positive only sends one run to the slower side.
@@ -161,7 +161,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
     `other` = `and(exists(k), not(in(k, [top…])))`; a tag group = `has(tags, v)`; a bucket adds
     `gte/lt(start_time, …)`; a bin adds `gte/lt(latency, …)`.
 - **Why**: spec Story 2–3 and edge cases (many values, few runs, different spans). `exists(path)` is in the
-  [master filter contract](../000-tracedb-master-plan/contracts/filter-dsl.md) but not in today's AST
+  [master filter contract](../000-smithling-master-plan/contracts/filter-dsl.md) but not in today's AST
   ([ast.rs:5-24](../../crates/model/src/filter/ast.rs#L5)).
 
 ## 🟢 M3-R8. Cost: reported cost first, else tokens × a local price list
@@ -181,7 +181,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 - **Considered**: computing cost at flush (stale after a price edit); f64 dollars (rounding drift in sums).
 
 ## 🟢 M3-R9. Multipart upload (settled: advertise multipart + zstd)
-- **Finding**: tracedb's `/info` decides the SDK's path. Today it returns `use_multipart_endpoint: false`
+- **Finding**: smithling's `/info` decides the SDK's path. Today it returns `use_multipart_endpoint: false`
   ([routes/ingest.rs:26](../../crates/server/src/routes/ingest.rs#L26)), so the SDK never uses multipart; if `/info`
   fails, the SDK defaults to multipart. Compression happens only if `instance_flags.zstd_compression_enabled`.
 - **Format** (SDK 0.14.17): `POST /runs/multipart`, boundary = uuid4 hex. Parts:
@@ -217,8 +217,8 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 ## 🟢 M3-R10. Feedback: its own table, joined at read time
 - **Finding**: the SDK's default is `POST /feedback` with JSON (client.py:8141). Multipart `feedback.{id}` parts
   are sent only with multipart on, `extend_trace_retention`, `info.version ≥ 0.8.10`, the tracing queue and a
-  `trace_id`. tracedb sends `version: ""`, so feedback always comes as `POST /feedback`. This corrects
-  [design-notes §4](../000-tracedb-master-plan/design-notes.md#4-ingestion) ("multipart part by default"). Today
+  `trace_id`. smithling sends `version: ""`, so feedback always comes as `POST /feedback`. This corrects
+  [design-notes §4](../000-smithling-master-plan/design-notes.md#4-ingestion) ("multipart part by default"). Today
   `/feedback` returns `501`, which the SDK **re-raises into agent code** (a crash risk).
 - **Fields**: `id, run_id, trace_id, key, score, value, comment, correction, feedback_source{type, metadata},
   session_id, created_at, modified_at`, and others.
@@ -284,11 +284,11 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   as parent (`crates/query/tests/run_lookup.rs`). 101 random runs + payload: p50 48.3 → 17.9 ms, p99 58.3 → 22.1 ms
   (0.48M runs, 96 files); 113.2 → 26.1 / 130.2 → 33.2 ms with 244 files.
 - **Cache**: no data cache today, only DataFusion's metadata cache
-  ([storage/lib.rs:7](../../crates/storage/src/lib.rs#L7), [D-013](../000-tracedb-master-plan/decisions.md#d-013)).
+  ([storage/lib.rs:7](../../crates/storage/src/lib.rs#L7), [D-013](../000-smithling-master-plan/decisions.md#d-013)).
   **Decision**: a bounded memory `Cache` in `storage` (`moka` 0.12.16, in the offline registry) for Parquet footers,
   page indexes, index pages, postings chunks and payload ranges, default **32 MB** and counted inside the 200 MB.
   A disk tier (e.g. foyer) is later, behind the same trait. This revisits D-013 (logged as
-  [D-028](../000-tracedb-master-plan/decisions.md#d-028)).
+  [D-028](../000-smithling-master-plan/decisions.md#d-028)).
 - **Idle memory**:
 
   | State | Footprint |
@@ -352,7 +352,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   ≈450 MB kept rows + ≈100 MB per-file ≈ **0.6 GB idle**. Meeting 200 MB there needs the late updates merged into one
   version (M4 compaction), a compact or on-disk store for the kept rows, or larger memtables (fewer files) — for the
   user to decide; not hidden by a looser target.
-- **`tracedb bench`** `[--runs 2M] [--data DIR] [--json FILE]`:
+- **`smithling bench`** `[--runs 2M] [--data DIR] [--json FILE]`:
   - Moves `bench_m2::run()` into `crates/tools/src/bench.rs`.
   - Loads through HTTP `/runs/batch` from 8 clients while a query loop runs (measures SC-04 too;
     `throughput.rs` asserts only 5k ev/s without queries today).
@@ -374,7 +374,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 | a | Start reads only files with `needs_merge` rows ([recover.rs:92](../../crates/ingest/src/recover.rs#L92)); `corrupt` is fixed at start (`lib.rs:400,607`); `read_core` sends every URL through one `read_parquet`, so one bad file → `500 query_failed` ([api.rs:161](../../crates/server/src/routes/api.rs#L161)) | check the footer of every file at start; a shared, growing `damaged` map in `Ingest`; on a scan failure, probe the files, mark the culprit, retry without it, add a `skipped_files` warning; `/healthz` reports the live map |
 | b | Double registration: the retry loop re-calls `flush(&job)` ([flush.rs:58](../../crates/ingest/src/flush.rs#L58)); `segment::write` mints a fresh ULID per attempt ([segment.rs:190](../../crates/storage/src/segment.rs#L190)); `commit_flush` accepts `flushed_seq <= ?` ([metastore.rs:290](../../crates/storage/src/metastore.rs#L290)) | write files and ids **once per job**, outside the retry loop; in the transaction, an existing segment id means "already committed" → `Ok`; the job's max seq is the commit token |
 | c | `leave()` refetches only the header and keeps old columns ([Samples.tsx:76](../../ui/src/views/Samples.tsx#L76)); "N new" was left out in M2 (T063) | refetch the shown columns; buffer arrivals while scrolled and show an "N new" pill |
-| d | `seed` timestamps run from now forward ([seed.rs:84](../../crates/tools/src/seed.rs#L84), [main.rs:159](../../crates/tracedb/src/main.rs#L163)) | base = now − n·7 s − the longest duration |
+| d | `seed` timestamps run from now forward ([seed.rs:84](../../crates/tools/src/seed.rs#L84), [main.rs:159](../../crates/smithling/src/main.rs#L163)) | base = now − n·7 s − the longest duration |
 | e | `identity_conflict` when seeding again into a loaded folder: reproduced; the **same** seed reuses run ids (`Rng::new(seed)`) with timestamps from now, so `dotted_order` differs. Not an ingest bug | mix the base time into seed's id stream (demo stays deterministic), or report "already seeded" |
 | f | A second start for a run already on disk isn't multi-version (D-016) | fixed first; aggregates depend on it (R4) |
 

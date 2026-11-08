@@ -1,4 +1,4 @@
-# tracedb primer: why this matters and what done looks like
+# smithling primer: why this matters and what done looks like
 
 > Background reading for [spec.md](spec.md). Start here if you're new to agent tracing. The spec holds the testable requirements; this file explains the problem and walks through the finished product.
 
@@ -81,8 +81,8 @@ Each step names the user story that delivers it. The screens are illustrative mo
 ### Evening: capture, without changing code (Story 1)
 
 ```
-$ tracedb serve
-tracedb listening on http://127.0.0.1:7070   data: ./.tracedb
+$ smithling serve
+smithling listening on http://127.0.0.1:7070   data: ./.smithling
 
 $ export LANGSMITH_ENDPOINT=http://localhost:7070
 $ python run_eval.py --batch 2026-11-05-a        # unchanged agent code
@@ -136,7 +136,7 @@ After a retry/backoff fix, `batch=2026-11-06-b` runs and the two batches' aggreg
 ### Variant: zero instrumentation (Story 10)
 
 ```
-$ tracedb import claude-code ~/.claude/projects/<repo>
+$ smithling import claude-code ~/.claude/projects/<repo>
 ```
 
 The same triage steps now work on the developer's Claude Code sessions: "which session ran the failing `cargo test`,
@@ -145,5 +145,5 @@ and what did the agent do before that?"
 ### The done-check, in one line
 
 A single demo command replays this whole scenario on generated data with planted failures, asserts the expected counts
-(14, 23, 31, 37 …); a separate bench command (`tracedb bench --check`) checks the response-time targets. If every
+(14, 23, 31, 37 …); a separate bench command (`smithling bench --check`) checks the response-time targets. If every
 assertion passes on both, v0 is done.

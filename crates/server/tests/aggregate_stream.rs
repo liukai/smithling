@@ -2,14 +2,14 @@
 //! the request's `query_id`; a bad request or failure is one last `error {code, message}`; closing the
 //! connection cancels the computation.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::time::{Duration, Instant};
 
 use common::*;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use tracedb_query::aggregate::{StreamOpts, progressive::stream_counts};
+use smithling_query::aggregate::{StreamOpts, progressive::stream_counts};
 
 /// Serializes the tests here: they read the process-wide stream counts.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

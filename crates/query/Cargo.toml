@@ -1,5 +1,5 @@
 [package]
-name = "tracedb-query"
+name = "smithling-query"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tracedb-model.workspace = true
-tracedb-ingest.workspace = true
-tracedb-storage.workspace = true
+smithling-model.workspace = true
+smithling-ingest.workspace = true
+smithling-storage.workspace = true
 datafusion.workspace = true
 futures-util.workspace = true
 tracing.workspace = true

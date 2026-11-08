@@ -8,14 +8,14 @@ use std::time::Instant;
 
 use common::*;
 use serde_json::json;
-use tracedb_model::Op;
-use tracedb_model::filter::{AttrRoot, Path, parse_filter};
-use tracedb_query::{Query, QuerySpec};
+use smithling_model::Op;
+use smithling_model::filter::{AttrRoot, Path, parse_filter};
+use smithling_query::{Query, QuerySpec};
 
 const RUNS: u64 = 2_000;
 
 /// `RUNS` roots over many files with ~1 KB of inputs each; every 10th mentions "quota exceeded".
-async fn loaded() -> (tempfile::TempDir, tracedb_ingest::Ingest) {
+async fn loaded() -> (tempfile::TempDir, smithling_ingest::Ingest) {
     const MEMTABLE: u64 = 256 * 1024;
     let (dir, ingest) = open(MEMTABLE);
     for chunk in (0..RUNS).collect::<Vec<_>>().chunks(100) {

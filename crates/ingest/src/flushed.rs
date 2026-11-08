@@ -5,7 +5,7 @@
 //! Sized for 2M ids at 1% false positives (≈2.4 MB), or twice the ids found at start; when a stage fills, a
 //! new one twice its size is added.
 
-use tracedb_model::RunId;
+use smithling_model::RunId;
 
 pub const DEFAULT_CAPACITY: usize = 2_000_000;
 const HASHES: u32 = 7;

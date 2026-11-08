@@ -6,9 +6,9 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
+use smithling_ingest::store::RunStore;
+use smithling_model::{Op, RunFields, validate};
 use tikv_jemalloc_ctl::{epoch, stats};
-use tracedb_ingest::store::RunStore;
-use tracedb_model::{Op, RunFields, validate};
 
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;

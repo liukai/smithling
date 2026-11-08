@@ -1,7 +1,7 @@
 # Data Model: M1 — See agent trace live
 
 Everything M1 stores, how each field arrives, how it merges, and how it's held. The master model
-([000 data-model](../000-tracedb-master-plan/data-model.md)) covers all phases; this file is the M1 detail of record.
+([000 data-model](../000-smithling-master-plan/data-model.md)) covers all phases; this file is the M1 detail of record.
 Field sources were checked against `langsmith` SDK 0.8.18 and 0.14.17 source on 2026-11-05 and are pinned by contract fixtures
 (research M1-R5).
 
@@ -162,7 +162,7 @@ Each rejected item is returned as `{id, reason, detail}`. All other items in the
 
 ## 8. How M1 holds it
 
-**WAL** (`./.tracedb/wal/`)
+**WAL** (`./.smithling/wal/`)
 - **Files**: `<first_seq>.wal`, rolled at 64 MB. Each file starts with an 8-byte header: magic `TDBW` + version `u32 = 1`.
 - **Record** (little-endian): `[u32 length of the rest][u32 crc32 of the rest][u64 event_seq][u64 received_at_us][u8 op][u8 source][u64 body_hash][JSON fields]`. `body_hash` lets the duplicate window be rebuilt on replay.
 - **Replay**: read files in order; stop at the first record with a bad length or checksum, and truncate from there

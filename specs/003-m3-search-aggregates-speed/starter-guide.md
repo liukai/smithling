@@ -7,7 +7,7 @@ multipart upload to batch a vs b, with line-level links. It describes the code a
 name.
 
 For *why* it is built this way, see [design.md](design.md); for the unit order, [plan.md](plan.md). Where the code
-differs from the design, the [decision log](../000-tracedb-master-plan/decisions.md) says why (D-025 to D-029 are
+differs from the design, the [decision log](../000-smithling-master-plan/decisions.md) says why (D-025 to D-029 are
 the M3 ones). This guide is about *where* things live. It builds on the
 [M2 code guide](../002-m2-durable-storage-query-builder/starter-guide.md); paths M3 leaves alone are linked there,
 not repeated.
@@ -40,7 +40,7 @@ Four ideas carry M3 (on top of M2's four):
    so a search can't return a false or stale match.
 2. **Every run is counted on exactly one side.** Single-version file rows are added up straight from a narrow
    DataFusion scan (clean side); anything that may have another version is merged first (dirty side). This only
-   holds because every second version is marked ([D-025](../000-tracedb-master-plan/decisions.md#d-025)).
+   holds because every second version is marked ([D-025](../000-smithling-master-plan/decisions.md#d-025)).
 3. **An estimate is the same engine on a sample**, labelled, and always followed by the exact answer.
 4. **Multipart is a new envelope, not a new path.** Its parts become the same items `/runs/batch` sends.
 
@@ -56,8 +56,8 @@ Four ideas carry M3 (on top of M2's four):
 | 🟢 | SDK defaults unchanged (multipart, zstd, feedback) | `/info` flags; streaming multipart parser + zstd; `POST`/`PATCH /feedback` | [routes/multipart.rs](../../crates/server/src/routes/multipart.rs), [routes/ingest.rs](../../crates/server/src/routes/ingest.rs), [ingest/feedback.rs](../../crates/ingest/src/feedback.rs) |
 | 🟢 | Feedback filterable and averaged | catalog table + in-memory index; `feedback.<key>`; `avg(feedback.<key>)` | [ingest/feedback.rs](../../crates/ingest/src/feedback.rs), [filter/eval.rs](../../crates/model/src/filter/eval.rs) |
 | 🟠 | Interactive at 2M runs | kept merged rows in lists; run lookup by file; bounded `Cache`; late text read | [query/lib.rs](../../crates/query/src/lib.rs), [query/scan.rs](../../crates/query/src/scan.rs), [storage/cache.rs](../../crates/storage/src/cache.rs) |
-| 🟠 | Light at idle | 64 MB heap memtable, 2 min flush age, 16 B dedup fingerprints, 32 MB cache, jemalloc | [ingest/lib.rs](../../crates/ingest/src/lib.rs), [tracedb/main.rs](../../crates/tracedb/src/main.rs), [.cargo/config.toml](../../.cargo/config.toml) |
-| 🟢 | Speed claims measured | `tracedb bench`, calibration, CI gate | [tools/bench.rs](../../crates/tools/src/bench.rs), [ci.yml](../../.github/workflows/ci.yml) |
+| 🟠 | Light at idle | 64 MB heap memtable, 2 min flush age, 16 B dedup fingerprints, 32 MB cache, jemalloc | [ingest/lib.rs](../../crates/ingest/src/lib.rs), [smithling/main.rs](../../crates/smithling/src/main.rs), [.cargo/config.toml](../../.cargo/config.toml) |
+| 🟢 | Speed claims measured | `smithling bench`, calibration, CI gate | [tools/bench.rs](../../crates/tools/src/bench.rs), [ci.yml](../../.github/workflows/ci.yml) |
 | 🟠 | The whole scenario in one command | batch a and b, feedback, M3 checks | [scenario.rs](../../crates/tools/src/scenario.rs), [demo.rs](../../crates/tools/src/demo.rs) |
 | 🟠 | M2 rough edges closed | flushed-ids filter (D-025); files made once per flush job; damaged files skipped; "N new" pill | [ingest/flushed.rs](../../crates/ingest/src/flushed.rs), [flush.rs](../../crates/ingest/src/flush.rs), [query/scan.rs](../../crates/query/src/scan.rs), [views/Samples.tsx](../../ui/src/views/Samples.tsx) |
 
@@ -137,9 +137,9 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    A["tracedb (bin): serve + flags,<br/>jemalloc; CLI tools if built"]:::revised
-    T["tracedb-tools: seed, query,<br/>demo, + bench"]:::revised
-    S["tracedb-server: HTTP, + multipart,<br/>feedback, aggregate SSE"]:::revised
+    A["smithling (bin): serve + flags,<br/>jemalloc; CLI tools if built"]:::revised
+    T["smithling-tools: seed, query,<br/>demo, + bench"]:::revised
+    S["smithling-server: HTTP, + multipart,<br/>feedback, aggregate SSE"]:::revised
     B["query: + search, aggregate,<br/>progressive"]:::revised
     C["ingest: + feedback, flushed ids,<br/>text backfill"]:::revised
     D["storage: + fts sidecar, Cache"]:::revised
@@ -150,12 +150,12 @@ flowchart TB
     classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
 ```
 
-M2's `tracedb` crate is now three (028bd38); each crate still uses only the ones below it:
-- **`tracedb`** ([crates/tracedb](../../crates/tracedb/src/main.rs)): the binary only, `main.rs` with the flags
-  and the allocator. The tests that start the binary live in [crates/tracedb/tests](../../crates/tracedb/tests/demo.rs).
-- **`tracedb-tools`** ([crates/tools](../../crates/tools/src/lib.rs)): `seed`, `scenario`, `query`, `demo` and
+M2's `smithling` crate is now three (028bd38); each crate still uses only the ones below it:
+- **`smithling`** ([crates/smithling](../../crates/smithling/src/main.rs)): the binary only, `main.rs` with the flags
+  and the allocator. The tests that start the binary live in [crates/smithling/tests](../../crates/smithling/tests/demo.rs).
+- **`smithling-tools`** ([crates/tools](../../crates/tools/src/lib.rs)): `seed`, `scenario`, `query`, `demo` and
   `bench`. The binary pulls it in through its default `tools` feature; without it the binary only has `serve`.
-- **`tracedb-server`** ([crates/server](../../crates/server/src/lib.rs)): the HTTP server (`lib.rs`, `routes/`,
+- **`smithling-server`** ([crates/server](../../crates/server/src/lib.rs)): the HTTP server (`lib.rs`, `routes/`,
   `langsmith_map.rs`) and a `testkit` feature for tests.
 
 `query` reads feedback through the read-only `FeedbackLookup` trait
@@ -188,7 +188,7 @@ The overnight-eval scenario ([scenario.rs:185](../../crates/tools/src/scenario.r
 runs in batch a (`batch=2026-11-05-a`, 42 errors) and 300 in batch b (6 errors). Follow one of batch a's: it
 starts, fails with `HTTPError: 429 Too Many Requests`, gets flushed with its index, is found by search, is
 counted in the 14.0%, its root gets a `correctness` score, and it is compared with batch b. The SDK sends it as a
-zstd multipart upload; `tracedb demo` sends the same items through `/runs/batch` (see §8). Bands: 🟢 new,
+zstd multipart upload; `smithling demo` sends the same items through `/runs/batch` (see §8). Bands: 🟢 new,
 🟠 improved, ⚪ as M2.
 
 ```mermaid
@@ -224,7 +224,7 @@ sequenceDiagram
 
 | Step | Code |
 |---|---|
-| `/info` turns the SDK's multipart and zstd on, with every `batch_ingest_config` key it reads; `version: ""` keeps feedback on `POST /feedback` ([D-027](../000-tracedb-master-plan/decisions.md#d-027)) | `info` [routes/ingest.rs:20-36](../../crates/server/src/routes/ingest.rs#L20) |
+| `/info` turns the SDK's multipart and zstd on, with every `batch_ingest_config` key it reads; `version: ""` keeps feedback on `POST /feedback` ([D-027](../000-smithling-master-plan/decisions.md#d-027)) | `info` [routes/ingest.rs:20-36](../../crates/server/src/routes/ingest.rs#L20) |
 | Route | [server/src/lib.rs:92](../../crates/server/src/lib.rs#L92) → `runs_multipart` [multipart.rs:430](../../crates/server/src/routes/multipart.rs#L430) |
 | Boundary from `Content-Type`; `Content-Encoding: zstd` or none, anything else is `400` | `boundary` [multipart.rs:265](../../crates/server/src/routes/multipart.rs#L265), [multipart.rs:329-336](../../crates/server/src/routes/multipart.rs#L329) |
 | The body is decoded as it arrives; raw and decoded bytes are each capped at 50 MB (`413`), zstd windows over 16 MB refused | `parse` [multipart.rs:327-364](../../crates/server/src/routes/multipart.rs#L327), `Unzstd` [multipart.rs:288](../../crates/server/src/routes/multipart.rs#L288), [multipart.rs:28](../../crates/server/src/routes/multipart.rs#L28) |
@@ -250,7 +250,7 @@ plus the flushed-ids check of Scene 13. The update (error, `429`) is M2's path u
 | The flush's run ids go into the flushed-ids filter before the frozen memtable is dropped (Scene 13) | [flush.rs:219-226](../../crates/ingest/src/flush.rs#L219) |
 | Start: unregistered sidecars are orphans, always safe to delete | [recover.rs:52-70](../../crates/ingest/src/recover.rs#L52) |
 
-The design is [D-026](../000-tracedb-master-plan/decisions.md#d-026): no word positions, so a phrase's rows are
+The design is [D-026](../000-smithling-master-plan/decisions.md#d-026): no word positions, so a phrase's rows are
 the intersection of its words' rows, a superset the query then checks. The catalog moved to `schema_version` 2 for
 `fts_path` and the `feedback` table ([metastore.rs:48-67](../../crates/storage/src/metastore.rs#L48)).
 
@@ -262,7 +262,7 @@ The demo sends one `correctness` score before any run exists ([scenario.rs:203](
 | Step | Code |
 |---|---|
 | `POST /feedback` → validate: `run_id` and `key` required, `score` a number or bool or null, unknown fields kept | [routes/ingest.rs:66-75](../../crates/server/src/routes/ingest.rs#L66) → `from_upload` [feedback.rs:87](../../crates/ingest/src/feedback.rs#L87) |
-| One catalog transaction (`ON CONFLICT (id) DO UPDATE`), committed before the reply; no WAL record ([D-027](../000-tracedb-master-plan/decisions.md#d-027)) | `put` [feedback.rs:366](../../crates/ingest/src/feedback.rs#L366) → `commit` [feedback.rs:327](../../crates/ingest/src/feedback.rs#L327) → [metastore.rs:421](../../crates/storage/src/metastore.rs#L421) |
+| One catalog transaction (`ON CONFLICT (id) DO UPDATE`), committed before the reply; no WAL record ([D-027](../000-smithling-master-plan/decisions.md#d-027)) | `put` [feedback.rs:366](../../crates/ingest/src/feedback.rs#L366) → `commit` [feedback.rs:327](../../crates/ingest/src/feedback.rs#L327) → [metastore.rs:421](../../crates/storage/src/metastore.rs#L421) |
 | Then the in-memory index `run_id → (key, score)`; a replaced id moves | `FeedbackIndex::insert` [feedback.rs:195](../../crates/ingest/src/feedback.rs#L195) |
 | `PATCH /feedback/{id}` replaces the given fields | [routes/ingest.rs:77](../../crates/server/src/routes/ingest.rs#L77) → `patch` [feedback.rs:381](../../crates/ingest/src/feedback.rs#L381) |
 | Orphan = its run is in neither memtable nor the flushed-ids filter; listed by `GET /api/feedback?orphaned=true` and counted in `/healthz` | `feedback_runs_missing` [ingest/lib.rs:760](../../crates/ingest/src/lib.rs#L760), [routes/feedback.rs:71-76](../../crates/server/src/routes/feedback.rs#L71), [ingest/lib.rs:778](../../crates/ingest/src/lib.rs#L778) |
@@ -419,7 +419,7 @@ checked at [demo.rs:543-583](../../crates/tools/src/demo.rs#L543)).
 | **Click-through**: a cell, point or bar opens Samples with its `where` as chips; side b swaps in b's filter (or drops the shift) | [StatsTable.tsx:67-80](../../ui/src/stats/StatsTable.tsx#L67) → `onOpen` [views/Runs.tsx:124-137](../../ui/src/views/Runs.tsx#L124) |
 | Live Samples: new runs wait behind an "N new" pill while scrolled down | [Samples.tsx:18](../../ui/src/views/Samples.tsx#L18), [Samples.tsx:219](../../ui/src/views/Samples.tsx#L219) |
 
-### 🟠 Scene 9: `tracedb demo`, now with M3 rows
+### 🟠 Scene 9: `smithling demo`, now with M3 rows
 
 | Step | Code |
 |---|---|
@@ -429,7 +429,7 @@ checked at [demo.rs:543-583](../../crates/tools/src/demo.rs#L543)).
 | Five M3 checks over the real HTTP API: 31 text hits, 14.0% / 31 s, $4.12 (12 no price), a vs b side by side + overlaid, feedback filter + average | `m3_checks` [demo.rs:495-677](../../crates/tools/src/demo.rs#L495) |
 | Pass/fail table, exit 0 / 1 / 2 | `report` [demo.rs:99](../../crates/tools/src/demo.rs#L99) |
 
-### 🟢 Scene 10: `tracedb bench` and calibration
+### 🟢 Scene 10: `smithling bench` and calibration
 
 | Step | Code |
 |---|---|
@@ -447,12 +447,12 @@ checked at [demo.rs:543-583](../../crates/tools/src/demo.rs#L543)).
 | Dedup keys as 16 B fingerprints, at most 1M, pruned while idle | `fingerprint` [dedup.rs:58](../../crates/ingest/src/dedup.rs#L58), `DEFAULT_CAP` [dedup.rs:46](../../crates/ingest/src/dedup.rs#L46), [writer.rs:68-72](../../crates/ingest/src/writer.rs#L68) |
 | Bounded `Cache` (32 MB, least recently used out, by bytes; an entry over ⅛ isn't kept) for footers, dictionary pages, postings, payload pages | `Cache::new` [cache.rs:88](../../crates/storage/src/cache.rs#L88), [cache.rs:114](../../crates/storage/src/cache.rs#L114), `footer` [cache.rs:145](../../crates/storage/src/cache.rs#L145), `ranges` [cache.rs:168](../../crates/storage/src/cache.rs#L168) |
 | Project map: generations of 458,752 runs | [projects.rs:13](../../crates/ingest/src/projects.rs#L13) |
-| Flags `--memtable`, `--flush-age`, `--dedup-keys`, `--cache` (M2 values still settable) | [main.rs:36-50](../../crates/tracedb/src/main.rs#L36) |
-| jemalloc as the global allocator; no thread caches, freed pages purged at once, 8 arenas | [main.rs:10-11](../../crates/tracedb/src/main.rs#L10), [.cargo/config.toml:4](../../.cargo/config.toml#L4) |
-| Runtime workers turn their cache on while running and hand it back when they park | [main.rs:103-111](../../crates/tracedb/src/main.rs#L103) |
+| Flags `--memtable`, `--flush-age`, `--dedup-keys`, `--cache` (M2 values still settable) | [main.rs:36-50](../../crates/smithling/src/main.rs#L36) |
+| jemalloc as the global allocator; no thread caches, freed pages purged at once, 8 arenas | [main.rs:10-11](../../crates/smithling/src/main.rs#L10), [.cargo/config.toml:4](../../.cargo/config.toml#L4) |
+| Runtime workers turn their cache on while running and hand it back when they park | [main.rs:103-111](../../crates/smithling/src/main.rs#L103) |
 | `/healthz` shows `dedup_keys`, `cache_bytes` | [ingest/lib.rs:801-802](../../crates/ingest/src/lib.rs#L801) |
 
-All of this is [D-028](../000-tracedb-master-plan/decisions.md#d-028). Idle memory is still over its target; see §8.
+All of this is [D-028](../000-smithling-master-plan/decisions.md#d-028). Idle memory is still over its target; see §8.
 
 ### 🟠 Scene 12: a damaged file is skipped, not fatal
 
@@ -493,7 +493,7 @@ flowchart TB
 
 A false positive only sends a run to the merging side. This closes M2's "second start isn't marked `needs_merge`"
 rough edge; the field browser now counts such a run once too
-([D-023](../000-tracedb-master-plan/decisions.md#d-023)).
+([D-023](../000-smithling-master-plan/decisions.md#d-023)).
 
 ### 🟠 Opening the run (D-029)
 
@@ -523,13 +523,13 @@ guide** (a 2M-run benchmark needed a quiet machine), so the expected values come
 the demo's checks, not from a run. Port 7070 assumed.
 
 ```bash
-tracedb demo --seed 7                      # M2 + M3 checks: 31 hits, 14.0% / 31 s, $4.12 (12 no price), a vs b, feedback
+smithling demo --seed 7                      # M2 + M3 checks: 31 hits, 14.0% / 31 s, $4.12 (12 no price), a vs b, feedback
 
-tracedb serve --data /tmp/m3 &
-tracedb demo --url http://localhost:7070 --seed 7
+smithling serve --data /tmp/m3 &
+smithling demo --url http://localhost:7070 --seed 7
 ls /tmp/m3/data/*/*/ | grep fts            # a .fts.dict.parquet and .fts.post next to each new file
-tracedb query --project overnight-eval --search '429 Too Many Requests'
-tracedb query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' \
+smithling query --project overnight-eval --search '429 Too Many Requests'
+smithling query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' \
   --compare 'has(tags, "batch=2026-11-06-b")' 'has(tags, "batch=2026-11-05-a")'
 
 curl -s localhost:7070/api/aggregate -H 'content-type: application/json' \
@@ -540,17 +540,17 @@ curl -sN "localhost:7070/api/aggregate/stream?q=$q"     # small data: only `resu
 curl -s 'localhost:7070/api/feedback?orphaned=true' | jq .count
 curl -s localhost:7070/healthz | jq '{unindexed_segments, damaged_segments, orphan_feedback, dedup_keys, cache_bytes}'
 
-tracedb bench --smoke --check              # 200k runs, the PR gate
+smithling bench --smoke --check              # 200k runs, the PR gate
 ```
 
 The tests are the spec in executable form (also not run here):
 
 ```bash
-cargo test -p tracedb-query --test search      # index == naive phrase check over merged runs
-cargo test -p tracedb-query --test aggregate   # aggregate == naive accumulation, whatever was flushed
-cargo test -p tracedb-query --test progressive # estimate over every file == exact; cancel stops reading
-cargo test -p tracedb-server --test multipart  # same runs as the JSON batch, any part order, zstd on/off
-cargo test -p tracedb-ingest --test writer     # a second start for a flushed run joins the set
+cargo test -p smithling-query --test search      # index == naive phrase check over merged runs
+cargo test -p smithling-query --test aggregate   # aggregate == naive accumulation, whatever was flushed
+cargo test -p smithling-query --test progressive # estimate over every file == exact; cancel stops reading
+cargo test -p smithling-server --test multipart  # same runs as the JSON batch, any part order, zstd on/off
+cargo test -p smithling-ingest --test writer     # a second start for a flushed run joins the set
 ```
 
 ## 7. Where M3 is most likely to be wrong (read these tests first)
@@ -558,7 +558,7 @@ cargo test -p tracedb-ingest --test writer     # a second start for a flushed ru
 1. **Double counting in aggregates**:
    [`aggregates_match_naive_accumulation_whatever_was_flushed`](../../crates/query/tests/aggregate.rs#L473) compares
    every group and metric with a naive fold. A run counted twice means a second version reached the clean side:
-   check [D-025](../000-tracedb-master-plan/decisions.md#d-025) and
+   check [D-025](../000-smithling-master-plan/decisions.md#d-025) and
    [`a_second_start_for_a_flushed_run_joins_the_multi_version_set`](../../crates/ingest/tests/writer.rs#L268).
 2. **Stale or missed search hits**:
    [`search_matches_a_naive_phrase_check_whatever_was_flushed_or_indexed`](../../crates/query/tests/search.rs#L421)
@@ -580,9 +580,9 @@ rows and the stale text were updated afterwards (below).
 
 - **Idle memory is over target, by decision.** 234–246 MB idle at ~0.5M runs, ≈0.6 GB projected at 2M: merged
   copies of late-updated runs and per-file state, which M4 compaction removes. SC-05 is waived for M3 (roadmap
-  2026-11-07, [D-028](../000-tracedb-master-plan/decisions.md#d-028)). `tracedb bench` reports the idle row as
+  2026-11-07, [D-028](../000-smithling-master-plan/decisions.md#d-028)). `smithling bench` reports the idle row as
   `WAIVED (M4)` and leaves it out of `--check` ([bench.rs:42](../../crates/tools/src/bench.rs#L42), [bench.rs:1131](../../crates/tools/src/bench.rs#L1131)); the
-  `#[ignore]`d [idle-memory test](../../crates/tracedb/tests/idle_memory.rs#L13) still holds a separate `serve` to
+  `#[ignore]`d [idle-memory test](../../crates/smithling/tests/idle_memory.rs#L13) still holds a separate `serve` to
   200 MB, so it is red when run.
 - **The bench's idle number isn't the server's.** It is the bench process's RSS
   ([bench.rs:899](../../crates/tools/src/bench.rs#L899)), and that process also ran the 8 load clients and the
@@ -625,6 +625,6 @@ rows and the stale text were updated afterwards (below).
 - **`/healthz` walks every feedback run id on each call** to count orphans
   ([ingest/lib.rs:778](../../crates/ingest/src/lib.rs#L778) → [lib.rs:760-771](../../crates/ingest/src/lib.rs#L760)),
   taking the memtable lock. Fine at demo scale; unmeasured with many feedback items.
-- ~~**Stale text.**~~ Fixed in 22ca7c8: `tracedb demo --help` now names the M2 and M3 checks
-  ([main.rs:81](../../crates/tracedb/src/main.rs#L81)), and [quickstart.md](quickstart.md) records its run under
+- ~~**Stale text.**~~ Fixed in 22ca7c8: `smithling demo --help` now names the M2 and M3 checks
+  ([main.rs:81](../../crates/smithling/src/main.rs#L81)), and [quickstart.md](quickstart.md) records its run under
   "Last verified" (T126).

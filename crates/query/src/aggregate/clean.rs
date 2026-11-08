@@ -11,15 +11,15 @@ use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::ParquetReadOptions;
 use futures_util::StreamExt;
 use serde_json::Value;
-use tracedb_model::agg::GroupKey;
-use tracedb_model::attrs::{Attrs, Scalar};
-use tracedb_model::cost;
-use tracedb_model::filter::eval::visit_paths;
-use tracedb_model::filter::{EvalStats, Expr, Field, Path};
-use tracedb_model::run::{JsonMap, RunType};
-use tracedb_model::{DEFAULT_PROJECT, Op, Run, RunEvent, RunFields, RunId, Source, Status, Ts};
-use tracedb_storage::StorageError;
-use tracedb_storage::segment::SegmentMeta;
+use smithling_model::agg::GroupKey;
+use smithling_model::attrs::{Attrs, Scalar};
+use smithling_model::cost;
+use smithling_model::filter::eval::visit_paths;
+use smithling_model::filter::{EvalStats, Expr, Field, Path};
+use smithling_model::run::{JsonMap, RunType};
+use smithling_model::{DEFAULT_PROJECT, Op, Run, RunEvent, RunFields, RunId, Source, Status, Ts};
+use smithling_storage::StorageError;
+use smithling_storage::segment::SegmentMeta;
 
 use super::progressive::Cancel;
 use super::{Accs, AggStats, Facts, KeyVal, Plan, feedback_keys};
@@ -287,7 +287,7 @@ fn blank_run() -> Run {
         },
     };
     let mut slot = None;
-    tracedb_model::merge(&mut slot, &ev).expect("a run with an id merges");
+    smithling_model::merge(&mut slot, &ev).expect("a run with an id merges");
     slot.expect("merged").run
 }
 

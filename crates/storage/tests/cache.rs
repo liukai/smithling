@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use serde_json::json;
-use tracedb_model::attrs::promote;
-use tracedb_model::{Op, RunEvent, RunFields, Source, Ts, merge};
-use tracedb_storage::cache::{Cache, Cached, Key};
-use tracedb_storage::fts::{Fts, TextField};
-use tracedb_storage::segment::{self, Version};
-use tracedb_storage::{StorageError, Store};
+use smithling_model::attrs::promote;
+use smithling_model::{Op, RunEvent, RunFields, Source, Ts, merge};
+use smithling_storage::cache::{Cache, Cached, Key};
+use smithling_storage::fts::{Fts, TextField};
+use smithling_storage::segment::{self, Version};
+use smithling_storage::{StorageError, Store};
 use uuid::Uuid;
 
 fn bytes(n: usize, fill: u8) -> Cached {
@@ -116,11 +116,11 @@ async fn text_lookups_and_payload_reads_are_served_from_it_the_second_time() {
     store.put_new(&w.meta.payload_path, w.payload.clone()).await.unwrap();
     let stem = w.meta.fts_path.clone().unwrap();
     store
-        .put_new(&tracedb_storage::fts::dict_path(&stem), w.fts.dict.clone())
+        .put_new(&smithling_storage::fts::dict_path(&stem), w.fts.dict.clone())
         .await
         .unwrap();
     store
-        .put_new(&tracedb_storage::fts::post_path(&stem), w.fts.post.clone())
+        .put_new(&smithling_storage::fts::post_path(&stem), w.fts.post.clone())
         .await
         .unwrap();
 

@@ -24,8 +24,8 @@ use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties}
 use datafusion::parquet::schema::types::ColumnPath;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracedb_model::attrs::{Attrs, Scalar};
-use tracedb_model::{Op, PayloadSizes, RunEvent, RunFields, RunId, RunState, Source, TraceId, Ts, merge, present};
+use smithling_model::attrs::{Attrs, Scalar};
+use smithling_model::{Op, PayloadSizes, RunEvent, RunFields, RunId, RunState, Source, TraceId, Ts, merge, present};
 
 use datafusion::parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -319,9 +319,9 @@ fn encode_core(rows: &[Version]) -> Result<Bytes, StorageError> {
             has(present::RUN_TYPE).then(|| {
                 r.run_type_raw
                     .clone()
-                    .unwrap_or_else(|| tracedb_model::run::run_type_str(r.run_type).to_string())
+                    .unwrap_or_else(|| smithling_model::run::run_type_str(r.run_type).to_string())
             }),
-            Some(tracedb_model::filter::status_name(r.status).to_string()),
+            Some(smithling_model::filter::status_name(r.status).to_string()),
             opt(has(present::ERROR), r.error.as_deref()),
             r.thread_id.clone(),
             r.model.clone(),
@@ -652,7 +652,7 @@ pub fn decode_core(batch: &RecordBatch) -> Result<Vec<StoredRow>, StorageError> 
             outputs: ob.value(i) as u64,
             events: eb.value(i) as u64,
         };
-        tracedb_model::derive(&mut st);
+        smithling_model::derive(&mut st);
         let attrs: Attrs = match attrs.get(i) {
             Some(t) => serde_json::from_str(t)?,
             None => Attrs::new(),
@@ -875,7 +875,11 @@ impl StatsBuilder {
 
     pub fn add_run(&mut self, state: &RunState, attrs: &Attrs) {
         let r = &state.run;
-        self.add("status", "string", tracedb_model::filter::status_name(r.status).into());
+        self.add(
+            "status",
+            "string",
+            smithling_model::filter::status_name(r.status).into(),
+        );
         if let Some(n) = &r.name {
             self.add("name", "string", n.clone().into());
         }
@@ -884,7 +888,7 @@ impl StatsBuilder {
             "string",
             r.run_type_raw
                 .clone()
-                .unwrap_or_else(|| tracedb_model::run::run_type_str(r.run_type).into())
+                .unwrap_or_else(|| smithling_model::run::run_type_str(r.run_type).into())
                 .into(),
         );
         if let Some(m) = &r.model {

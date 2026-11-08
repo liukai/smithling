@@ -1,6 +1,7 @@
 /target
 __pycache__/
 *.rs.bk
+.smithling/
 .tracedb/
 ui/node_modules/
 ui/dist/

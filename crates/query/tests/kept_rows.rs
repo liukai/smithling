@@ -6,14 +6,14 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use tracedb_ingest::Include;
-use tracedb_model::filter::parse_filter;
-use tracedb_model::{Op, RunFields};
-use tracedb_query::{Query, QuerySpec};
+use smithling_ingest::Include;
+use smithling_model::filter::parse_filter;
+use smithling_model::{Op, RunFields};
+use smithling_query::{Query, QuerySpec};
 
 const MEMTABLE: u64 = 16 * 1024;
 
-async fn filler(ingest: &tracedb_ingest::Ingest, from: u64) {
+async fn filler(ingest: &smithling_ingest::Ingest, from: u64) {
     let runs = (from..from + 40)
         .map(|n| (Op::Post, ended(&root(n, "filler", n), None)))
         .collect();

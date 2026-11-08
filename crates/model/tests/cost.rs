@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
-use tracedb_model::cost::{self, Cost, PICO_PER_USD, PriceError, Prices};
-use tracedb_model::{Op, Run, merge};
+use smithling_model::cost::{self, Cost, PICO_PER_USD, PriceError, Prices};
+use smithling_model::{Op, Run, merge};
 
 fn run(run_type: &str, metadata: Value, outputs: Option<Value>, top: Option<Value>) -> Run {
     let mut f = post_fields(child_ids(), "step");

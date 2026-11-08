@@ -1,4 +1,4 @@
-//! `tracedb bench` (contracts/cli.md, design §4.10): loads the reference volume through `/runs/batch` from 8
+//! `smithling bench` (contracts/cli.md, design §4.10): loads the reference volume through `/runs/batch` from 8
 //! clients with a query loop alongside, then times each query type n ≥ 100 times with varied values and windows
 //! against the SC-03 targets, scaled by a calibration run on this machine (`budget = target × r`).
 //!
@@ -18,11 +18,11 @@ use anyhow::{Context, bail};
 use axum::body::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracedb_ingest::Limits;
-use tracedb_model::Ts;
+use smithling_ingest::Limits;
+use smithling_model::Ts;
 use uuid::Uuid;
 
-use tracedb_server::{AppState, ServeConfig, app};
+use smithling_server::{AppState, ServeConfig, app};
 
 pub const PROJECT: &str = "bench";
 pub const STEPS: u64 = 9;
@@ -42,7 +42,7 @@ const IDLE_TARGET_MB: f64 = 200.0;
 const IDLE_WAIVED: &str = "M4";
 
 #[derive(clap::Parser, Clone, Debug)]
-#[command(name = "tracedb bench")]
+#[command(name = "smithling bench")]
 pub struct BenchArgs {
     /// Runs to load (default 2,000,000; 200,000 with `--smoke`).
     #[arg(long, conflicts_with = "smoke")]
@@ -356,7 +356,7 @@ async fn load(url: &str, runs: u64, base_us: i64, err: &mut impl Write) -> anyho
     let alongside = tokio::spawn(query_loop(http.clone(), url.to_string(), d, done.clone()));
     let _ = writeln!(
         err,
-        "tracedb bench: loading {} runs from {CLIENTS} clients…",
+        "smithling bench: loading {} runs from {CLIENTS} clients…",
         thousands(runs)
     );
     let started = Instant::now();
@@ -695,7 +695,7 @@ async fn time_one(http: &reqwest::Client, url: &str, req: &Req, sleep: Duration)
     let v = if stream {
         // The dropped stream cancels the exact pass; let it stop before the next request.
         let until = Instant::now() + Duration::from_secs(30);
-        while tracedb_query::aggregate::progressive::stream_counts().0 > 0 && Instant::now() < until {
+        while smithling_query::aggregate::progressive::stream_counts().0 > 0 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         let frame = String::from_utf8_lossy(&buf).into_owned();
@@ -938,7 +938,7 @@ async fn start(dir: &Path, limits: Limits) -> anyhow::Result<Own> {
         prices: None,
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
-    let (state, _) = tokio::task::spawn_blocking(move || tracedb_server::open(&cfg)).await??;
+    let (state, _) = tokio::task::spawn_blocking(move || smithling_server::open(&cfg)).await??;
     state.query.warm_aggregates();
     let addr = listener.local_addr()?;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -984,7 +984,7 @@ pub async fn run(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> u
         Ok(false) if a.check => 1,
         Ok(false) => 0,
         Err(e) => {
-            let _ = writeln!(err, "tracedb bench: {}", tracedb_storage::redact(&format!("{e:#}")));
+            let _ = writeln!(err, "smithling bench: {}", smithling_storage::redact(&format!("{e:#}")));
             2
         }
     }
@@ -1009,7 +1009,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     let dir = match &a.data {
         Some(d) => d.clone(),
         None => {
-            tmp = tempfile::Builder::new().prefix("tracedb-bench-").tempdir()?;
+            tmp = tempfile::Builder::new().prefix("smithling-bench-").tempdir()?;
             tmp.path().to_path_buf()
         }
     };
@@ -1064,7 +1064,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     }
 
     let sleep = Duration::from_millis(
-        std::env::var("TRACEDB_BENCH_SLEEP_MS")
+        std::env::var("SMITHLING_BENCH_SLEEP_MS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
@@ -1072,7 +1072,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     if !sleep.is_zero() {
         let _ = writeln!(
             err,
-            "tracedb bench: TRACEDB_BENCH_SLEEP_MS adds {sleep:?} to every timed query (test hook)"
+            "smithling bench: SMITHLING_BENCH_SLEEP_MS adds {sleep:?} to every timed query (test hook)"
         );
     }
     let d = Data {
@@ -1082,7 +1082,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     let http = reqwest::Client::new();
     let mut rows = Vec::new();
     for (i, s) in specs(d, a.samples).iter().enumerate() {
-        let _ = writeln!(err, "tracedb bench: {} ×{}…", s.query, s.n);
+        let _ = writeln!(err, "smithling bench: {} ×{}…", s.query, s.n);
         rows.push(measure(&http, &url, s, 0xB0 + i as u64, sleep).await);
     }
 
@@ -1090,7 +1090,10 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     // median footprint over `idle_secs`.
     let quiet = Duration::from_micros(limits.flush_age_us.max(limits.dedup_window_us).max(0) as u64);
     let deadline = quiet_since + quiet + Duration::from_secs(120);
-    let _ = writeln!(err, "tracedb bench: waiting {quiet:?} after the last upload for idle…");
+    let _ = writeln!(
+        err,
+        "smithling bench: waiting {quiet:?} after the last upload for idle…"
+    );
     while (quiet_since.elapsed() < quiet || ingest.health().runs > 0 || ingest.health().frozen)
         && Instant::now() < deadline
     {
@@ -1179,7 +1182,7 @@ fn print(
 ) -> std::io::Result<()> {
     writeln!(
         out,
-        "tracedb bench — {} runs, {:.2} GB raw JSON, calibration r = {:.2} (runner {:.0} ms, reference {:.0} ms)",
+        "smithling bench — {} runs, {:.2} GB raw JSON, calibration r = {:.2} (runner {:.0} ms, reference {:.0} ms)",
         thousands(rep.runs),
         rep.raw_bytes as f64 / 1e9,
         rep.r,

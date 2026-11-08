@@ -5,12 +5,12 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use serde_json::json;
-use tracedb_model::agg::{parse_stats, print_stats};
-use tracedb_model::attrs::{Attrs, promote};
-use tracedb_model::filter::{
+use smithling_model::agg::{parse_stats, print_stats};
+use smithling_model::attrs::{Attrs, promote};
+use smithling_model::filter::{
     AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, Side, TimeAt, Value, eval, eval_with, parse_filter, print,
 };
-use tracedb_model::{Op, RunState, Ts, merge, text};
+use smithling_model::{Op, RunState, Ts, merge, text};
 
 #[test]
 fn golden_cases() {

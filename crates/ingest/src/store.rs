@@ -7,8 +7,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde_json::Value;
-use tracedb_model::attrs::{Attrs, Scalar, promote};
-use tracedb_model::{
+use smithling_model::attrs::{Attrs, Scalar, promote};
+use smithling_model::{
     ChangeKind, Reason, Reject, RunEvent, RunHeader, RunId, RunState, RunView, Status, TraceId, TraceView, Ts, merge,
 };
 
@@ -376,7 +376,7 @@ fn heap_of(st: &RunState) -> u64 {
         });
     let other = btree(r.dropped.len(), size_of::<(String, u64)>())
         + r.dropped.keys().map(|k| str_heap(k)).sum::<u64>()
-        + alloc(r.warnings.capacity() * size_of::<tracedb_model::Warning>());
+        + alloc(r.warnings.capacity() * size_of::<smithling_model::Warning>());
     // A trace's id list, a root key in its project's set.
     const INDEXES: u64 = 2 * size_of::<RunId>() as u64 + 48;
     strs + tags + json + other + INDEXES

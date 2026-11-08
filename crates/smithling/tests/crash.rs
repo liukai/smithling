@@ -1,6 +1,6 @@
 //! Crash safety against the real binary (SC-04). Slow, so `#[ignore]`; CI runs it with `--ignored`.
 //!
-//! Each round: start `tracedb serve` with a tiny memtable (so data is flushed to files all the time), upload
+//! Each round: start `smithling serve` with a tiny memtable (so data is flushed to files all the time), upload
 //! from several clients (starts, then updates), kill -9 at a random moment, restart, re-send every batch
 //! that never got an answer (as an SDK retry would), then check every confirmed item is present, merged,
 //! and stored exactly once. Four rounds kill at a random moment of the upload; the other six make the server
@@ -33,25 +33,25 @@ fn end_item(n: u64) -> Value {
            "end_time": "2026-11-05T02:05:00.000000", "outputs": {"n": n}})
 }
 
-/// With `TRACEDB_TEST_S3_URL` and `TRACEDB_TEST_PG_URL` set (CI's cloud job), each round gets its own S3 prefix
+/// With `SMITHLING_TEST_S3_URL` and `SMITHLING_TEST_PG_URL` set (CI's cloud job), each round gets its own S3 prefix
 /// and Postgres database; otherwise the defaults (files and SQLite in the data folder).
 async fn storage_flags(round: u64) -> Vec<String> {
     let (Ok(s3), Ok(pg)) = (
-        std::env::var("TRACEDB_TEST_S3_URL"),
-        std::env::var("TRACEDB_TEST_PG_URL"),
+        std::env::var("SMITHLING_TEST_S3_URL"),
+        std::env::var("SMITHLING_TEST_PG_URL"),
     ) else {
         assert!(
-            std::env::var_os("TRACEDB_TEST_REQUIRE_CLOUD").is_none(),
-            "TRACEDB_TEST_REQUIRE_CLOUD is set but TRACEDB_TEST_S3_URL / TRACEDB_TEST_PG_URL aren't"
+            std::env::var_os("SMITHLING_TEST_REQUIRE_CLOUD").is_none(),
+            "SMITHLING_TEST_REQUIRE_CLOUD is set but SMITHLING_TEST_S3_URL / SMITHLING_TEST_PG_URL aren't"
         );
         return Vec::new();
     };
     use sqlx::Connection;
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let name = format!("tracedb_crash_{nanos}_r{round}");
+    let name = format!("smithling_crash_{nanos}_r{round}");
     let mut conn = sqlx::PgConnection::connect(&pg)
         .await
-        .expect("connect to TRACEDB_TEST_PG_URL");
+        .expect("connect to SMITHLING_TEST_PG_URL");
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
         .execute(&mut conn)
         .await
@@ -67,7 +67,7 @@ async fn storage_flags(round: u64) -> Vec<String> {
 }
 
 fn spawn(data: &std::path::Path, storage: &[String], crash_at: Option<&str>) -> (Child, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_smithling"));
     // Small WAL files, so flushes have whole files to trim; retries are re-sent right after the restart, well
     // inside the dedup window (rebuilt from the catalog's saved keys).
     cmd.args([
@@ -81,10 +81,10 @@ fn spawn(data: &std::path::Path, storage: &[String], crash_at: Option<&str>) -> 
     ])
     .args(["--dedup-window", "20s"])
     .args(storage)
-    .env("TRACEDB_TEST_WAL_ROLL", "65536");
+    .env("SMITHLING_TEST_WAL_ROLL", "65536");
     match crash_at {
-        Some(p) => cmd.env("TRACEDB_TEST_CRASH_AT", p),
-        None => cmd.env_remove("TRACEDB_TEST_CRASH_AT"),
+        Some(p) => cmd.env("SMITHLING_TEST_CRASH_AT", p),
+        None => cmd.env_remove("SMITHLING_TEST_CRASH_AT"),
     };
     // On cloud storage, show the server's errors (a bad endpoint or password otherwise looks like a hang).
     let stderr = if storage.is_empty() {

@@ -1,8 +1,8 @@
 mod common;
 
 use common::*;
-use tracedb_ingest::store::{Include, RunStore};
-use tracedb_model::Status;
+use smithling_ingest::store::{Include, RunStore};
+use smithling_model::Status;
 
 fn store_with_roots(n: u64) -> RunStore {
     let mut s = RunStore::new();
@@ -95,7 +95,7 @@ fn patch_first_root_is_hidden_until_its_start_arrives() {
     let mut early = root(uuid(1), "2026-11-05T02:00:00Z", "r");
     early.name = None;
     early.start_time = None;
-    early.end_time = Some(tracedb_model::Ts::parse("2026-11-05T02:10:00Z").unwrap());
+    early.end_time = Some(smithling_model::Ts::parse("2026-11-05T02:10:00Z").unwrap());
     s.apply(&event(1, &patch(early))).unwrap();
     assert!(s.roots(None, None, None, 10).0.is_empty());
     s.apply(&event(2, &post(root(uuid(1), "2026-11-05T02:00:00Z", "r"))))

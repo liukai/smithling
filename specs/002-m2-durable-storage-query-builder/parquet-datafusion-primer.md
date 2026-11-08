@@ -241,7 +241,7 @@ WHERE start_key >= TIMESTAMP '1970-01-01T03:00:00' AND status = 'error'
 GROUP BY name ORDER BY n DESC
 ```
 
-Run on 2026-11-06 with `pushdown_filters = true`; the program is a 60-line scratch crate, not part of tracedb.
+Run on 2026-11-06 with `pushdown_filters = true`; the program is a 60-line scratch crate, not part of smithling.
 
 ### 7.1 The footer statistics the writer produced
 

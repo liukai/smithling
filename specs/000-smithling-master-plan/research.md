@@ -1,4 +1,4 @@
-# Research: tracedb v0
+# Research: smithling v0
 
 Phase 0 decisions. Each one is a decision, then why, then what else was considered. The source for SmithDB is the
 [SmithDB post](https://www.langchain.com/blog/introducing-smithdb). The source for LangSmith is the `langsmith` Python SDK
@@ -24,7 +24,7 @@ Phase 0 decisions. Each one is a decision, then why, then what else was consider
   ([D-030](decisions.md#d-030)); attachment parts are rejected per part as `attachment_not_stored`, the rest of the
   request accepted ([D-031](decisions.md#d-031)). `serialized` is still dropped.
 - **Rationale**: the format is defined by open-source SDKs. Controlling `/info` decides which path clients take.
-- **Verification**: golden-file contract tests built by running the real Python and JS SDKs against tracedb, one fixture
+- **Verification**: golden-file contract tests built by running the real Python and JS SDKs against smithling, one fixture
   set per pinned SDK version: Python 0.14.17 and 0.8.18.
 - **Alternatives**: OTLP-first, which moves to the backlog because the SDK's OTel mode makes it a cheap add-on later.
 
@@ -98,7 +98,7 @@ Phase 0 decisions. Each one is a decision, then why, then what else was consider
 - **Decision**: `status` is `running` if there's no `end_time`, `error` if `error` is set, and `ok` otherwise.
   `latency_ms` is `end_time - start_time`. Tokens are taken from the known SDK locations (LLM outputs' usage metadata,
   run-level token fields); the locations are confirmed by the golden files from R2. Cost comes from a price table bundled
-  with tracedb that users can override, with no fetching (Principle III).
+  with smithling that users can override, with no fetching (Principle III).
 
 ## R13. Process and services
 - **Decision**: there are three services (Ingest, Query, Compaction), each a struct implementing a trait, run as tokio

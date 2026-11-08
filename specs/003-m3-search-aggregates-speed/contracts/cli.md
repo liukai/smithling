@@ -6,19 +6,19 @@ Only what M3 adds or changes. Everything else is the [M2 CLI](../../002-m2-durab
 
 | | Command | Purpose |
 |---|---|---|
-| 🟠 | `tracedb serve … [--cache 32MB] [--memtable 64MB] [--flush-age 2m] [--dedup-keys 1048576] [--prices PATH]` | `--cache` sizes the bounded data cache (counted in idle memory); `--memtable` now counts the memtable's heap (M2: 128MB of JSON, ~4× that in heap) and `--flush-age` defaults to 2m (M2: 10m) (design §11 q1, D-028); `--dedup-keys` caps the dedup window (16-byte keys, oldest out first); the M2 values stay settable; `--prices` overrides `<data>/prices.toml` |
-| 🟢 | `tracedb bench [--runs 2000000] [--data DIR] [--json FILE] [--check] [--smoke]` | load the reference volume (or reuse `--data`), run each query type n ≥ 100 times, print P50/P99 against the targets; `--check` exits 1 on a slipped target; `--smoke` = 200k runs |
-| 🟠 | `tracedb query … [--search TEXT] [--group-by KEY[,KEY]] [--metrics LIST] [--top 10] [--compare EXPR \| --shift 1d] [--json] ['EXPR']` | M2's query plus search and aggregates; with `--group-by` or `--metrics` it prints the aggregate table (exact, `POST /api/aggregate`) |
-| 🟠 | `tracedb demo [--seed 7] [--url URL \| --data DIR] [--checks m2,m3] [--memtable 4MB]` | generates batch a (re-planted) and batch b; runs the M2 and M3 checks (default both); with `--url` the background load is sized from the server's `memtable_limit_bytes` (`/healthz`; `--memtable` only for a server that doesn't report it), so a default `serve` passes; a server limit over 256MB exits 1 before uploading |
-| 🟠 | `tracedb seed …` | as M2; no run starts in the future; seeding the same seed again doesn't reuse run ids |
+| 🟠 | `smithling serve … [--cache 32MB] [--memtable 64MB] [--flush-age 2m] [--dedup-keys 1048576] [--prices PATH]` | `--cache` sizes the bounded data cache (counted in idle memory); `--memtable` now counts the memtable's heap (M2: 128MB of JSON, ~4× that in heap) and `--flush-age` defaults to 2m (M2: 10m) (design §11 q1, D-028); `--dedup-keys` caps the dedup window (16-byte keys, oldest out first); the M2 values stay settable; `--prices` overrides `<data>/prices.toml` |
+| 🟢 | `smithling bench [--runs 2000000] [--data DIR] [--json FILE] [--check] [--smoke]` | load the reference volume (or reuse `--data`), run each query type n ≥ 100 times, print P50/P99 against the targets; `--check` exits 1 on a slipped target; `--smoke` = 200k runs |
+| 🟠 | `smithling query … [--search TEXT] [--group-by KEY[,KEY]] [--metrics LIST] [--top 10] [--compare EXPR \| --shift 1d] [--json] ['EXPR']` | M2's query plus search and aggregates; with `--group-by` or `--metrics` it prints the aggregate table (exact, `POST /api/aggregate`) |
+| 🟠 | `smithling demo [--seed 7] [--url URL \| --data DIR] [--checks m2,m3] [--memtable 4MB]` | generates batch a (re-planted) and batch b; runs the M2 and M3 checks (default both); with `--url` the background load is sized from the server's `memtable_limit_bytes` (`/healthz`; `--memtable` only for a server that doesn't report it), so a default `serve` passes; a server limit over 256MB exits 1 before uploading |
+| 🟠 | `smithling seed …` | as M2; no run starts in the future; seeding the same seed again doesn't reuse run ids |
 
-## `tracedb query` examples
+## `smithling query` examples
 
 ```bash
-tracedb query --search '429 Too Many Requests' 'has(tags, "batch=2026-11-05-a")'
-tracedb query 'search(error, "timeout")'
-tracedb query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' 'has(tags, "batch=2026-11-05-a")'
-tracedb query --group-by name --metrics 'error_rate,p95(latency)' --compare 'has(tags, "batch=2026-11-06-b")' \
+smithling query --search '429 Too Many Requests' 'has(tags, "batch=2026-11-05-a")'
+smithling query 'search(error, "timeout")'
+smithling query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' 'has(tags, "batch=2026-11-05-a")'
+smithling query --group-by name --metrics 'error_rate,p95(latency)' --compare 'has(tags, "batch=2026-11-06-b")' \
   'has(tags, "batch=2026-11-05-a")'
 ```
 
@@ -33,10 +33,10 @@ llm_call     1,112    0.0%        4.1 s     $4.12    │  1,050   0.0%        3.
 total        4,210    1.3%        …         $4.12    12 runs had no price
 ```
 
-## `tracedb bench` output (illustrative; the layout is the code's)
+## `smithling bench` output (illustrative; the layout is the code's)
 
 ```
-tracedb bench — 2,000,000 runs, 4.9 GB raw JSON, calibration r = 1.00 (runner 80 ms, reference 80 ms)
+smithling bench — 2,000,000 runs, 4.9 GB raw JSON, calibration r = 1.00 (runner 80 ms, reference 80 ms)
   load            23,410 events/s while querying (2,904 queries alongside) target ≥ 20,000  budget ≥ 20,000  PASS
   query                                p50       p99    target    budget   result
   trace tree                        6.1 ms    7.1 ms     50 ms     50 ms   PASS
@@ -63,10 +63,10 @@ tracedb bench — 2,000,000 runs, 4.9 GB raw JSON, calibration r = 1.00 (runner 
 - Exit codes: 0 = every row passes (idle memory waived); 1 = a row failed (the failing rows are printed last,
   naming the query, the target and the measured value); 2 = setup error.
 
-## `tracedb demo` output (illustrative; counts are fixed by the generator)
+## `smithling demo` output (illustrative; counts are fixed by the generator)
 
 ```
-tracedb demo — M2 + M3 checks  (seed 7, 2,614 traces, 4 flushes)
+smithling demo — M2 + M3 checks  (seed 7, 2,614 traces, 4 flushes)
   ✓ 14 failing roots                          14                  31 ms
   ✓ 23 quiet failures                         23                  58 ms
   ✓ prompt_version top values                 v6 928 · v7 912     12 ms

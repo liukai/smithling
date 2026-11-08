@@ -2,8 +2,8 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use tracedb_model::validate::{parse_ts, parse_uuid};
-use tracedb_model::{Op, Reason, RunFields, Ts, validate};
+use smithling_model::validate::{parse_ts, parse_uuid};
+use smithling_model::{Op, Reason, RunFields, Ts, validate};
 
 fn reason(op: Op, mut f: RunFields) -> Reason {
     validate(op, &mut f).unwrap_err().reason

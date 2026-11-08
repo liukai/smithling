@@ -1,7 +1,7 @@
 //! Query service: answers every read over memtables ∪ data files (design §4.3–4.4).
 //!
 //! DataFusion scans the files with pruning and a pushed-down filter that may only keep extra rows; the exact
-//! filter is evaluated on merged runs by [`tracedb_model::filter::eval`], the same evaluator used for
+//! filter is evaluated on merged runs by [`smithling_model::filter::eval`], the same evaluator used for
 //! memtable rows. So results never depend on where a run's pieces are.
 
 pub mod aggregate;
@@ -18,13 +18,13 @@ use std::time::Instant;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use serde::Serialize;
-use tracedb_ingest::{FeedbackLookup, Feedbacks, Include, Ingest};
-use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, Side, TimeAt, contains_search, eval_with};
-use tracedb_model::text::{Match, Text};
-use tracedb_model::{RunHeader, RunId, RunView, Status, TraceId, TraceView, Ts};
-use tracedb_storage::StorageError;
-use tracedb_storage::fts::Fts;
-use tracedb_storage::segment::start_key;
+use smithling_ingest::{FeedbackLookup, Feedbacks, Include, Ingest};
+use smithling_model::filter::{EvalStats, Expr, Field, Path, Row, Side, TimeAt, contains_search, eval_with};
+use smithling_model::text::{Match, Text};
+use smithling_model::{RunHeader, RunId, RunView, Status, TraceId, TraceView, Ts};
+use smithling_storage::StorageError;
+use smithling_storage::fts::Fts;
+use smithling_storage::segment::start_key;
 use xxhash_rust::xxh64::xxh64;
 
 pub use aggregate::{AggResult, AggStats, Cells, Group};
@@ -91,7 +91,7 @@ pub struct QuerySpec {
 impl QuerySpec {
     /// Hash of everything that changes results (not cursor, columns, limit or count).
     pub fn hash(&self) -> u64 {
-        let p = |e: &Option<Expr>| e.as_ref().map(tracedb_model::filter::print);
+        let p = |e: &Option<Expr>| e.as_ref().map(smithling_model::filter::print);
         let s = format!(
             "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}",
             self.project,
@@ -556,7 +556,7 @@ impl Query {
             let mut add = |found: &mut Vec<(Key, Merged)>, (k, mut m): (Key, Merged)| {
                 if let Some((words, side)) = shown
                     && found.len() < want
-                    && let Some(x) = tracedb_model::text::excerpt(&Text::of(&m.state.run), words, side)
+                    && let Some(x) = smithling_model::text::excerpt(&Text::of(&m.state.run), words, side)
                 {
                     matches.insert(m.state.run.run_id, x);
                 }
@@ -622,7 +622,11 @@ impl Query {
         let rows: Vec<RunRow> = keyed
             .into_iter()
             .map(|(_, m)| {
-                if m.state.run.warnings.contains(&tracedb_model::Warning::IdentityConflict) {
+                if m.state
+                    .run
+                    .warnings
+                    .contains(&smithling_model::Warning::IdentityConflict)
+                {
                     warnings.push(QueryWarning::IdentityConflict {
                         run_id: m.state.run.run_id,
                     });
@@ -905,7 +909,7 @@ fn eval_warnings(s: EvalStats) -> Vec<QueryWarning> {
 /// Values for the Table view's extra columns.
 fn columns(m: &Merged, paths: &[Path], feedback: &Feedbacks) -> BTreeMap<String, serde_json::Value> {
     use serde_json::Value as J;
-    use tracedb_model::attrs::Scalar;
+    use smithling_model::attrs::Scalar;
     let r = &m.state.run;
     paths
         .iter()
@@ -919,7 +923,7 @@ fn columns(m: &Merged, paths: &[Path], feedback: &Feedbacks) -> BTreeMap<String,
                 },
                 Path::Feedback(k) => serde_json::Number::from_f64(feedback.mean(&r.run_id, k)?).map(J::Number)?,
                 Path::Field(f) => match f {
-                    Field::Status => J::from(tracedb_model::filter::status_name(r.status)),
+                    Field::Status => J::from(smithling_model::filter::status_name(r.status)),
                     Field::Name => J::from(r.name.clone()?),
                     Field::Model => J::from(r.model.clone()?),
                     Field::Latency => J::from(r.latency_ms? as f64 / 1000.0),

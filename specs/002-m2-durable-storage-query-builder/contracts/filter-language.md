@@ -1,7 +1,7 @@
 # Filter language contract (M2)
 
 The text form of a query. It is LangSmith's `filter` grammar (documented in `langsmith` SDK 0.14.17,
-`Client.list_runs`), plus a few tracedb additions, marked **(tracedb)**. Panel ⇄ text is lossless: the panel is a
+`Client.list_runs`), plus a few smithling additions, marked **(smithling)**. Panel ⇄ text is lossless: the panel is a
 view of the same AST (data-model §9), and printing is canonical.
 
 ## Slots
@@ -14,18 +14,18 @@ view of the same AST (data-model §9), and printing is canonical.
 | `is_root` | `true` = root runs only | same |
 
 Note: for "root ok, some step errored", the run itself is the root and isn't an error, so both readings give the same
-answer. tracedb includes the run itself so "any run in the trace" means exactly that (master FR-010).
+answer. smithling includes the run itself so "any run in the trace" means exactly that (master FR-010).
 
 ## Grammar
 
 ```ebnf
 expr     = call ;
 call     = name "(" [ arg { "," arg } ] ")" ;
-name     = "and" | "or" | "not" | "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "has" | "in" (tracedb) ;
+name     = "and" | "or" | "not" | "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "has" | "in" (smithling) ;
 arg      = expr | path | value | list ;
-path     = ident { "." ident } ;                       (* dotted paths: tracedb *)
+path     = ident { "." ident } ;                       (* dotted paths: smithling *)
 value    = string | number | "true" | "false" | "null" ;
-list     = "[" [ value { "," value } ] "]" ;            (* tracedb, for in() *)
+list     = "[" [ value { "," value } ] "]" ;            (* smithling, for in() *)
 string   = '"' { char | escape } '"' ;
 ```
 
@@ -35,7 +35,7 @@ string   = '"' { char | escape } '"' ;
 | `eq`, `neq` | equal / not equal; `null` tests existence | `neq(error, null)` = has an error |
 | `gt`, `gte`, `lt`, `lte` | compare numbers, times, strings | `gt(latency, 30)` |
 | `has(list, v)` | list contains | `has(tags, "batch=2026-11-05-a")` |
-| `in(path, [..])` **(tracedb)** | one of | `in(name, ["fetch_url", "web_search"])` |
+| `in(path, [..])` **(smithling)** | one of | `in(name, ["fetch_url", "web_search"])` |
 
 ## Fields
 
@@ -43,13 +43,13 @@ string   = '"' { char | escape } '"' ;
 |---|---|---|
 | `status` | `"running"` \| `"ok"` \| `"error"` | derived |
 | `name`, `run_type`, `model`, `thread_id`, `project` | string | |
-| `start_time`, `end_time` | time | ISO 8601, or relative `"-12h"`, `"-30m"`, `"-7d"` **(tracedb)** |
+| `start_time`, `end_time` | time | ISO 8601, or relative `"-12h"`, `"-30m"`, `"-7d"` **(smithling)** |
 | `latency` | number, **seconds** | as LangSmith (`gt(latency, 10)` = over 10 s) |
 | `error` | string | `neq(error, null)` for "has an error" |
 | `tags` | list of string | use `has` |
 | `total_tokens`, `input_tokens`, `output_tokens` | number | |
 | `trace_id`, `run_id`, `parent_run_id` | uuid string | |
-| `metadata.<path>`, `inputs.<path>`, `outputs.<path>` **(tracedb)** | any scalar | promoted paths only; a value that wasn't promoted matches `eq/neq null`, any other comparison is false with a `not_indexed{path, runs}` warning, payloads are not read ([D-011](../../000-tracedb-master-plan/decisions.md#d-011)) |
+| `metadata.<path>`, `inputs.<path>`, `outputs.<path>` **(smithling)** | any scalar | promoted paths only; a value that wasn't promoted matches `eq/neq null`, any other comparison is false with a `not_indexed{path, runs}` warning, payloads are not read ([D-011](../../000-smithling-master-plan/decisions.md#d-011)) |
 
 LangSmith's `feedback_key` / `feedback_score` parse but return `unsupported: feedback is supported from M4`.
 `search(…)` returns `unsupported: search() is supported from M3`. (M2; removed in M3: both parse and run, see the
@@ -74,7 +74,7 @@ Every error names the slot, a byte range and what was expected:
 
 The full list of cases (shared by the Rust and UI tests) is `tests/fixtures/filter-golden.json`.
 
-## Scenario queries (asserted by `tracedb demo`)
+## Scenario queries (asserted by `smithling demo`)
 
 | Question | Query |
 |---|---|

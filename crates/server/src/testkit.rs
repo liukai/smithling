@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use crate::{AppState, app};
-use tracedb_ingest::{Ingest, IngestConfig};
+use smithling_ingest::{Ingest, IngestConfig};
 
 pub struct Server {
     pub addr: SocketAddr,

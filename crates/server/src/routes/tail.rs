@@ -9,9 +9,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
+use smithling_model::TraceId;
+use smithling_query::{QuerySpec, TailMsg};
 use tokio_stream::StreamExt;
-use tracedb_model::TraceId;
-use tracedb_query::{QuerySpec, TailMsg};
 
 use crate::AppState;
 use crate::routes::api::{BadRequest, QueryBody, listed_roots};

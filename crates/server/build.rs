@@ -35,7 +35,7 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-const PLACEHOLDER: &str = "<!doctype html><meta charset=utf-8><title>tracedb</title>\
-<body style=\"font-family:system-ui;margin:3em\"><h1>tracedb</h1>\
+const PLACEHOLDER: &str = "<!doctype html><meta charset=utf-8><title>smithling</title>\
+<body style=\"font-family:system-ui;margin:3em\"><h1>smithling</h1>\
 <p>The UI was not built into this binary. Run <code>npm ci &amp;&amp; npm run build</code> in <code>ui/</code> and \
 rebuild, or start with <code>--ui-dir ui/dist</code>. The API is available at <code>/api/…</code>.</p>";

@@ -1,6 +1,6 @@
 //! Live tail: confirmed runs reach an open tab within 1 s (SC-02); bursts are collapsed (design §4.3).
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

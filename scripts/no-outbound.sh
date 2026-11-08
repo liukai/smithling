@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Fails if tracedb opens any network connection that isn't loopback (spec QR-001 / SC-05; M2: through a flush to
-# data files and a `tracedb demo` run, local storage; M3: a search, an aggregate with costs from the local price list,
-# a multipart upload and the M2 + M3 demo). Linux only (uses strace). Usage: scripts/no-outbound.sh [path/to/tracedb]
+# Fails if smithling opens any network connection that isn't loopback (spec QR-001 / SC-05; M2: through a flush to
+# data files and a `smithling demo` run, local storage; M3: a search, an aggregate with costs from the local price list,
+# a multipart upload and the M2 + M3 demo). Linux only (uses strace). Usage: scripts/no-outbound.sh [path/to/smithling]
 set -euo pipefail
-BIN=${1:-target/release/tracedb}
-command -v strace >/dev/null || { echo "strace not found (Linux only); on macOS check with: nettop -p tracedb"; exit 2; }
+BIN=${1:-target/release/smithling}
+command -v strace >/dev/null || { echo "strace not found (Linux only); on macOS check with: nettop -p smithling"; exit 2; }
 DATA=$(mktemp -d); LOG=$(mktemp)
 # A small memtable, so the seeded traces are flushed to data files while traced.
 strace -f -qq --seccomp-bpf -e trace=connect -o "$LOG" "$BIN" serve --data "$DATA" --port 7979 --memtable 256KB >/dev/null 2>&1 &

@@ -1,14 +1,14 @@
-//! `tracedb query` (contracts/cli.md): a table or JSON lines from a running server; exit 1 on a bad query,
+//! `smithling query` (contracts/cli.md): a table or JSON lines from a running server; exit 1 on a bad query,
 //! 2 when the server isn't reachable.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use common::*;
 use serde_json::{Value, json};
 
-async fn tracedb(args: Vec<String>) -> (i32, String, String) {
+async fn smithling(args: Vec<String>) -> (i32, String, String) {
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_smithling"))
             .arg("query")
             .args(args)
             .output()
@@ -52,7 +52,7 @@ async fn prints_quiet_failures_as_a_table_or_json_lines() {
     )
     .await;
 
-    let (code, out, err) = tracedb(args(
+    let (code, out, err) = smithling(args(
         &server,
         &[
             "--project",
@@ -72,7 +72,7 @@ async fn prints_quiet_failures_as_a_table_or_json_lines() {
     );
     assert!(out.contains("ok") && out.trim_end().ends_with("1 run"), "{out}");
 
-    let (code, out, _) = tracedb(args(&server, &["--project", "p", "--root", "--json", "--limit", "2"])).await;
+    let (code, out, _) = smithling(args(&server, &["--project", "p", "--root", "--json", "--limit", "2"])).await;
     assert_eq!(code, 0);
     let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len(), 2);
@@ -82,7 +82,7 @@ async fn prints_quiet_failures_as_a_table_or_json_lines() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_queries_and_missing_servers_exit_non_zero() {
     let server = start().await;
-    let (code, _, err) = tracedb(args(&server, &["--tree-filter", r#"eq(staus, "error")"#])).await;
+    let (code, _, err) = smithling(args(&server, &["--tree-filter", r#"eq(staus, "error")"#])).await;
     assert_eq!(code, 1);
     assert!(err.contains("--tree-filter") && err.contains("did you mean"), "{err}");
     let lines: Vec<&str> = err.lines().collect();
@@ -92,13 +92,13 @@ async fn bad_queries_and_missing_servers_exit_non_zero() {
         "points at the problem"
     );
 
-    let (code, _, err) = tracedb(args(&server, &["--time", "yesterday"])).await;
+    let (code, _, err) = smithling(args(&server, &["--time", "yesterday"])).await;
     assert_eq!(code, 1);
     assert!(err.contains("--time"), "{err}");
-    let (code, _, _) = tracedb(args(&server, &["--limit", "0"])).await;
+    let (code, _, _) = smithling(args(&server, &["--limit", "0"])).await;
     assert_eq!(code, 1, "usage errors exit 1");
 
-    let (code, _, err) = tracedb(vec!["--url".into(), "http://127.0.0.1:1".into()]).await;
+    let (code, _, err) = smithling(vec!["--url".into(), "http://127.0.0.1:1".into()]).await;
     assert_eq!(code, 2, "{err}");
 }
 
@@ -131,7 +131,7 @@ async fn prints_an_aggregate_table_with_other_total_and_no_price() {
     )
     .await;
     let metrics = "count,error_rate,p95(latency),sum(cost)";
-    let (code, out, err) = tracedb(args(
+    let (code, out, err) = smithling(args(
         &server,
         &[
             "--project",
@@ -157,12 +157,12 @@ async fn prints_an_aggregate_table_with_other_total_and_no_price() {
     );
     assert_eq!(words(lines[3])[..5], ["total", "5", "25.0%", "30.0", "s"], "{out}");
 
-    let (code, out, _) = tracedb(args(&server, &["--project", "p", "--group-by", "name", "--json"])).await;
+    let (code, out, _) = smithling(args(&server, &["--project", "p", "--group-by", "name", "--json"])).await;
     assert_eq!(code, 0);
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(v["totals"]["runs"], 5);
 
-    let (code, _, err) = tracedb(args(&server, &["--group-by", "colour"])).await;
+    let (code, _, err) = smithling(args(&server, &["--group-by", "colour"])).await;
     assert_eq!(code, 1);
     assert!(err.contains("--group-by/--metrics") && err.contains("colour"), "{err}");
 }
@@ -182,7 +182,7 @@ async fn search_adds_a_phrase_to_the_filter() {
     c["outputs"] = json!({"body": "Too Many 429 Requests"});
     post_batch(&server, vec![ls_root(1, "p", 1), a, b, c], vec![]).await;
 
-    let (code, out, err) = tracedb(args(&server, &["--search", "429 Too Many Requests", "--json"])).await;
+    let (code, out, err) = smithling(args(&server, &["--search", "429 Too Many Requests", "--json"])).await;
     assert_eq!(code, 0, "{err}");
     let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let mut ids: Vec<&str> = lines.iter().map(|r| r["run_id"].as_str().unwrap()).collect();
@@ -190,7 +190,7 @@ async fn search_adds_a_phrase_to_the_filter() {
     assert_eq!(ids, [uid(11), uid(12)]);
     assert!(lines.iter().all(|r| r["match"]["excerpt"].is_string()));
 
-    let (code, out, err) = tracedb(args(
+    let (code, out, err) = smithling(args(
         &server,
         &["--search", "429 \"too\" many", r#"has(tags, "batch=a")"#],
     ))
@@ -203,14 +203,14 @@ async fn search_adds_a_phrase_to_the_filter() {
     assert!(out.trim_end().ends_with("1 run"), "{out}");
 
     // Errors point at the flag they came from.
-    let (code, _, err) = tracedb(args(&server, &["--search", "x", r#"eq(staus, "error")"#])).await;
+    let (code, _, err) = smithling(args(&server, &["--search", "x", r#"eq(staus, "error")"#])).await;
     assert_eq!(code, 1);
     assert!(err.contains("EXPR") && err.contains("did you mean"), "{err}");
     assert_eq!(err.lines().nth(2), Some("     ^^^^^"), "{err}");
-    let (code, _, err) = tracedb(args(&server, &["--search", "!!", r#"eq(status, "error")"#])).await;
+    let (code, _, err) = smithling(args(&server, &["--search", "!!", r#"eq(status, "error")"#])).await;
     assert_eq!(code, 1);
     assert!(err.contains("--search") && err.contains("at least one word"), "{err}");
-    let (code, _, err) = tracedb(args(&server, &["--search", "x", r#"eq(name, "a"), eq(name, "b")"#])).await;
+    let (code, _, err) = smithling(args(&server, &["--search", "x", r#"eq(name, "a"), eq(name, "b")"#])).await;
     assert_eq!(code, 1, "EXPR is checked on its own, not as part of the and: {err}");
     assert!(err.contains("EXPR"), "{err}");
 }
@@ -219,18 +219,18 @@ async fn search_adds_a_phrase_to_the_filter() {
 async fn compares_batch_a_with_batch_b_in_b_columns() {
     const MB: u64 = 1024 * 1024;
     let server = start_with(|c| c.limits.memtable_bytes = MB).await;
-    let s = tracedb_tools::scenario::generate(7, tracedb_model::Ts::now().0, MB);
-    tracedb_tools::scenario::load(&format!("http://{}", server.addr), &s)
+    let s = smithling_tools::scenario::generate(7, smithling_model::Ts::now().0, MB);
+    smithling_tools::scenario::load(&format!("http://{}", server.addr), &s)
         .await
         .unwrap();
     let tag = |t: &str| format!("has(tags, {t:?})");
     let (a, b) = (
-        tag(tracedb_tools::scenario::BATCH_TAG),
-        tag(tracedb_tools::scenario::BATCH_B_TAG),
+        tag(smithling_tools::scenario::BATCH_TAG),
+        tag(smithling_tools::scenario::BATCH_B_TAG),
     );
     let base = [
         "--project",
-        tracedb_tools::scenario::PROJECT,
+        smithling_tools::scenario::PROJECT,
         "--group-by",
         "name",
         "--metrics",
@@ -238,7 +238,7 @@ async fn compares_batch_a_with_batch_b_in_b_columns() {
     ];
     let mut rest = base.to_vec();
     rest.extend(["--compare", b.as_str(), a.as_str()]);
-    let (code, out, err) = tracedb(args(&server, &rest)).await;
+    let (code, out, err) = smithling(args(&server, &rest)).await;
     assert_eq!(code, 0, "{err}");
     let words = |l: &str| l.split_whitespace().map(str::to_string).collect::<Vec<_>>();
     let lines: Vec<&str> = out.lines().collect();
@@ -254,11 +254,11 @@ async fn compares_batch_a_with_batch_b_in_b_columns() {
 
     let mut rest = base.to_vec();
     rest.extend(["--time", "24h", "--shift", "1d"]);
-    let (code, out, err) = tracedb(args(&server, &rest)).await;
+    let (code, out, err) = smithling(args(&server, &rest)).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.lines().next().unwrap().contains("│ b:"), "{out}");
     let mut rest = base.to_vec();
     rest.extend(["--shift", "1d", "--compare", b.as_str()]);
-    let (code, _, err) = tracedb(args(&server, &rest)).await;
+    let (code, _, err) = smithling(args(&server, &rest)).await;
     assert!(code == 1 && err.contains("cannot be used with"), "{err}");
 }

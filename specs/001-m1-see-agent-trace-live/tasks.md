@@ -20,7 +20,7 @@ script. 4. Restart target is ready within 30 s at the budget limit (the spec's 1
 - **[Story]**: US1–US4 from spec.md
 
 ## Path conventions
-Rust workspace with `crates/{model,ingest,query,tracedb}`; UI in `ui/`; integration tests in `crates/tracedb/tests/`;
+Rust workspace with `crates/{model,ingest,query,smithling}`; UI in `ui/`; integration tests in `crates/smithling/tests/`;
 fixtures in `tests/fixtures/`; scripts in `scripts/`.
 
 ---
@@ -29,15 +29,15 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 
 **Purpose**: workspace, toolchain, CI skeleton.
 
-- [X] T001 Convert the repo to a Cargo workspace: root `Cargo.toml` with members `crates/model`, `crates/ingest`, `crates/query`, `crates/tracedb`; `edition = "2024"`; move `src/main.rs` to `crates/tracedb/src/main.rs` and delete `src/`
-- [X] T002 [P] Create empty library crates with `Cargo.toml` and `src/lib.rs` in `crates/model/`, `crates/ingest/`, `crates/query/`; `crates/tracedb/Cargo.toml` as a binary named `tracedb`
+- [X] T001 Convert the repo to a Cargo workspace: root `Cargo.toml` with members `crates/model`, `crates/ingest`, `crates/query`, `crates/smithling`; `edition = "2024"`; move `src/main.rs` to `crates/smithling/src/main.rs` and delete `src/`
+- [X] T002 [P] Create empty library crates with `Cargo.toml` and `src/lib.rs` in `crates/model/`, `crates/ingest/`, `crates/query/`; `crates/smithling/Cargo.toml` as a binary named `smithling`
 - [X] T003 [P] Add workspace dependencies in root `Cargo.toml` (`[workspace.dependencies]`): tokio (full), axum, serde, serde_json, uuid (serde, v4), crc32fast, clap (derive), rust-embed, tower-http (limit, compression), reqwest (json, rustls, default-features off), proptest (dev), anyhow, thiserror, tracing, tracing-subscriber, indexmap, xxhash-rust
 - [X] T004 [P] Add `rustfmt.toml`, `clippy.toml`, and `[workspace.lints]` (deny warnings in CI) in the repo root
 - [X] T005 [P] Scaffold the UI: `ui/package.json` (React, React DOM, Vite, TypeScript, @tanstack/react-virtual), `ui/vite.config.ts` (output `ui/dist`), `ui/tsconfig.json`, `ui/index.html`, `ui/src/main.tsx` rendering an empty `App`
-- [X] T006 Add `crates/server/build.rs`: run `npm ci && npm run build` in `ui/` when `ui/src/**` changes (`cargo:rerun-if-changed`); skip if `TRACEDB_SKIP_UI=1` and `ui/dist` exists
+- [X] T006 Add `crates/server/build.rs`: run `npm ci && npm run build` in `ui/` when `ui/src/**` changes (`cargo:rerun-if-changed`); skip if `SMITHLING_SKIP_UI=1` and `ui/dist` exists
 - [X] T007 [P] Add `.github/workflows/ci.yml`: Linux job with Node 24 + Rust 1.99; steps `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`; cache `~/.cargo` and `ui/node_modules`
 
-**Checkpoint**: `cargo build` produces `target/debug/tracedb` and CI is green on an empty program.
+**Checkpoint**: `cargo build` produces `target/debug/smithling` and CI is green on an empty program.
 
 ---
 
@@ -69,13 +69,13 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 - [X] T024 Implement `Ingest` in `crates/ingest/src/lib.rs`: `Ingest::open(data_dir, budget) -> Ingest` (replays the WAL into the store before returning, logging count and duration), `accept(Vec<RunEvent>) -> AcceptResult` (async), `snapshot() -> impl Snapshot`, `subscribe()`, `health()`; export the read-only `Snapshot` trait (`get_run`, `trace_runs`, `roots_page`)
 - [X] T025 [P] Integration test in `crates/ingest/tests/writer.rs`: concurrent `accept` calls get confirmations only after fsync; duplicate batches counted once; capacity and identity-conflict rejections reported per item
 
-### Serving skeleton (`crates/tracedb`)
-- [X] T026 Implement the CLI in `crates/tracedb/src/cli.rs` (clap): `serve --data ./.tracedb --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
-- [X] T027 Implement the server in `crates/tracedb/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
+### Serving skeleton (`crates/smithling`)
+- [X] T026 Implement the CLI in `crates/smithling/src/cli.rs` (clap): `serve --data ./.smithling --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
+- [X] T027 Implement the server in `crates/smithling/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
 - [X] T028 [P] Serve the embedded UI in `crates/server/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
-- [X] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
+- [X] T029 Implement native ingest `POST /v1/events` in `crates/smithling/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
 
-**Checkpoint**: `tracedb serve` starts, replays its WAL, accepts native events, and `/healthz` reports run count.
+**Checkpoint**: `smithling serve` starts, replays its WAL, accepts native events, and `/healthz` reports run count.
 
 ---
 
@@ -86,8 +86,8 @@ model; T067–T069 land with the HTTP layer in PR3.
 
 - [X] T066 Add `address` to the model: `RunFields.address: Option<String>`, `Run.address`, `RunHeader.address` in `crates/model/src/run.rs` and `crates/model/src/views.rs`; validation "≤ 512 chars" → `too_large` in `crates/model/src/validate.rs`; immutable once set (`identity_conflict` if a later event differs) in `crates/model/src/merge.rs`; tests in `crates/model/tests/merge.rs` and `crates/model/tests/validate.rs`
 - [X] T067 Map overload and storage errors to HTTP in `crates/server/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/server/tests/status_codes.rs`
-- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/server/tests/status_codes.rs`
-- [X] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
+- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` in `crates/smithling/src/routes/langsmith.rs`; test in `crates/server/tests/status_codes.rs`
+- [X] T069 Serve `/info` with `version: ""` and `smithling_version` in `crates/smithling/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
 
 ---
 
@@ -95,7 +95,7 @@ model; T067–T069 land with the HTTP layer in PR3.
 
 **Goal**: an agent using the LangSmith SDK, with only its endpoint changed, shows its runs live in the browser.
 
-**Independent Test**: start tracedb on an empty folder, run the LangGraph example agent with `LANGSMITH_ENDPOINT` set,
+**Independent Test**: start smithling on an empty folder, run the LangGraph example agent with `LANGSMITH_ENDPOINT` set,
 and see its runs appear within 1 s and update when they finish.
 
 ### Tests for User Story 1
@@ -106,13 +106,13 @@ and see its runs appear within 1 s and update when they finish.
 
 ### Implementation for User Story 1
 - [X] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/server/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
-- [X] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M3"}}`; accept and ignore API-key headers
+- [X] T035 [US1] Implement LangSmith routes in `crates/smithling/src/routes/langsmith.rs`: `GET /info` → `{version: "", smithling_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M3"}}`; accept and ignore API-key headers
 - [X] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
 - [X] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/server/src/routes/api.rs`
 - [X] T038 [US1] Implement the per-tab tail task in `crates/server/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
 - [X] T039 [P] [US1] UI API client and live stream in `ui/src/api.ts` and `ui/src/live.ts`: fetch helpers; EventSource wrapper that waits for `hello` before loading, applies `runs` by `last_seq`, reloads on `resync`, reconnects automatically
 - [X] T040 [US1] UI runs list in `ui/src/RunsList.tsx`: columns status, name, start, latency, tokens, tags; project and status pickers; `older ▸` paging; new roots on top when scrolled to the top, otherwise a "N new runs" pill; `● live` indicator; state in the URL query
-- [X] T041 [P] [US1] UI empty state in `ui/src/EmptyState.tsx`: shows `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070` setup and a `tracedb seed` hint
+- [X] T041 [P] [US1] UI empty state in `ui/src/EmptyState.tsx`: shows `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070` setup and a `smithling seed` hint
 - [X] T042 [US1] App shell and routing in `ui/src/App.tsx`: `/` → runs list, `/trace/:id` → trace view placeholder
 
 **Checkpoint (demo)**: the LangGraph example agent streams into the runs list; a long root flips `running` → `ok`.
@@ -148,9 +148,9 @@ loads; opening a step shows its full payload.
 **Independent Test**: upload continuously, `kill -9` at random times, restart, compare against every confirmed
 upload; 10 rounds.
 
-- [X] T050 [P] [US3] Crash harness `crates/tracedb/tests/crash.rs` (`#[ignore]`, run in CI): spawn `tracedb serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
-- [X] T051 [P] [US3] Retry-after-crash test in `crates/tracedb/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
-- [X] T052 [P] [US3] Restart timing test `crates/tracedb/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
+- [X] T050 [P] [US3] Crash harness `crates/smithling/tests/crash.rs` (`#[ignore]`, run in CI): spawn `smithling serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
+- [X] T051 [P] [US3] Retry-after-crash test in `crates/smithling/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
+- [X] T052 [P] [US3] Restart timing test `crates/smithling/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
 - [X] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/server/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
 - [X] T054 [US3] Add the crash and restart tests to `.github/workflows/ci.yml` (`cargo test -- --ignored crash restart`)
 
@@ -162,26 +162,26 @@ upload; 10 rounds.
 
 **Goal**: anyone can generate realistic traces and explore them in a minute.
 
-**Independent Test**: `tracedb seed --traces 100` → browse traces with deep trees, late finishes, errors, large payloads.
+**Independent Test**: `smithling seed --traces 100` → browse traces with deep trees, late finishes, errors, large payloads.
 
 - [X] T055 [P] [US4] Seed shape test `crates/tools/tests/seed.rs`: with `--seed 42`, generated traces have depth 3–8, 20–300 steps, ≈5% errors, ≈10% of steps finishing 30–120 s late, payloads 1–50 KB; the same seed gives the same output
 - [X] T056 [US4] Implement the generator in `crates/tools/src/seed.rs`: research-agent-like step names (`plan`, `web_search`, `fetch_url`, `python_exec`, `summarize`, `llm`), LangSmith-shaped `post`/`patch` items with valid `dotted_order`, deterministic from `--seed`
-- [X] T057 [US4] Wire `tracedb seed [--traces 100] [--seed 42] [--url http://localhost:7070]` in `crates/tracedb/src/cli.rs`: sends batches to `/runs/batch` (≤ 100 items), sends late `patch`es after their delay (or immediately with `--no-delay`), exit codes 0/1/2
+- [X] T057 [US4] Wire `smithling seed [--traces 100] [--seed 42] [--url http://localhost:7070]` in `crates/smithling/src/cli.rs`: sends batches to `/runs/batch` (≤ 100 items), sends late `patch`es after their delay (or immediately with `--no-delay`), exit codes 0/1/2
 
-**Checkpoint (demo)**: `tracedb seed --traces 100`, then click through the generated traces.
+**Checkpoint (demo)**: `smithling seed --traces 100`, then click through the generated traces.
 
 ---
 
 ## Phase 7: Polish and cross-cutting
 
-- [X] T058 [P] No-outbound check `scripts/no-outbound.sh`: run `tracedb serve` + `tracedb seed --traces 20 --no-delay` + contract replay under `strace -f -e trace=connect`; fail on any non-loopback address; add to CI (SC-05)
-- [X] T059 [P] Throughput test `crates/tracedb/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
+- [X] T058 [P] No-outbound check `scripts/no-outbound.sh`: run `smithling serve` + `smithling seed --traces 20 --no-delay` + contract replay under `strace -f -e trace=connect`; fail on any non-loopback address; add to CI (SC-05)
+- [X] T059 [P] Throughput test `crates/smithling/tests/throughput.rs` (`#[ignore]`): ≥ 5,000 events/s sustained for 60 s from 8 clients (SC-07)
 - [X] T060 [P] Clean-container check in CI: build the release binary, run it in a minimal container without Node, `curl /healthz` (QR-002)
 - [X] T061 [P] Add `examples/research_agent.py` (LangGraph agent with `web_search`, `fetch_url`, `python_exec`, `summarize`) and `examples/requirements.txt` pinning `langsmith==0.14.17`
-- [X] T062 [P] `README.md`: install, `tracedb serve`, point an agent, `tracedb seed`, M1 limits (memory budget, no filters)
+- [X] T062 [P] `README.md`: install, `smithling serve`, point an agent, `smithling seed`, M1 limits (memory budget, no filters)
 - [X] T063 Update the spec's restart target to 30 s in `specs/001-m1-see-agent-trace-live/spec.md` (Story 3, scenario 3) to match the assumed §11.4 answer
 - [X] T064 Run [quickstart.md](quickstart.md) end to end and record the results (timings, counts) in `specs/001-m1-see-agent-trace-live/quickstart.md` under "Last verified"
-- [X] T065 Update the master roadmap row for M1 in `specs/000-tracedb-master-plan/roadmap.md` (status, tasks done, exit check)
+- [X] T065 Update the master roadmap row for M1 in `specs/000-smithling-master-plan/roadmap.md` (status, tasks done, exit check)
 
 ---
 

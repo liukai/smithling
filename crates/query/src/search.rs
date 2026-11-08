@@ -13,13 +13,13 @@ use datafusion::arrow::array::{Array, BooleanArray, FixedSizeBinaryArray, Int64A
 use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::ParquetReadOptions;
 use futures_util::{StreamExt, TryStreamExt};
-use tracedb_model::attrs::{Attrs, promote};
-use tracedb_model::filter::{Expr, Side, contains_search};
-use tracedb_model::text::{Text, phrase_in};
-use tracedb_model::{RunId, RunState, TraceId, Ts, present};
-use tracedb_storage::StorageError;
-use tracedb_storage::fts::TextField;
-use tracedb_storage::segment::{SegmentMeta, StoredRow};
+use smithling_model::attrs::{Attrs, promote};
+use smithling_model::filter::{Expr, Side, contains_search};
+use smithling_model::text::{Text, phrase_in};
+use smithling_model::{RunId, RunState, TraceId, Ts, present};
+use smithling_storage::StorageError;
+use smithling_storage::fts::TextField;
+use smithling_storage::segment::{SegmentMeta, StoredRow};
 
 use crate::scan::{self, IN_CHUNK, Merged, Pinned, ScanStats, Scope, damaged_alone, merge_group};
 use crate::{Query, QueryError};
@@ -237,7 +237,8 @@ async fn file_hits(
 }
 
 fn unindexed(e: &StorageError) -> bool {
-    matches!(e, StorageError::NotIndexed(_) | StorageError::Format(_)) || tracedb_storage::segment::damage(e).is_some()
+    matches!(e, StorageError::NotIndexed(_) | StorageError::Format(_))
+        || smithling_storage::segment::damage(e).is_some()
 }
 
 /// (start key, run id, trace id) of the core rows at `rows` (payload row numbers; `None`: every row) in
@@ -501,7 +502,8 @@ async fn file_text(
     need: Need,
 ) -> Result<HashMap<(String, RunId), InOut>, QueryError> {
     let (store, cache) = (&q.ingest.storage().store, &q.ingest.storage().cache);
-    match tracedb_storage::segment::read_payload_rows(store, cache, seg, &at, need.inputs, need.outputs, false).await {
+    match smithling_storage::segment::read_payload_rows(store, cache, seg, &at, need.inputs, need.outputs, false).await
+    {
         Ok(got) => Ok(got
             .into_iter()
             .map(|(_, id, p)| ((seg.id.clone(), id), (p.inputs, p.outputs)))

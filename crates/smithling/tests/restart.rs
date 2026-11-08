@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 fn spawn(data: &std::path::Path) -> (Child, String, Duration) {
     let started = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["serve", "--data", data.to_str().unwrap(), "--port", "0"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

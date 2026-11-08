@@ -15,11 +15,11 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use tracedb_model::attrs::promote;
-use tracedb_model::{RunId, Ts};
-use tracedb_storage::fts;
-use tracedb_storage::segment::{self, Version as Row};
-use tracedb_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError, Written};
+use smithling_model::attrs::promote;
+use smithling_model::{RunId, Ts};
+use smithling_storage::fts;
+use smithling_storage::segment::{self, Version as Row};
+use smithling_storage::{DedupKeys, FieldStat, SegmentMeta, StorageError, Written};
 
 use crate::dedup::{self, DedupKey};
 use crate::flushed::FlushedIds;

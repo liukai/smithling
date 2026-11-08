@@ -1,4 +1,4 @@
-//! The overnight-eval scenario for `tracedb demo` (research M2-R14, M3-R11): exact planted counts, deterministic per
+//! The overnight-eval scenario for `smithling demo` (research M2-R14, M3-R11): exact planted counts, deterministic per
 //! seed, sent through `/runs/batch` like an agent.
 //!
 //! Batch `2026-11-05-a` (ends now − 30 h): 200 root tasks; 14 roots fail; 23 roots finish ok with a failed
@@ -543,7 +543,7 @@ fn dotted_orders(nodes: &[Node]) -> Vec<String> {
 
 /// Smoke-test traces (a root and 9 steps, 16 KB inputs each) until `bytes` of memtable estimate are reached.
 fn background(rng: &mut Rng, base_us: i64, bytes: u64) -> Vec<Value> {
-    let per_run = tracedb_ingest::store::HEADER_BYTES + BACKGROUND_PAYLOAD as u64 + 64;
+    let per_run = smithling_ingest::store::HEADER_BYTES + BACKGROUND_PAYLOAD as u64 + 64;
     let runs = bytes.div_ceil(per_run) as usize;
     let mut out = Vec::with_capacity(runs + 10);
     let mut traces = 0;
@@ -629,7 +629,7 @@ pub async fn load(url: &str, s: &Scenario) -> Result<Loaded, SeedError> {
         .unwrap_or(0);
     if existing > 0 {
         return Err(SeedError::Refused(format!(
-            "this tracedb already holds {existing} runs tagged {BATCH_TAG}; use an empty data folder"
+            "this smithling already holds {existing} runs tagged {BATCH_TAG}; use an empty data folder"
         )));
     }
     for f in s.feedback.iter().filter(|f| f.before_run) {

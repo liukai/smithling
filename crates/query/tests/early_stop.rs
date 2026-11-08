@@ -5,15 +5,15 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use tracedb_model::Op;
-use tracedb_model::filter::parse_filter;
-use tracedb_query::{Query, QuerySpec, QueryWarning};
+use smithling_model::Op;
+use smithling_model::filter::parse_filter;
+use smithling_query::{Query, QuerySpec, QueryWarning};
 
 const RUNS: u64 = 3_000;
 
 /// `RUNS` roots one second apart, across many files; every 10th has `metadata.v = "a"`, every 10th (offset 5) a
 /// number, the rest `"b"`.
-async fn loaded() -> (tempfile::TempDir, tracedb_ingest::Ingest) {
+async fn loaded() -> (tempfile::TempDir, smithling_ingest::Ingest) {
     let (dir, ingest) = open(64 * 1024);
     let events = (0..RUNS)
         .map(|i| {
@@ -156,7 +156,7 @@ async fn a_late_version_with_another_dotted_order_stays_with_its_run() {
         assert_eq!(got.len(), 1, "first window {first}: {got:?}");
         assert_eq!(
             got[0].header.status,
-            tracedb_model::Status::Error,
+            smithling_model::Status::Error,
             "first window {first}: {got:?}"
         );
         assert_eq!(got[0].header.dotted_order, root(1, "p", 0).dotted_order.unwrap());

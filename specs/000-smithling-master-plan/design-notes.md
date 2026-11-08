@@ -1,4 +1,4 @@
-# tracedb — design notes (v0.1, 2026-11-05)
+# smithling — design notes (v0.1, 2026-11-05)
 
 > Draft design input for `/speckit-plan`. Requirements and scenario: [spec.md](spec.md). Where they disagree, spec.md wins.
 
@@ -22,18 +22,18 @@ Local agent runs (LangGraph, custom loops, Claude Code, eval scripts) produce tr
 Today, local options are print logs, JSONL files you grep, or sending everything to a cloud SaaS.
 Jaeger and Tempo-style tools don't understand LLM payloads, threads, or late-arriving patches.
 
-**Goal:** `tracedb serve`, then point an existing agent at `localhost`, then search, browse and aggregate traces in a browser, with data in `./.tracedb/`.
+**Goal:** `smithling serve`, then point an existing agent at `localhost`, then search, browse and aggregate traces in a browser, with data in `./.smithling/`.
 
 ### Non-goals (v0)
 Multi-tenant auth, HA/replication, evaluation runners, prompt playground, horizontal scale-out.
 
-## 2. What SmithDB does, and what tracedb copies
+## 2. What SmithDB does, and what smithling copies
 
-| SmithDB (from the post) | tracedb v0 (local) | Cloud path (later) |
+| SmithDB (from the post) | smithling v0 (local) | Cloud path (later) |
 |---|---|---|
 | Rust + Apache DataFusion | Rust + DataFusion | same |
 | Vortex columnar files | **Parquet** behind a `SegmentFormat` interface; Vortex is backlog | Vortex from backlog |
-| Object storage for durable data | `object_store::LocalFileSystem` at `./.tracedb/data` | `object_store` S3/GCS/Azure, same code |
+| Object storage for durable data | `object_store::LocalFileSystem` at `./.smithling/data` | `object_store` S3/GCS/Azure, same code |
 | Small Postgres metastore (segment location, time bounds, row counts) | **SQLite** via `sqlx` | Postgres via `sqlx`, same queries |
 | LSM: memtable → immutable sorted segments → compaction | same, in one process | split into separate services |
 | Ingestion / query / compaction as stateless services | **three services with explicit interfaces, one process** (§2.1) | separate deployments |
@@ -50,7 +50,7 @@ run filtering 82ms / 434ms, full-text search 400ms / 870ms, threads 131ms / 268m
 
 ### 2.1 Services and interfaces (kept simple)
 
-Three services, each owning its own state, started together by `tracedb serve` in one process. They talk only through
+Three services, each owning its own state, started together by `smithling serve` in one process. They talk only through
 the interfaces below, never through shared mutable state, so each can later become its own deployment.
 
 | Service | Owns | Provides |
@@ -100,7 +100,7 @@ RunEvent {
 
 ### 3.2 Physical layout
 ```
-.tracedb/
+.smithling/
   meta.sqlite                         # segments, field_stats, state, dedup_keys, feedback (§3.3)
   wal/<ts>.wal                        # append-only, fsync per batch
   data/<project>/<yyyy-mm-dd>/
@@ -129,7 +129,7 @@ Endpoints (all accept batches):
 2. **OTLP/HTTP traces** `POST /v1/traces`, mapping the OTel GenAI semantic conventions (`gen_ai.*`) to run fields. Covers
    OpenTelemetry-instrumented agents and any framework with an OTel exporter.
 3. **Native** `POST /v1/events` (the RunEvent JSON above), used by the tiny Python/TS client.
-4. **Importer** `tracedb import claude-code ~/.claude/projects/...`: turns local agent session JSONL into traces
+4. **Importer** `smithling import claude-code ~/.claude/projects/...`: turns local agent session JSONL into traces
    (`uuid`/`parentUuid` → tree, `sessionId` → thread, `isSidechain` → sub-agent span, `tool_use`/`tool_result` → tool runs). This solves "what did my local agent do" with zero instrumentation.
 
 **LangSmith wire format (read from `langsmith` Python SDK source, 0.8.18 and 0.14.17, 2026-11-05).** Known, not invented:
@@ -149,14 +149,14 @@ Endpoints (all accept batches):
   events, tags, extra` (metadata lives in `extra.metadata`), `session_name` (= project), `serialized`, `reference_example_id`.
 - **New in 0.14.x: `address`.** A run can be sent to an *agent address* instead of a project: wire value
   `lrn:agents/<agent id>/environments/<environment>`, set in code or by `LANGSMITH_AGENT_ID` + `LANGSMITH_AGENT_ENVIRONMENT`.
-  When a run is addressed and no project is named, the SDK **removes `session_name`/`session_id`**. tracedb keeps `address`
+  When a run is addressed and no project is named, the SDK **removes `session_name`/`session_id`**. smithling keeps `address`
   as its own field and derives the project from it (spec.md Assumptions).
 - Unchanged in 0.14.17: `/info` drives the choice; with `use_multipart_endpoint: false` the SDK sends `POST /runs/batch`;
   zstd is used only for multipart and only if `/info` sets `instance_flags.zstd_compression_enabled`; `RunTree.patch`
   still re-sends full `events`. The SDK retries `408, 425, 429, 500, 502, 503, 504` and honours `Retry-After`.
-- Feedback: `POST /feedback` JSON whenever `/info` has an empty `version` (tracedb's), so that is the default; a `feedback.{id}` multipart part only with a versioned `/info` ([D-027](decisions.md#d-027)).
+- Feedback: `POST /feedback` JSON whenever `/info` has an empty `version` (smithling's), so that is the default; a `feedback.{id}` multipart part only with a versioned `/info` ([D-027](decisions.md#d-027)).
 - The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (backlog, outside v0) is a cheap add-on.
-- Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
+- Test approach: run the real SDK against smithling in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
 
 Write path: validate → assign `event_seq` → append to WAL → insert into memtable (Arrow builders keyed by project) → ack.
 *As built*: the memtable holds merged run states, not Arrow builders; flush defaults are 64 MB measured as heap or 2 min
@@ -235,19 +235,19 @@ A static SPA embedded in the binary (`rust-embed`) at `http://localhost:7070`:
 - **Stats**: a few charts (latency percentiles, tokens by model, error rate by tool).
 
 ## 9. CLI
-`tracedb serve [--data ./.tracedb] [--port 7070]` · `tracedb tail [--filter …]` · `tracedb query '<dsl>'` ·
-`tracedb sql '<sql>'` · `tracedb import claude-code|jsonl <path>` · `tracedb seed --traces 10000` · `tracedb bench`
+`smithling serve [--data ./.smithling] [--port 7070]` · `smithling tail [--filter …]` · `smithling query '<dsl>'` ·
+`smithling sql '<sql>'` · `smithling import claude-code|jsonl <path>` · `smithling seed --traces 10000` · `smithling bench`
 *As built (M3)*: `serve`, `seed`, `query`, `demo`, `bench`; no `tail`, `sql` or `import` yet. CLI contract:
 [003 contracts/cli.md](../003-m3-search-aggregates-speed/contracts/cli.md).
 
 ## 10. Demo script & done-check
-`make demo` (*as built*: there is no Makefile; `tracedb demo --seed 7` loads the scenario and checks the counts, and
-`tracedb bench --check` checks the speed targets):
-1. `tracedb serve` starts a fresh data dir.
-2. `tracedb seed --traces 20000` generates synthetic agent traces (depth 3–8, 20–300 spans, ~5% errors, 10% with
+`make demo` (*as built*: there is no Makefile; `smithling demo --seed 7` loads the scenario and checks the counts, and
+`smithling bench --check` checks the speed targets):
+1. `smithling serve` starts a fresh data dir.
+2. `smithling seed --traces 20000` generates synthetic agent traces (depth 3–8, 20–300 spans, ~5% errors, 10% with
    end events delayed 30–120 s, threads of 2–10 traces, payloads 1–50 KB) through `/runs/batch`.
 3. A real LangGraph example agent runs with `LANGSMITH_ENDPOINT=http://localhost:7070` and its trace appears live in the UI.
-4. `tracedb bench` prints a SmithDB-style P50/P99 table for: tree load, single run, filtering, FTS, threads, ingestion.
+4. `smithling bench` prints a SmithDB-style P50/P99 table for: tree load, single run, filtering, FTS, threads, ingestion.
 
 **v0 done when** (M3 below), on a laptop with ~2M runs / ~5 GB:
 
@@ -267,7 +267,7 @@ UI first: every milestone ships its browser view and is demoed in the browser (s
 | | Scope | Demo |
 |---|---|---|
 | **M1** | RunEvent model, WAL + memtable, `/v1/events`, `GET /traces/{id}` from memtable only, **UI shell: runs list (live tail) + trace tree/waterfall + run side panel** | send a trace, watch it appear in the browser, open its tree |
-| **M2** | Parquet flush, SQLite metastore, DataFusion scans with pruning, merge-on-read, `/runs/query` + DSL, **UI filter bar (click-to-filter, autocomplete, shareable addresses)** | `tracedb seed`, then triage steps 4–5 in the browser |
+| **M2** | Parquet flush, SQLite metastore, DataFusion scans with pruning, merge-on-read, `/runs/query` + DSL, **UI filter bar (click-to-filter, autocomplete, shareable addresses)** | `smithling seed`, then triage steps 4–5 in the browser |
 | **M3** | `/runs/batch` LangSmith compat, payload split + late materialization, progressive query, **UI search + stats charts + batch compare**, `bench` | **`make demo` (done-check above)** |
 | **M4** | Compaction tiers, threads, **UI thread view, export** | thread + export demo in the browser |
 | **Backlog** | Delete vectors, TTL, **UI delete + retention settings** (spec.md B1); Vortex `SegmentFormat`; custom `TextIndex` (§6) | delete + retention demo; search and scan benchmarks vs v0 |

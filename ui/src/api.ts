@@ -213,7 +213,7 @@ export function streamAggregate(body: object, h: AggHandlers): () => void {
     if (done) return;
     if (typeof (e as MessageEvent).data !== "string") {
       close();
-      return h.onError(new ApiError("Lost the connection to tracedb; change the query to retry.", "disconnected"));
+      return h.onError(new ApiError("Lost the connection to smithling; change the query to retry.", "disconnected"));
     }
     const d = read(e);
     if (!d) return;

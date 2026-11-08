@@ -12,12 +12,12 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_util::future::try_join_all;
+use smithling_model::Ts;
+use smithling_model::agg::AggSpec;
+use smithling_model::cost::Prices;
+use smithling_model::filter::EvalStats;
+use smithling_storage::segment::SegmentMeta;
 use tokio::sync::mpsc;
-use tracedb_model::Ts;
-use tracedb_model::agg::AggSpec;
-use tracedb_model::cost::Prices;
-use tracedb_model::filter::EvalStats;
-use tracedb_storage::segment::SegmentMeta;
 
 use super::{AggResult, Pick, Side, Snap, Writeup, query_id, side_specs};
 use crate::{Query, QueryError, QuerySpec};

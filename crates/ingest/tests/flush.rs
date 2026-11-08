@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use tracedb_ingest::{Ingest, IngestConfig, Limits};
+use smithling_ingest::{Ingest, IngestConfig, Limits};
 
 fn small(dir: &Path) -> IngestConfig {
     let mut cfg = IngestConfig::new(dir);
@@ -37,7 +37,7 @@ async fn upload_with(ingest: &Ingest, from: u128, n: u128, inputs: impl Fn(u128)
                     assert_eq!(r.accepted, 1);
                     break;
                 }
-                Err(tracedb_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(smithling_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
                 Err(e) => panic!("{e}"),
             }
         }
@@ -94,7 +94,7 @@ async fn late_updates_after_a_flush_are_marked_multi_version() {
     upload(&ingest, 1, 120).await;
     wait_for(|| ingest.health().segments >= 1).await;
     let mut end = root(uuid(1), "2026-11-05T02:00:00Z", "r");
-    end.end_time = tracedb_model::Ts::parse("2026-11-05T02:05:00Z");
+    end.end_time = smithling_model::Ts::parse("2026-11-05T02:05:00Z");
     ingest.accept(vec![patch(end)]).await.unwrap();
     assert!(ingest.multi_version().read().unwrap().contains(&uuid(1)));
     drop(ingest);
@@ -194,8 +194,8 @@ async fn a_retried_flush_whose_commit_landed_registers_its_files_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_new_file_gets_a_text_index_registered_in_the_same_commit() {
-    use tracedb_storage::fts::{self, Fts, TextField, TextIndex};
-    use tracedb_storage::{Store, segment};
+    use smithling_storage::fts::{self, Fts, TextField, TextIndex};
+    use smithling_storage::{Store, segment};
     let dir = tempfile::tempdir().unwrap();
     let (ingest, _) = Ingest::open(small(dir.path())).unwrap();
     upload_with(

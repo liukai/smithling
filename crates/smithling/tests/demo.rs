@@ -1,14 +1,14 @@
-//! `tracedb demo` (contracts/cli.md): the overnight-eval scenario on its own server, a pass/fail table, exit 1
+//! `smithling demo` (contracts/cli.md): the overnight-eval scenario on its own server, a pass/fail table, exit 1
 //! naming expected vs actual, 2 when `--url` isn't reachable.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use serde_json::json;
-use tracedb_tools::demo::{Check, report};
-use tracedb_tools::scenario;
+use smithling_tools::demo::{Check, report};
+use smithling_tools::scenario;
 
 fn demo(args: &[&str]) -> (i32, String, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_smithling"))
         .arg("demo")
         .args(args)
         .output()
@@ -47,7 +47,7 @@ fn row<'a>(out: &'a str, name: &str) -> &'a str {
 fn passes_every_m2_and_m3_check_on_its_own_server() {
     let (code, out, err) = demo(&["--seed", "7", "--memtable", "1MB"]);
     assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
-    assert!(out.starts_with("tracedb demo — M2 + M3 checks  (seed 7, "), "{out}");
+    assert!(out.starts_with("smithling demo — M2 + M3 checks  (seed 7, "), "{out}");
     for r in M2_ROWS {
         assert!(out.contains(r), "missing {r:?} in\n{out}");
     }
@@ -78,7 +78,7 @@ fn passes_every_m2_and_m3_check_on_its_own_server() {
 fn checks_m2_runs_only_the_m2_rows() {
     let (code, out, err) = demo(&["--seed", "7", "--memtable", "1MB", "--checks", "m2"]);
     assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
-    assert!(out.starts_with("tracedb demo — M2 checks  (seed 7, "), "{out}");
+    assert!(out.starts_with("smithling demo — M2 checks  (seed 7, "), "{out}");
     for r in M2_ROWS {
         assert!(out.contains(r), "missing {r:?} in\n{out}");
     }
@@ -106,7 +106,7 @@ async fn a_changed_planted_number_exits_1_naming_expected_and_actual() {
     .await
     .unwrap();
     assert_eq!(code, 1, "stdout:\n{out}\nstderr:\n{err}");
-    assert!(out.starts_with("tracedb demo — M3 checks  (seed 7, "), "{out}");
+    assert!(out.starts_with("smithling demo — M3 checks  (seed 7, "), "{out}");
     assert!(row(&out, "31 text hits").contains("✗"), "{out}");
     assert!(
         out.contains("31 text hits, all fetch_url: expected 31, got 32 (not all fetch_url)"),
@@ -115,7 +115,7 @@ async fn a_changed_planted_number_exits_1_naming_expected_and_actual() {
     assert!(out.contains("1 of 5 checks failed"), "{out}");
 }
 
-/// A `tracedb serve` child on a temporary folder and a free port, killed on drop.
+/// A `smithling serve` child on a temporary folder and a free port, killed on drop.
 struct Serve {
     child: std::process::Child,
     url: String,
@@ -126,7 +126,7 @@ impl Serve {
     fn start(extra: &[&str]) -> Serve {
         use std::io::{BufRead, BufReader};
         let dir = tempfile::tempdir().unwrap();
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_smithling"))
             .args(["serve", "--data", dir.path().to_str().unwrap(), "--port", "0"])
             .args(extra)
             .stdout(std::process::Stdio::piped())
@@ -197,7 +197,7 @@ fn a_failed_check_names_expected_and_actual() {
         Check::new("23 quiet failures", "23", "22", Some(58)),
     ];
     let mut out = Vec::new();
-    let ok = report("tracedb demo — M2 checks  (seed 7)", &checks, &mut out).unwrap();
+    let ok = report("smithling demo — M2 checks  (seed 7)", &checks, &mut out).unwrap();
     let out = String::from_utf8(out).unwrap();
     assert!(!ok);
     assert!(out.contains("✗ 23 quiet failures"), "{out}");

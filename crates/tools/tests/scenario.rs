@@ -1,17 +1,17 @@
 //! The overnight-eval scenario (research M2-R14, M3-R11): deterministic, exact planted counts checked naively over
 //! the generated items, and loaded through `/runs/batch` so its checks cross memtable and files.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
-use tracedb_model::cost::{self, Cost, Prices};
-use tracedb_model::filter::parse_filter;
-use tracedb_model::{Op, RunEvent, Source, Ts};
-use tracedb_query::QuerySpec;
-use tracedb_server::langsmith_map::{Dialect, map_item};
-use tracedb_tools::scenario::{self, Scenario, generate, load};
+use smithling_model::cost::{self, Cost, Prices};
+use smithling_model::filter::parse_filter;
+use smithling_model::{Op, RunEvent, Source, Ts};
+use smithling_query::QuerySpec;
+use smithling_server::langsmith_map::{Dialect, map_item};
+use smithling_tools::scenario::{self, Scenario, generate, load};
 
 /// 2026-11-06T12:00:00Z.
 const NOW: i64 = 1_793_966_400_000_000;
@@ -92,7 +92,7 @@ fn naive_cost<'a>(runs: impl Iterator<Item = &'a Value>) -> (i64, usize) {
 
 /// The same runs as the server would hold them: mapped and merged by the model, costed by `cost::of`.
 fn model_cost(s: &Scenario, tag: &str) -> (i64, usize) {
-    let mut slots: HashMap<String, Option<tracedb_model::RunState>> = HashMap::new();
+    let mut slots: HashMap<String, Option<smithling_model::RunState>> = HashMap::new();
     let items = s
         .posts
         .iter()
@@ -107,7 +107,7 @@ fn model_cost(s: &Scenario, tag: &str) -> (i64, usize) {
             body_hash: 0,
             fields: map_item(item, Dialect::LangSmith).unwrap(),
         };
-        tracedb_model::merge(slots.entry(item["id"].as_str().unwrap().into()).or_default(), &ev).unwrap();
+        smithling_model::merge(slots.entry(item["id"].as_str().unwrap().into()).or_default(), &ev).unwrap();
     }
     let prices = Prices::embedded();
     let (mut pico, mut no_price) = (0, 0);
@@ -481,11 +481,11 @@ async fn refuses_a_server_that_already_holds_the_batch() {
     let s = generate(7, Ts::now().0, MB);
     load(&url, &s).await.unwrap();
     let err = load(&url, &s).await.unwrap_err();
-    assert!(matches!(err, tracedb_tools::seed::SeedError::Refused(..)), "{err}");
+    assert!(matches!(err, smithling_tools::seed::SeedError::Refused(..)), "{err}");
 }
 
 #[tokio::test]
 async fn unreachable_server_is_reported() {
     let err = load("http://127.0.0.1:9", &generate(1, NOW, MB)).await.unwrap_err();
-    assert!(matches!(err, tracedb_tools::seed::SeedError::Unreachable(..)));
+    assert!(matches!(err, smithling_tools::seed::SeedError::Unreachable(..)));
 }

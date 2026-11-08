@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use tracedb_model::Ts;
-use tracedb_storage::{SegmentMeta, StorageError, fts, segment};
+use smithling_model::Ts;
+use smithling_storage::{SegmentMeta, StorageError, fts, segment};
 
 use crate::flush::FlushHealth;
 use crate::memtable::Mem;

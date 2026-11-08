@@ -7,7 +7,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use common::*;
-use tracedb_ingest::{AcceptError, Ingest, IngestConfig};
+use smithling_ingest::{AcceptError, Ingest, IngestConfig};
 
 #[tokio::test]
 async fn a_failed_write_stops_confirmations_and_keeps_confirmed_data() {

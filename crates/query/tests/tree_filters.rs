@@ -4,9 +4,9 @@
 mod common;
 
 use common::*;
-use tracedb_model::Op;
-use tracedb_model::filter::{TimeAt, parse_filter};
-use tracedb_query::{Query, QuerySpec, TimeRange};
+use smithling_model::Op;
+use smithling_model::filter::{TimeAt, parse_filter};
+use smithling_query::{Query, QuerySpec, TimeRange};
 
 fn spec(root: Option<bool>, filter: &str, trace: Option<&str>, tree: Option<&str>) -> QuerySpec {
     QuerySpec {

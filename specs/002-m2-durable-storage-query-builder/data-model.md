@@ -43,14 +43,14 @@ erDiagram
 | `start_time`, `end_time` | timestamp µs, null | |
 | `status` | enum `running`/`ok`/`error` | derived for this version; recomputed after a merge |
 | `latency_ms` | u64, null | derived |
-| `error` | string, null | full text ([D-014](../000-tracedb-master-plan/decisions.md#d-014)) |
+| `error` | string, null | full text ([D-014](../000-smithling-master-plan/decisions.md#d-014)) |
 | `tags` | list<string>, null | |
 | `thread_id`, `model` | string, null | derived |
 | `input_tokens`, `output_tokens`, `total_tokens` | u64, null | derived |
 | `metadata`, `extra` | JSON text, null | the full objects (promoted leaves are copies) |
 | `dropped` | JSON text, null | sizes of fields received but not stored |
 | `outputs_usage` | JSON text, null | `outputs.usage_metadata`, kept for the token counts |
-| `attrs` | JSON text | promoted scalar leaves by dotted path (§4); one column, evaluated by our filter code ([D-012](../000-tracedb-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
+| `attrs` | JSON text | promoted scalar leaves by dotted path (§4); one column, evaluated by our filter code ([D-012](../000-smithling-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
 | `present` | u32 bitmask | which fields this version set (needed where empty ≠ absent: `tags`, `metadata`) |
 | `first_seq`, `last_seq` | u64 | merge order |
 | `event_count` | u32 | |
@@ -86,7 +86,7 @@ That is the whole payload row (`payload_schema` in [segment.rs](../../crates/sto
 
 All promoted leaves go into the one `attrs` JSON column, each with its own JSON type. A value past the limits is kept as
 an `unindexed` marker: it matches `eq/neq null`, and any other comparison is false with a `not_indexed` warning
-([D-011](../000-tracedb-master-plan/decisions.md#d-011)). A path seen with two types (number in one run, string in another) keeps each run's type; the field catalog
+([D-011](../000-smithling-master-plan/decisions.md#d-011)). A path seen with two types (number in one run, string in another) keeps each run's type; the field catalog
 lists both types with their counts.
 
 ## 5. Metastore tables (same SQL on SQLite and Postgres)
@@ -155,13 +155,13 @@ The day is the flush day (UTC). Names are unique and never reused, so nothing is
 
 | Structure | Owner | Contents | Size at 2M runs |
 |---|---|---|---|
-| Active memtable | writer | M1 run store (states, by_trace, roots), limit 128 MB (M2; M3: 64 MB measured as heap, [D-028](../000-tracedb-master-plan/decisions.md#d-028)) | ≤ 128 MB + indexes |
+| Active memtable | writer | M1 run store (states, by_trace, roots), limit 128 MB (M2; M3: 64 MB measured as heap, [D-028](../000-smithling-master-plan/decisions.md#d-028)) | ≤ 128 MB + indexes |
 | Frozen memtable | flusher, readers | `Arc` of the previous active, immutable | ≤ 128 MB (M2), at most one |
 | `Version` | query (pinned) | segment list + frozen `Arc` | small |
 | Multi-version set | ingest (writes), query (reads) | `HashSet<RunId>` | ~3 MB (10% late) |
 | Recent projects (D-024) | writer, flusher (writes); flusher, query pin (reads) | run → project for the last 1–2M runs | ≤ ~50 MB |
-| Dedup set | writer | `(run_id, op, body_hash)` for the last 10 min | ~2M keys at 5k events/s (M3: 16 B fingerprints, at most 1M, [D-028](../000-tracedb-master-plan/decisions.md#d-028)) |
-| `Cache` | storage | Parquet footers, bloom filters, hot row groups (LRU) | default 256 MB; not built in M2 ([D-013](../000-tracedb-master-plan/decisions.md#d-013)); M3: 32 MB ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) |
+| Dedup set | writer | `(run_id, op, body_hash)` for the last 10 min | ~2M keys at 5k events/s (M3: 16 B fingerprints, at most 1M, [D-028](../000-smithling-master-plan/decisions.md#d-028)) |
+| `Cache` | storage | Parquet footers, bloom filters, hot row groups (LRU) | default 256 MB; not built in M2 ([D-013](../000-smithling-master-plan/decisions.md#d-013)); M3: 32 MB ([D-028](../000-smithling-master-plan/decisions.md#d-028)) |
 
 ## 8. Lifecycle states
 
@@ -177,7 +177,7 @@ stateDiagram-v2
 ```
 
 No freeze at shutdown: unflushed events stay in the WAL and are replayed at start. Limits are M2's (M3: 64 MB, 2 min,
-[D-028](../000-tracedb-master-plan/decisions.md#d-028)).
+[D-028](../000-smithling-master-plan/decisions.md#d-028)).
 
 **Segment** (M2 uses only the first two states; M4 adds the rest)
 
@@ -210,7 +210,7 @@ Query {
 Expr = And([Expr]) | Or([Expr]) | Not(Expr)
      | Cmp { op: eq|neq|gt|gte|lt|lte, path: Path, value: Value }   # value may be null
      | Has { path: Path, value: Value }                             # list contains
-     | In  { path: Path, values: [Value] }                          # tracedb addition
+     | In  { path: Path, values: [Value] }                          # smithling addition
 Path = built-in field (status, name, run_type, latency, start_time, tags, total_tokens, …)
      | metadata.<dotted> | inputs.<dotted> | outputs.<dotted>
 ```

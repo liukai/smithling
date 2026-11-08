@@ -45,9 +45,9 @@ function AddColumn({ cols, onCols }: { cols: string[]; onCols: (cols: string[]) 
   };
   return (
     <form className="add-column" onSubmit={add}>
-      <input aria-label="add column" list="tracedb-columns" placeholder="+ column" value={text}
+      <input aria-label="add column" list="smithling-columns" placeholder="+ column" value={text}
         onChange={(e) => { setText(e.target.value); setError(null); }} />
-      <datalist id="tracedb-columns">{SUGGEST.map((f) => <option key={f} value={f} />)}</datalist>
+      <datalist id="smithling-columns">{SUGGEST.map((f) => <option key={f} value={f} />)}</datalist>
       {error && <span role="alert" className="chip-error">{error}</span>}
     </form>
   );

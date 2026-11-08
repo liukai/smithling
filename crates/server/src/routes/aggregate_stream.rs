@@ -11,8 +11,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use smithling_query::aggregate::AggMsg;
 use tokio_stream::StreamExt;
-use tracedb_query::aggregate::AggMsg;
 
 use crate::AppState;
 use crate::routes::api::{AggBody, BadRequest, agg_request, take_skipped};
@@ -24,7 +24,7 @@ pub struct StreamQs {
     q: Option<String>,
 }
 
-fn result(e: Event, mut r: tracedb_query::AggResult) -> Event {
+fn result(e: Event, mut r: smithling_query::AggResult) -> Event {
     let skipped = take_skipped(&mut r);
     let mut v = serde_json::to_value(r).expect("results serialize");
     if !skipped.is_empty() {

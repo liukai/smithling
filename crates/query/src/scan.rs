@@ -14,14 +14,14 @@ use std::sync::Arc;
 
 use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use tracedb_ingest::store::RunStore;
-use tracedb_ingest::{Ingest, Version};
-use tracedb_model::attrs::{Attrs, promote};
-use tracedb_model::filter::Side;
-use tracedb_model::text::{Text, phrase_in};
-use tracedb_model::{RunId, RunState, TraceId, merge_versions, present};
-use tracedb_storage::segment::{SegmentMeta, decode_core, start_key};
-use tracedb_storage::{Payload, StoredRow};
+use smithling_ingest::store::RunStore;
+use smithling_ingest::{Ingest, Version};
+use smithling_model::attrs::{Attrs, promote};
+use smithling_model::filter::Side;
+use smithling_model::text::{Text, phrase_in};
+use smithling_model::{RunId, RunState, TraceId, merge_versions, present};
+use smithling_storage::segment::{SegmentMeta, decode_core, start_key};
+use smithling_storage::{Payload, StoredRow};
 
 use crate::QueryError;
 use crate::pushdown::id_lit;
@@ -267,7 +267,7 @@ fn pin_inner(
     fn keyed(st: &RunState) -> (i64, &RunState) {
         (start_key(&st.run.dotted_order), st)
     }
-    let mut collect = |store: &tracedb_ingest::store::RunStore| {
+    let mut collect = |store: &smithling_ingest::store::RunStore| {
         let in_scope = |(k, st): &(i64, &RunState)| scope.row_in_scope(*k, st) && in_project(st);
         let take = |(k, st): (i64, &RunState)| {
             let attrs = store.attrs(&st.run.run_id).cloned().unwrap_or_else(|| promote(&st.run));
@@ -318,7 +318,7 @@ fn pin_inner(
 fn damage_of(e: &QueryError) -> Option<&'static str> {
     use datafusion::arrow::error::ArrowError;
     use datafusion::error::DataFusionError as D;
-    use tracedb_storage::segment::{boxed_damage, damage, parquet_damage, store_damage};
+    use smithling_storage::segment::{boxed_damage, damage, parquet_damage, store_damage};
     fn external(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<&'static str> {
         match e.downcast_ref::<D>() {
             Some(e) => engine(e),
@@ -366,7 +366,7 @@ async fn probe(ingest: &Ingest, files: &[&SegmentMeta]) -> HashSet<String> {
         .map(|s| {
             let (store, seg) = (ingest.storage().store.clone(), (*s).clone());
             async move {
-                let r = tracedb_storage::segment::check(&store, &seg).await;
+                let r = smithling_storage::segment::check(&store, &seg).await;
                 (seg, r)
             }
         })
@@ -377,7 +377,7 @@ async fn probe(ingest: &Ingest, files: &[&SegmentMeta]) -> HashSet<String> {
         .await;
     let mut bad = HashSet::new();
     for (s, r) in results {
-        if let Some(reason) = r.err().as_ref().and_then(tracedb_storage::segment::damage) {
+        if let Some(reason) = r.err().as_ref().and_then(smithling_storage::segment::damage) {
             ingest.mark_damaged(&s, reason);
             bad.insert(s.id);
         }
@@ -625,7 +625,7 @@ async fn read_ids_from(
             .column(0)
             .as_any()
             .downcast_ref::<FixedSizeBinaryArray>()
-            .ok_or_else(|| tracedb_storage::StorageError::Format("run_id is not FixedSizeBinary".into()))?;
+            .ok_or_else(|| smithling_storage::StorageError::Format("run_id is not FixedSizeBinary".into()))?;
         out.extend(
             (0..ids.len())
                 .filter(|&i| !ids.is_null(i))
@@ -926,7 +926,7 @@ impl RunVersions {
                 let mut opened = 0;
                 for seg in candidates {
                     opened += 1;
-                    let got = tracedb_storage::segment::read_payload_rows(
+                    let got = smithling_storage::segment::read_payload_rows(
                         store,
                         cache,
                         seg,

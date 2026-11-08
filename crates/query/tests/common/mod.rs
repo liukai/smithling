@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tracedb_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
-use tracedb_model::{Op, RunFields, Source, Ts};
+use smithling_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
+use smithling_model::{Op, RunFields, Source, Ts};
 use uuid::Uuid;
 
 pub fn uid(n: u64) -> Uuid {

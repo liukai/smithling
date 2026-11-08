@@ -1,4 +1,4 @@
-"""Record real LangSmith SDK upload traffic as contract fixtures for tracedb.
+"""Record real LangSmith SDK upload traffic as contract fixtures for smithling.
 
 Run with the Python of a venv that has the pinned `langsmith`, `langgraph` and `zstandard`, e.g.:
 
@@ -7,7 +7,7 @@ Run with the Python of a venv that has the pinned `langsmith`, `langgraph` and `
 
 `--mode` sets what `/info` advertises: `json` (multipart off; the default), `multipart`, or `multipart-zstd`.
 Writes tests/fixtures/sdk-<version>[-<mode>]/requests.jsonl (every request the SDK made; multipart bodies as
-base64 with their headers), expected-runs.json (the merged runs, computed here independently of tracedb) and
+base64 with their headers), expected-runs.json (the merged runs, computed here independently of smithling) and
 expected-feedback.json. Fails if the SDK logs a backend-version warning.
 """
 
@@ -27,7 +27,7 @@ MODES = ("json", "multipart", "multipart-zstd")
 MP_HEADERS = ("content-type", "content-encoding", "x-pre-compressed-size", "x-post-compressed-size")
 INFO = {
     "version": "",
-    "tracedb_version": "recorder",
+    "smithling_version": "recorder",
     "license_expiration_time": None,
     "batch_ingest_config": {
         "use_multipart_endpoint": False,
@@ -158,7 +158,7 @@ def project_of(item: dict):
 
 
 def multipart_parts(req: dict) -> list[tuple[str, bytes]]:
-    """(name, bytes) per part, decoded with the stdlib and `zstandard` (not tracedb's parser)."""
+    """(name, bytes) per part, decoded with the stdlib and `zstandard` (not smithling's parser)."""
     import zstandard
 
     raw = base64.b64decode(req["body_b64"])
@@ -304,7 +304,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     # Recorded tracebacks hold this checkout's absolute path; fixtures are published, so replace it.
     root = str(Path(__file__).resolve().parent.parent) + "/"
-    scrub = lambda text: text.replace(root, "/work/tracedb/")
+    scrub = lambda text: text.replace(root, "/work/smithling/")
     with open(out / "requests.jsonl", "w") as f:
         for r in REQUESTS:
             f.write(scrub(json.dumps(r, sort_keys=True)) + "\n")

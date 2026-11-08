@@ -1,21 +1,21 @@
 //! Storage trait tests, run against every backend at hand: local files and SQLite always; S3 when
-//! `TRACEDB_TEST_S3_URL` is set (e.g. `s3://tracedb/test`, endpoint and credentials from `AWS_*`) and Postgres
-//! when `TRACEDB_TEST_PG_URL` is set (e.g. `postgres://tracedb@localhost/tracedb`, password from `PGPASSWORD`).
+//! `SMITHLING_TEST_S3_URL` is set (e.g. `s3://smithling/test`, endpoint and credentials from `AWS_*`) and Postgres
+//! when `SMITHLING_TEST_PG_URL` is set (e.g. `postgres://smithling@localhost/smithling`, password from `PGPASSWORD`).
 //! Text index sidecars are put and looked up on each object store; catalog v2 and the `feedback` table on each
 //! metastore. Each run uses a fresh S3 prefix and a fresh Postgres database, so reruns don't see each other's data.
 
 use bytes::Bytes;
+use smithling_storage::fts::{self, Fts, TextField, TextIndex, TextRow};
+use smithling_storage::segment::FieldStat;
+use smithling_storage::{DedupKeys, FeedbackKey, FeedbackRow, Metastore, SegmentMeta, Store};
 use sqlx::Connection;
-use tracedb_storage::fts::{self, Fts, TextField, TextIndex, TextRow};
-use tracedb_storage::segment::FieldStat;
-use tracedb_storage::{DedupKeys, FeedbackKey, FeedbackRow, Metastore, SegmentMeta, Store};
 use uuid::Uuid;
 
 fn env_url(var: &str) -> Option<String> {
     match std::env::var(var) {
         Ok(v) if !v.trim().is_empty() => Some(v),
-        _ if std::env::var_os("TRACEDB_TEST_REQUIRE_CLOUD").is_some() => {
-            panic!("{var} is not set but TRACEDB_TEST_REQUIRE_CLOUD is")
+        _ if std::env::var_os("SMITHLING_TEST_REQUIRE_CLOUD").is_some() => {
+            panic!("{var} is not set but SMITHLING_TEST_REQUIRE_CLOUD is")
         }
         _ => {
             eprintln!("skipped: {var} is not set");
@@ -32,8 +32,8 @@ fn run_id() -> String {
 async fn fresh_pg(base: &str) -> String {
     let mut conn = sqlx::PgConnection::connect(base)
         .await
-        .expect("connect to TRACEDB_TEST_PG_URL");
-    let name = format!("tracedb_test_{}", run_id());
+        .expect("connect to SMITHLING_TEST_PG_URL");
+    let name = format!("smithling_test_{}", run_id());
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
         .execute(&mut conn)
         .await
@@ -452,7 +452,7 @@ async fn local_object_store() {
 
 #[tokio::test]
 async fn s3_object_store() {
-    let Some(base) = env_url("TRACEDB_TEST_S3_URL") else {
+    let Some(base) = env_url("SMITHLING_TEST_S3_URL") else {
         return;
     };
     let store = Store::open(&format!("{}/traits-{}", base.trim_end_matches('/'), run_id())).unwrap();
@@ -474,7 +474,7 @@ async fn sqlite_catalog_migration() {
 
 #[tokio::test]
 async fn postgres_catalog_migration() {
-    let Some(base) = env_url("TRACEDB_TEST_PG_URL") else {
+    let Some(base) = env_url("SMITHLING_TEST_PG_URL") else {
         return;
     };
     migration_contract(&fresh_pg(&base).await, true).await;
@@ -482,7 +482,7 @@ async fn postgres_catalog_migration() {
 
 #[tokio::test]
 async fn postgres_metastore() {
-    let Some(base) = env_url("TRACEDB_TEST_PG_URL") else {
+    let Some(base) = env_url("SMITHLING_TEST_PG_URL") else {
         return;
     };
     metastore_contract(&fresh_pg(&base).await).await;

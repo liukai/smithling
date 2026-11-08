@@ -10,7 +10,7 @@ export function App() {
   return (
     <>
       <header>
-        <a href="/" onClick={(e) => { e.preventDefault(); navigate("/"); }} className="brand">tracedb</a>
+        <a href="/" onClick={(e) => { e.preventDefault(); navigate("/"); }} className="brand">smithling</a>
         <span className="muted">local traces for AI agents</span>
         <nav>
           <a href="/" onClick={(e) => { e.preventDefault(); navigate("/"); }}

@@ -3,9 +3,9 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use serde_json::json;
-use tracedb_model::{ChangeKind, Op, Reason, RunHeader, RunState, RunType, Status, Warning, merge};
+use smithling_model::{ChangeKind, Op, Reason, RunHeader, RunState, RunType, Status, Warning, merge};
 
-fn apply_all(events: &[tracedb_model::RunEvent]) -> Option<RunState> {
+fn apply_all(events: &[smithling_model::RunEvent]) -> Option<RunState> {
     let mut slot = None;
     for ev in events {
         merge(&mut slot, ev).unwrap();
@@ -13,7 +13,7 @@ fn apply_all(events: &[tracedb_model::RunEvent]) -> Option<RunState> {
     slot
 }
 
-fn fetch_url_post() -> tracedb_model::RunEvent {
+fn fetch_url_post() -> smithling_model::RunEvent {
     let mut f = post_fields(child_ids(), "fetch_url");
     f.project = Some("research-agent".into());
     f.inputs = Some(json!({"url": "https://example.com"}));
@@ -22,7 +22,7 @@ fn fetch_url_post() -> tracedb_model::RunEvent {
     event(Op::Post, 1042, f)
 }
 
-fn fetch_url_patch() -> tracedb_model::RunEvent {
+fn fetch_url_patch() -> smithling_model::RunEvent {
     let mut f = child_ids();
     f.end_time = Some(ts("2026-11-05T02:14:38.200000Z"));
     f.error = Some("HTTPError: 429 Too Many Requests".into());
@@ -293,7 +293,7 @@ fn partial() -> impl Strategy<Value = Partial> {
         })
 }
 
-fn to_event(seq: u64, first: bool, p: &Partial) -> tracedb_model::RunEvent {
+fn to_event(seq: u64, first: bool, p: &Partial) -> smithling_model::RunEvent {
     let mut f = if first {
         post_fields(child_ids(), "start")
     } else {
@@ -315,7 +315,7 @@ proptest! {
         let events: Vec<_> = parts.iter().enumerate().map(|(i, p)| to_event(i as u64 + 1, i == 0, p)).collect();
         let st = apply_all(&events).unwrap();
 
-        let last = |get: &dyn Fn(&tracedb_model::RunEvent) -> Option<serde_json::Value>| {
+        let last = |get: &dyn Fn(&smithling_model::RunEvent) -> Option<serde_json::Value>| {
             events.iter().rev().find_map(get)
         };
         let name = last(&|e| e.fields.name.clone().map(Into::into));

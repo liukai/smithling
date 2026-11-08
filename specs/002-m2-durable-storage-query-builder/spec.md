@@ -4,16 +4,16 @@
 
 **Created**: 2026-11-06
 
-**Status**: Built (M2 closed at `c7595c6`). Where the code differs: [decision log](../000-tracedb-master-plan/decisions.md) D-012–D-024 (while building M2), D-025–D-029 (M3)
+**Status**: Built (M2 closed at `c7595c6`). Where the code differs: [decision log](../000-smithling-master-plan/decisions.md) D-012–D-024 (while building M2), D-025–D-029 (M3)
 
-**Input**: User description: "M2 'Durable storage + query builder' for tracedb … scope from roadmap M2 … fold in backlog R-2 and
+**Input**: User description: "M2 'Durable storage + query builder' for smithling … scope from roadmap M2 … fold in backlog R-2 and
 R-7–R-10, plus three items from the M1 code review (tail loop into the query service, serve UI files from disk, UI built
 as its own CI step) and the M1 rough edge (a retried rejected item reads as accepted). Write it descriptively: goal + why,
 end state as 'As a <who>, I can <what>' with the general capability first and a labeled Example, work tied to end state,
 plus the lifecycle of one run through M2. Reference master requirement IDs instead of copying."
 
-**Master**: [specs/000-tracedb-master-plan](../000-tracedb-master-plan/spec.md) (requirements of record) ·
-[roadmap](../000-tracedb-master-plan/roadmap.md) (progress). This folder holds the M2 details of record.
+**Master**: [specs/000-smithling-master-plan](../000-smithling-master-plan/spec.md) (requirements of record) ·
+[roadmap](../000-smithling-master-plan/roadmap.md) (progress). This folder holds the M2 details of record.
 
 **Builds on**: [M1 — See agent trace live](../001-m1-see-agent-trace-live/spec.md). Everything M1 promises stays true.
 
@@ -58,10 +58,10 @@ Hold real volumes on disk, and let people find the runs that matter by clicking.
 - As an agent developer, I can keep a filtered list open and watch new runs that match it appear live.
   - *Example*: a live view of `status = error AND name = fetch_url` during the next eval batch.
 - As an agent developer, I can share any view as a link that reopens exactly the same query and view.
-- As an agent developer, I can keep tracedb running for weeks and restart it at any time without losing data, at
+- As an agent developer, I can keep smithling running for weeks and restart it at any time without losing data, at
   laptop scale (millions of runs).
   - *Example*: 2M runs, restart, and the last query returns the same rows within 10 s of starting.
-- As an agent developer, I can keep uploading during a burst and never see my agent fail. When tracedb is busy it
+- As an agent developer, I can keep uploading during a burst and never see my agent fail. When smithling is busy it
   asks the agent to slow down, and the agent's SDK retries on its own.
 - As a **test user**, I can generate the overnight-eval scenario and run its first checks, which reproduce the
   example numbers above.
@@ -83,15 +83,15 @@ column names the M2 work that makes each stage happen.
 | 1 | 02:14:07 | The step's **start** arrives, is recorded durably, and is held in memory (as in M1). | (M1) |
 | 2 | +0 s | Any open screen whose query matches it, not just the runs list, shows it within 1 s. | Live views for any query |
 | 3 | 02:14:38 | Its **update** arrives (error, outputs with `status_code: 429`) and is merged in memory. | (M1) |
-| 4 | burst | Thousands of other runs arrive at once. tracedb tells some uploads "busy, retry shortly"; the SDK retries and nothing is lost. | Write slowdown (R-8) |
+| 4 | burst | Thousands of other runs arrive at once. smithling tells some uploads "busy, retry shortly"; the SDK retries and nothing is lost. | Write slowdown (R-8) |
 | 5 | ~02:20 | The in-memory batch fills. It is frozen and written to disk as immutable files: one with the small fields used for filtering, one with the payloads. New uploads go to a fresh in-memory batch, so they don't pause. | Write to disk; two in-memory batches (R-10) |
 | 6 | flush done | The files are registered in the metadata catalog. Only then is the matching part of the durable log trimmed. A crash at any point leaves either the log or the files, never neither. | Catalog; safe log trimming |
 | 7 | 02:31 | A late update for the same step arrives after its files were written. It lands in memory, and queries merge it with the file version (latest value wins), so the step shows the newer state. | Merge on read |
 | 8 | ongoing | Field names and values seen in the step (`metadata.prompt_version = v7`, `outputs.status_code = 429`) are counted in the field catalog. | Field catalog |
 | 9 | 08:00 | The developer filters to quiet failures. The query skips files whose time range or value summaries can't match, reads only the filter columns, and finds the step's root among the **23**. | Query engine with skipping; tree-aware filters |
-| 10 | 08:01 | They open the trace. tracedb finds the files holding it quickly, without opening every file. | Key lookup summaries (R-9) |
+| 10 | 08:01 | They open the trace. smithling finds the files holding it quickly, without opening every file. | Key lookup summaries (R-9) |
 | 11 | 08:02 | A long query is still running when new files appear. It keeps reading the file set it started with, and no file is deleted under it. | Pinned file sets (R-7) |
-| 12 | anytime | Restart: tracedb reads the catalog, replays only the untrimmed log, and is ready in seconds. | Fast restart |
+| 12 | anytime | Restart: smithling reads the catalog, replays only the untrimmed log, and is ready in seconds. | Fast restart |
 | 13 | every change | Automated checks run the scenario checks on local disk and on cloud storage. | Demo checks; cloud CI |
 
 ## User Scenarios & Testing *(mandatory)*
@@ -137,21 +137,21 @@ results match.
 
 ### User Story 3 - Keep all data on disk, restart fast (Priority: P1)
 
-The developer leaves tracedb running for weeks. Data goes to disk in the background, restarts are fast, and nothing
+The developer leaves smithling running for weeks. Data goes to disk in the background, restarts are fast, and nothing
 confirmed is ever lost.
 
-**Why this priority**: M1's memory ceiling makes tracedb unusable after a few weeks of real use.
+**Why this priority**: M1's memory ceiling makes smithling unusable after a few weeks of real use.
 
-**Independent Test**: load 2M runs (more than M1 could hold), kill tracedb at random points during upload and during
+**Independent Test**: load 2M runs (more than M1 could hold), kill smithling at random points during upload and during
 writes to disk, restart, and compare the stored runs and query results with every confirmed upload, over 10 rounds.
 
 **Acceptance Scenarios**:
 
 1. **Given** more runs than fit in the memory budget, **When** uploads continue, **Then** they are accepted and older data moves to disk; no upload is refused for lack of memory.
-2. **Given** an abrupt kill during a write to disk, **When** tracedb restarts, **Then** every confirmed event is present exactly once.
+2. **Given** an abrupt kill during a write to disk, **When** smithling restarts, **Then** every confirmed event is present exactly once.
 3. **Given** a step written to disk, **When** a late update for it arrives, **Then** queries and the trace view show the merged, newest state.
-4. **Given** 2M stored runs, **When** tracedb restarts, **Then** it accepts uploads and answers queries within 10 s.
-5. **Given** a burst of uploads past what tracedb can absorb, **When** it is busy, **Then** it answers "busy, retry shortly", the SDK retries, no event is lost, and memory stays under the configured limit.
+4. **Given** 2M stored runs, **When** smithling restarts, **Then** it accepts uploads and answers queries within 10 s.
+5. **Given** a burst of uploads past what smithling can absorb, **When** it is busy, **Then** it answers "busy, retry shortly", the SDK retries, no event is lost, and memory stays under the configured limit.
 6. **Given** a query running while new files are written, **When** it finishes, **Then** its results are complete and consistent with the moment it started.
 
 ---
@@ -184,7 +184,7 @@ A test user generates the overnight-eval scenario and runs its first checks.
 
 **Acceptance Scenarios**:
 
-1. **Given** an empty tracedb, **When** the demo command runs, **Then** it generates the scenario (200 tasks, planted failures, late-finishing roots) and reports pass/fail for: 14 failing roots, 23 quiet failures, and `prompt_version` top values.
+1. **Given** an empty smithling, **When** the demo command runs, **Then** it generates the scenario (200 tasks, planted failures, late-finishing roots) and reports pass/fail for: 14 failing roots, 23 quiet failures, and `prompt_version` top values.
 2. **Given** a check fails, **When** the demo command ends, **Then** it names the failing check with expected and actual values, and exits with an error.
 3. **Given** the same seed, **When** the demo runs twice, **Then** the generated data is identical.
 
@@ -192,7 +192,7 @@ A test user generates the overnight-eval scenario and runs its first checks.
 
 ### User Story 6 - Same results on cloud storage (Priority: P2)
 
-A maintainer runs the same tracedb against cloud-style object storage and a hosted metadata database, chosen by
+A maintainer runs the same smithling against cloud-style object storage and a hosted metadata database, chosen by
 configuration only, and gets the same results.
 
 **Why this priority**: it is a constitution principle (V, cloud-portable storage). Proving it in M2, when the storage
@@ -203,14 +203,14 @@ object storage and a hosted-style metadata database, and compare.
 
 **Acceptance Scenarios**:
 
-1. **Given** a configuration pointing at object storage and a hosted metadata database, **When** tracedb starts, **Then** it needs no code change and no other setting.
+1. **Given** a configuration pointing at object storage and a hosted metadata database, **When** smithling starts, **Then** it needs no code change and no other setting.
 2. **Given** either configuration, **When** the demo checks run, **Then** they produce the same numbers.
 
 ---
 
 ### User Story 7 - Maintainer workflow and M1 follow-ups (Priority: P3)
 
-Small changes found while reviewing M1, which make tracedb easier to work on and more honest in its replies.
+Small changes found while reviewing M1, which make smithling easier to work on and more honest in its replies.
 
 **Why this priority**: none is user-visible on its own, but each removes friction or a misleading answer.
 
@@ -219,7 +219,7 @@ Small changes found while reviewing M1, which make tracedb easier to work on and
 **Acceptance Scenarios**:
 
 1. **Given** an item rejected for a conflict (for example a changed trace id), **When** the client retries the identical item, **Then** it is reported as rejected again with the same reason, not as accepted.
-2. **Given** a developer working on the UI, **When** they point a running tracedb at a folder of UI files, **Then** it serves those files instead of the built-in ones, with no server rebuild.
+2. **Given** a developer working on the UI, **When** they point a running smithling at a folder of UI files, **Then** it serves those files instead of the built-in ones, with no server rebuild.
 3. **Given** a machine without the UI toolchain, **When** the server is built, **Then** the build succeeds using a prebuilt UI; the UI is built and checked as its own automated step.
 4. **Given** the live-view logic, **When** a new kind of view needs live updates, **Then** it reuses the same query service as any other read, not code in the web layer.
 
@@ -280,7 +280,7 @@ Each requirement names the master requirement or backlog item it delivers. The m
 - **M2-FR-21** (→ FR-024, partial): System MUST provide a demo command that generates the overnight-eval scenario and checks the 14 failing roots, 23 quiet failures and `prompt_version` top values.
 - **M2-FR-22** (constitution VI): Automated checks MUST run the demo checks and the crash test (now including crashes during writes to disk) on local storage and on cloud-style storage.
 - **M2-FR-23** (M1 review): Retrying an item that was rejected MUST report the same rejection again.
-- **M2-FR-24** (M1 review): A running tracedb MUST be able to serve UI files from a chosen folder instead of the built-in copy.
+- **M2-FR-24** (M1 review): A running smithling MUST be able to serve UI files from a chosen folder instead of the built-in copy.
 - **M2-FR-25** (M1 review): The server MUST build without the UI toolchain; the UI MUST be built and tested as its own automated step.
 - **M2-FR-26** (M1 review): Live views MUST be served by the query service through the same filter as any other query, not by logic in the web layer.
 - **M2-FR-27** (2026-11-06 decision): M2 MUST end with a code starter guide (`starter-guide.md`) that maps each end-state flow to the real functions, with links and line numbers.
@@ -299,11 +299,11 @@ Each requirement names the master requirement or backlog item it delivers. The m
 ### Measurable Outcomes
 
 - **SC-01**: On the scenario data, the query panel returns exactly 14 failing roots and exactly 23 quiet failures, built without typing any filter syntax (master SC-010 for steps 4, 5 and 8).
-- **SC-02**: A developer new to tracedb finds the 23 quiet failures on the scenario data in under 5 minutes, using only the UI.
+- **SC-02**: A developer new to smithling finds the 23 quiet failures on the scenario data in under 5 minutes, using only the UI.
 - **SC-03**: At 2M runs on the reference laptop, a filtered list returns its first page with median ≤ 500 ms; a trace tree and a single run open with median ≤ 200 ms; field and value suggestions appear with median ≤ 500 ms. (M3 tightens these to the master QR-004 and QR-008 targets.)
-- **SC-04**: tracedb holds 2M runs with memory staying under its configured limit, and data on disk takes no more than the same data as raw JSON.
+- **SC-04**: smithling holds 2M runs with memory staying under its configured limit, and data on disk takes no more than the same data as raw JSON.
 - **SC-05**: In 10 of 10 abrupt-kill rounds, including kills during writes to disk, zero confirmed events are missing or duplicated after restart.
-- **SC-06**: With 2M stored runs, tracedb is ready within 10 s of starting.
+- **SC-06**: With 2M stored runs, smithling is ready within 10 s of starting.
 - **SC-07**: Upload throughput stays at or above M1's 5,000 events/s while data is being written to disk, and no upload waits more than 1 s because of it.
 - **SC-08**: The demo checks give identical numbers on local storage and on cloud-style storage.
 - **SC-09**: Results for every scenario query match a run-by-run check of the same condition on 100% of runs, including runs whose late updates arrived after they were written to disk.

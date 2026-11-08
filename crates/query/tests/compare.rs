@@ -6,10 +6,10 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use tracedb_model::agg::{AggSpec, Bucket, Compare, GroupKey, Metric, Pct, View};
-use tracedb_model::cost::Prices;
-use tracedb_model::filter::{TimeAt, parse_filter};
-use tracedb_query::{AggResult, Query, QuerySpec, TimeRange};
+use smithling_model::agg::{AggSpec, Bucket, Compare, GroupKey, Metric, Pct, View};
+use smithling_model::cost::Prices;
+use smithling_model::filter::{TimeAt, parse_filter};
+use smithling_query::{AggResult, Query, QuerySpec, TimeRange};
 
 fn tagged(tag: &str) -> QuerySpec {
     QuerySpec {
@@ -136,7 +136,7 @@ async fn two_batches_pair_by_group_and_line_up_from_their_first_run() {
         );
         assert!(x.t.is_none() && y.t.is_none());
     }
-    let any = |b: &tracedb_query::aggregate::SeriesBucket| b.per_group.iter().any(Option::is_some);
+    let any = |b: &smithling_query::aggregate::SeriesBucket| b.per_group.iter().any(Option::is_some);
     assert!(any(&sa.buckets[0]) && any(&sb.buckets[0]), "both start at 0");
     assert!(any(&sa.buckets[11]) && !any(&sb.buckets[11]), "b ran 10 h");
     // Side b's buckets select b's runs (its own times).
@@ -145,7 +145,7 @@ async fn two_batches_pair_by_group_and_line_up_from_their_first_run() {
     let mut f = vec![b_spec.filter.clone().unwrap(), parse_filter(&first.where_).unwrap()];
     f.push(parse_filter(r.groups[0].where_.as_deref().unwrap()).unwrap());
     let spec = QuerySpec {
-        filter: Some(tracedb_model::filter::Expr::And(f)),
+        filter: Some(smithling_model::filter::Expr::And(f)),
         ..QuerySpec::default()
     };
     let n = q.aggregate(&spec, &plain(&agg), &prices).await.unwrap().totals.runs;
@@ -184,7 +184,7 @@ async fn side_b_other_where_holds_its_none_runs_when_side_a_had_none() {
         .expect("b's third value and its (none)");
     let w = parse_filter(other.where_.as_deref().unwrap()).unwrap();
     let spec = QuerySpec {
-        filter: Some(tracedb_model::filter::Expr::And(vec![
+        filter: Some(smithling_model::filter::Expr::And(vec![
             b_spec.filter.clone().unwrap(),
             w,
         ])),
@@ -237,6 +237,6 @@ async fn a_shift_compares_the_same_window_a_day_earlier() {
         sb.buckets[0].where_
     );
     // Batch b ran 10 h of today's window: its late buckets are empty while yesterday's aren't.
-    let any = |b: &tracedb_query::aggregate::SeriesBucket| b.per_group.iter().any(Option::is_some);
+    let any = |b: &smithling_query::aggregate::SeriesBucket| b.per_group.iter().any(Option::is_some);
     assert!(!any(&sa.buckets[11]) && any(&sb.buckets[11]));
 }

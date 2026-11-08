@@ -7,12 +7,12 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tracedb_model::{RunId, TraceId, Ts};
-use tracedb_storage::{FeedbackKey, FeedbackRow, Metastore, StorageError};
+use smithling_model::{RunId, TraceId, Ts};
+use smithling_storage::{FeedbackKey, FeedbackRow, Metastore, StorageError};
 
 use crate::Storage;
 
-/// One feedback item as stored and answered; fields tracedb doesn't know are kept in `extra`, verbatim.
+/// One feedback item as stored and answered; fields smithling doesn't know are kept in `extra`, verbatim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Feedback {
     pub id: String,

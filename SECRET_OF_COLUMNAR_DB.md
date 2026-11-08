@@ -1,6 +1,6 @@
 # The secret of the columnar database
 
-A 15-minute primer on columnar storage, the idea under tracedb's data files (and under Parquet, DuckDB, ClickHouse,
+A 15-minute primer on columnar storage, the idea under smithling's data files (and under Parquet, DuckDB, ClickHouse,
 Snowflake, BigQuery and SmithDB). It ends with a program you can run on your laptop that shows every idea with real
 numbers.
 
@@ -71,7 +71,7 @@ flowchart TB
 Rule of thumb: if your queries touch **many rows but few columns**, go columnar. If they touch **one row and all
 its columns**, stay with rows.
 
-tracedb's questions ("show me the errors", "p95 latency per tool", "which runs mention `429`") are analytics over
+smithling's questions ("show me the errors", "p95 latency per tool", "which runs mention `429`") are analytics over
 millions of runs where each run has ~40 fields and a megabyte of prompt text. That's why its data files are Parquet.
 
 ---
@@ -99,7 +99,7 @@ A row layout can't do most of this, because neighbouring bytes are different fie
 
 ### Idea 3: skip what can't match (statistics / zone maps)
 
-Columnar files are split into **row groups** (tracedb: ~64k rows each), and each column of each row group is split
+Columnar files are split into **row groups** (smithling: ~64k rows each), and each column of each row group is split
 into **pages**. The file footer records **min and max per row group and per page**:
 
 ```mermaid
@@ -128,12 +128,12 @@ memory.
 ### Idea 5: fetch expensive columns last (late materialization)
 
 Evaluate the filter on cheap columns first (`status`, `start_ms`), get the list of matching row numbers, then read
-the expensive columns (`output`, `inputs`) **only for those rows**. tracedb takes this furthest: payloads live in a
+the expensive columns (`output`, `inputs`) **only for those rows**. smithling takes this furthest: payloads live in a
 separate file and are read only for the rows on screen.
 
 ### The price
 
-| Cost | Why | How tracedb pays it |
+| Cost | Why | How smithling pays it |
 |---|---|---|
 | Writes must be batched | a file is written column by column, then sealed | recent writes live in memory (a *memtable*) and are flushed as whole files |
 | Updates are hard | you can't edit one value inside a compressed column | an update is a new *version*; reads **merge** versions (and, later, compaction rewrites them) |
@@ -227,12 +227,12 @@ AND               0000100000000000  → row 4
 
 **Order matters.** The engine evaluates the cheapest, most selective condition first (here `status`: 5% pass) and
 decodes the next column only where the mask still has 1s. So most of `latency_ms` and `prompt_version` is never
-decoded at all (DataFusion's `pushdown_filters` + `reorder_filters`, both on in tracedb).
+decoded at all (DataFusion's `pushdown_filters` + `reorder_filters`, both on in smithling).
 
 ### ⑤ Late materialization: fetch the big column last
 
 Only now are `run_id` and `output` read, and only the pages that contain a surviving row. ~2,000 matching rows out
-of a million means the 11 MB `output` column is touched in a handful of pages, not in full. In tracedb this step
+of a million means the 11 MB `output` column is touched in a handful of pages, not in full. In smithling this step
 goes one further: `output` lives in a separate payload file, read only when you open a run.
 
 ### What was touched
@@ -254,7 +254,7 @@ measures both.
 |---|---|---|
 | 1. Show me this one (trace / run) | ③ min/max on `trace_id` + bloom filters, ⑤ payload by row | files sorted by trace, so a trace is a few contiguous rows |
 | 2. Narrow it down | ③ statistics, ② encoded compares, ④ AND of masks | the walk above |
-| 3. Find the text | ① projection of the text column; statistics can't help | tracedb adds a per-file **inverted index** (M3) to pick candidate rows first |
+| 3. Find the text | ① projection of the text column; statistics can't help | smithling adds a per-file **inverted index** (M3) to pick candidate rows first |
 | 4. Look inside the JSON | ① one `attrs` column, superset text match, exact check after | promoted values live in one JSON column (see backlog I-1: typed columns) |
 | 5. Think in trees | ③ ④ for the failing steps, then a second pass by `trace_id` for their roots | two scans joined on `trace_id` |
 | 6. Rebuild the conversation | ③ on `thread_id`, sort by time | threads are planned for M4 |
@@ -271,11 +271,11 @@ runs (10 columns, ~5% errors, about 20 runs per second in time order) and stores
 |---|---|
 | **rows, no index** | JSON lines, read start to finish |
 | **rows + 2 indexes** | the same file plus a sparse **time index** (one entry per 1,024 rows, like a clustered B-tree) and a **secondary index on `status`** (one entry per error row), both saved to disk |
-| **columns** | Parquet with tracedb's own settings, queried with **Apache DataFusion** (the engine tracedb uses) |
+| **columns** | Parquet with smithling's own settings, queried with **Apache DataFusion** (the engine smithling uses) |
 
 ```bash
-cargo run --release -p tracedb-tools --example columnar_tour            # 1,000,000 runs
-cargo run --release -p tracedb-tools --example columnar_tour -- 200000  # smaller
+cargo run --release -p smithling-tools --example columnar_tour            # 1,000,000 runs
+cargo run --release -p smithling-tools --example columnar_tour -- 200000  # smaller
 ```
 
 Every answer below is computed all three ways and the three agree. For the columnar side, "what was read" comes from
@@ -295,7 +295,7 @@ let batch = RecordBatch::try_new(schema, vec![
 ])?;
 ```
 
-and writing it with the same settings as tracedb's data files: ~64k-row row groups, page-level statistics, ZSTD.
+and writing it with the same settings as smithling's data files: ~64k-row row groups, page-level statistics, ZSTD.
 
 ### Step 2: storage, and what indexes cost
 
@@ -353,7 +353,7 @@ column. Statistics can't skip anything here (every row group has both `ok` and `
 With a time index the row store also skips 99% of the table, so **this part of the original comparison was unfair**.
 The difference that remains: the row store reads the newest 1% of *rows* (all ten fields, 2.9 MB); the columnar file
 skips 15 of 16 row groups from the footer and reads only `start_ms` from the one left (54 KB). Both depend on the data
-being in time order; tracedb relies on exactly this for its time-scoped lists.
+being in time order; smithling relies on exactly this for its time-scoped lists.
 
 ### Step 5: "average latency per tool" (ideas 1, 4)
 
@@ -410,7 +410,7 @@ This is the case that matters most for traces: **the fields people filter on are
 keys, tool outputs). A row store needs an index per column it might ever be asked about; a columnar file has
 per-page statistics on every column for free and, at worst, reads just the columns the filter names.
 
-One caveat: the tour stores `prompt_version` and `status_code` as their own typed columns. tracedb keeps such
+One caveat: the tour stores `prompt_version` and `status_code` as their own typed columns. smithling keeps such
 values inside one JSON text column; section 8 measures what that costs.
 
 ### Is it fair? Not entirely, and here's what an index costs
@@ -443,21 +443,21 @@ Edit `generate()` in the example and re-run:
    sparse time index breaks the same way: it only works on time-ordered rows.
 2. **Make `status` noisy.** Use 50% errors: the column stops collapsing under RLE, and the status index grows 10×.
 3. **Search the text.** Add a query `filter(col("output").like(lit("%429%")))`: statistics can't help with
-   substrings, so it reads the whole `output` column. That's why tracedb added a per-file text index in M3.
+   substrings, so it reads the whole `output` column. That's why smithling added a per-file text index in M3.
 
 ---
 
-## 7. tracedb, live: one trace spread over files and memory
+## 7. smithling, live: one trace spread over files and memory
 
-The tour above is a single sealed file. tracedb is harder: data keeps arriving, a run's **start and end arrive
+The tour above is a single sealed file. smithling is harder: data keeps arriving, a run's **start and end arrive
 minutes apart**, and a single trace ends up spread over **many Parquet files and the in-memory table** at once. Here
 is a real server answering queries in exactly that state.
 
 ### The setup
 
 ```bash
-tracedb serve --data /tmp/split --port 7099 --memtable 1MB      # tiny memtable: flush constantly
-tracedb seed --traces 300 --no-delay --url http://127.0.0.1:7099 # every start first, then the late ends
+smithling serve --data /tmp/split --port 7099 --memtable 1MB      # tiny memtable: flush constantly
+smithling seed --traces 300 --no-delay --url http://127.0.0.1:7099 # every start first, then the late ends
 curl -s 127.0.0.1:7099/healthz                                   # runs in memory, segments on disk
 ```
 
@@ -529,9 +529,9 @@ These numbers come from a deliberately tiny memtable; real flushes are 64 MB, so
 
 ---
 
-## 8. Inside tracedb: from one file to many, plus memory
+## 8. Inside smithling: from one file to many, plus memory
 
-Section 5 walked one query through one file. tracedb has many files and an in-memory table at the same time, and
+Section 5 walked one query through one file. smithling has many files and an in-memory table at the same time, and
 runs that arrive in pieces. Here is how the same ideas stretch to that, in five short answers.
 
 ### What a segment is
@@ -628,7 +628,7 @@ attrs    = {"metadata.prompt_version": "v7", "outputs.status_code": 429}    ← 
 | leaves | 64 each for `inputs` and `outputs`; arrays are not promoted |
 
 The pairs go into **one JSON text column**, `attrs`, in the core file. A query filters in two steps: `eq` on a string
-is pushed into the scan as a text match on `attrs` (`"metadata.prompt_version":"v7"`, a superset), and tracedb's
+is pushed into the scan as a text match on `attrs` (`"metadata.prompt_version":"v7"`, a superset), and smithling's
 evaluator then checks the typed value exactly. A path that was never promoted doesn't match, and the response says
 so (`not_indexed`). The full-text index is separate: it indexes words of inputs, outputs and errors for `search(…)`.
 
@@ -653,9 +653,9 @@ budget, and every key past a budget still adds a "not indexed" entry (I-6).
 
 ---
 
-## 9. How tracedb uses all this
+## 9. How smithling uses all this
 
-| Idea | In tracedb |
+| Idea | In smithling |
 |---|---|
 | Columns | data files are Parquet: a **core** file (ids, name, status, times, tags, promoted attributes) and a separate **payload** file (inputs, outputs, events) |
 | Read only what you need | lists and filters read only core; payloads only when a run is opened |
@@ -673,7 +673,7 @@ Where to read the code: [segment.rs](crates/storage/src/segment.rs) (writing and
 
 ---
 
-## Appendix A: a tracedb segment, illustrated
+## Appendix A: a smithling segment, illustrated
 
 What one flush leaves on disk, conceptually (not byte for byte). A **segment** is one flush's data for one project:
 four immutable files and one catalog row.

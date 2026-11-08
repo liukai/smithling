@@ -12,11 +12,11 @@ use std::sync::Arc;
 use datafusion::logical_expr::{col, lit};
 use serde::Serialize;
 use serde_json::Value;
-use tracedb_ingest::store::RunStore;
-use tracedb_model::attrs::{Attrs, promote};
-use tracedb_model::{RunId, RunState, Ts};
-use tracedb_storage::StoredRow;
-use tracedb_storage::segment::{FieldStat, INCOMPLETE_PATH, SegmentMeta, StatsBuilder, TOP_VALUES, start_key};
+use smithling_ingest::store::RunStore;
+use smithling_model::attrs::{Attrs, promote};
+use smithling_model::{RunId, RunState, Ts};
+use smithling_storage::StoredRow;
+use smithling_storage::segment::{FieldStat, INCOMPLETE_PATH, SegmentMeta, StatsBuilder, TOP_VALUES, start_key};
 
 use crate::scan::{self, merge_group, read_core_each, versions_by_file};
 use crate::{Query, QueryError, TimeRange};
@@ -138,9 +138,9 @@ impl Kept {
         let mut st = self.state.clone();
         if let Some(j) = &self.json {
             type Maps = (
-                tracedb_model::run::JsonMap,
-                tracedb_model::run::JsonMap,
-                Option<tracedb_model::run::JsonMap>,
+                smithling_model::run::JsonMap,
+                smithling_model::run::JsonMap,
+                Option<smithling_model::run::JsonMap>,
             );
             let (m, e, u): Maps = serde_json::from_str(j).expect("written by Kept::new");
             (st.run.metadata, st.run.extra, st.outputs_usage) = (m, e, u);
@@ -332,7 +332,7 @@ impl Query {
     /// `feedback.<key>` paths (numbers) from the feedback index: runs that have arrived with a score for the
     /// key, in every scope. Keys a filter can't name are left out.
     fn feedback_fields(&self, prefix: &str) -> Vec<FieldInfo> {
-        use tracedb_ingest::FeedbackLookup;
+        use smithling_ingest::FeedbackLookup;
         let fb = self.ingest.feedback();
         let missing: std::collections::HashSet<_> = self.ingest.feedback_runs_missing().into_iter().collect();
         let mut runs: BTreeMap<String, u64> = BTreeMap::new();

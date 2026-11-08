@@ -1,4 +1,4 @@
-# Quickstart: validate tracedb v0
+# Quickstart: validate smithling v0
 
 How to prove each milestone works. Contracts: [http-api](contracts/http-api.md), [filter DSL](contracts/filter-dsl.md),
 [CLI](contracts/cli.md).
@@ -11,14 +11,14 @@ How to prove each milestone works. Contracts: [http-api](contracts/http-api.md),
 ## 1. Build and start
 ```bash
 cargo build --release
-./target/release/tracedb serve --data /tmp/tracedb-demo
+./target/release/smithling serve --data /tmp/smithling-demo
 ```
-Expected: it prints `tracedb listening on http://127.0.0.1:7070   data: /tmp/tracedb-demo`, and the browser shows
+Expected: it prints `smithling listening on http://127.0.0.1:7070   data: /tmp/smithling-demo`, and the browser shows
 the empty runs list with "point an agent here" instructions.
 
 ## 2. M1: see a trace in the browser
 ```bash
-./target/release/tracedb seed --traces 1     # one research-agent trace, sent to localhost:7070
+./target/release/smithling seed --traces 1     # one research-agent trace, sent to localhost:7070
 ```
 Expected: the trace appears in the runs list within 1 s. Opening it shows the tree and waterfall, and clicking a run
 shows its inputs and outputs.
@@ -32,7 +32,7 @@ Expected: the trace streams in live. The root shows `running` until the agent fi
 
 ## 4. The scenario demo (S1–S5; the main done-check)
 ```bash
-./target/release/tracedb demo --data /tmp/tracedb-scenario
+./target/release/smithling demo --data /tmp/smithling-scenario
 ```
 Expected: every check reports PASS, and the command exits with 0.
 
@@ -50,8 +50,8 @@ Then open the browser and repeat the checks by clicking (SC-008).
 
 ## 5. Performance (QR-004/005)
 ```bash
-./target/release/tracedb bench --smoke --check                 # 200k runs: the PR gate
-./target/release/tracedb bench --runs 2000000 --check          # full 2M runs; deferred (roadmap D3-1)
+./target/release/smithling bench --smoke --check                 # 200k runs: the PR gate
+./target/release/smithling bench --runs 2000000 --check          # full 2M runs; deferred (roadmap D3-1)
 ```
 `bench` loads its own data (`--data <dir>` keeps it for reuse).
 Expected: a P50/P99 table within the targets: tree and single run ≤ 50 ms, filter ≤ 100 ms, search ≤ 500 ms,
@@ -59,7 +59,7 @@ thread ≤ 150 ms (from M4), P99 ≤ 5× P50, and ingest ≥ 20k events/s. Idle 
 
 ## 6. Durability (QR-003)
 ```bash
-cargo test -p tracedb --test crash -- --ignored    # 10 kill -9 rounds during ingest
+cargo test -p smithling --test crash -- --ignored    # 10 kill -9 rounds during ingest
 ```
 Expected: 0 acknowledged events missing in every round.
 

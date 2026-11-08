@@ -1,4 +1,4 @@
-//! `tracedb demo`: loads the overnight-eval scenario and checks the M2 and M3 numbers through the real read API
+//! `smithling demo`: loads the overnight-eval scenario and checks the M2 and M3 numbers through the real read API
 //! (contracts/cli.md). Without `--url` it runs its own server on a temporary folder (or `--data`).
 
 use std::io::Write;
@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tracedb_ingest::Limits;
+use smithling_ingest::Limits;
 
 use crate::scenario::{self, Loaded, PROJECT, Scenario};
 use crate::seed::SeedError;
-use tracedb_server::{ServeConfig, app, parse_size};
+use smithling_server::{ServeConfig, app, parse_size};
 
 /// The demo's own server's memtable: small, so a few MB of background load forces the flushes it needs.
 const DEMO_MEMTABLE: u64 = 4 * MB;
@@ -23,7 +23,7 @@ const MB: u64 = 1024 * 1024;
 pub struct DemoArgs {
     #[arg(long, default_value_t = 7)]
     pub seed: u64,
-    /// Load into this running tracedb instead of starting one.
+    /// Load into this running smithling instead of starting one.
     #[arg(long, conflicts_with_all = ["data", "storage", "metastore"])]
     pub url: Option<String>,
     /// Data folder for the demo's own server (default: a temporary folder, removed afterwards).
@@ -129,7 +129,7 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         None => match start(a).await {
             Ok(s) => Some(s),
             Err(e) => {
-                let _ = writeln!(err, "tracedb demo: {}", tracedb_storage::redact(&format!("{e:#}")));
+                let _ = writeln!(err, "smithling demo: {}", smithling_storage::redact(&format!("{e:#}")));
                 return 1;
             }
         },
@@ -144,7 +144,7 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         None => match scenario::memtable_limit(&url).await {
             Ok(limit) => limit.or(a.memtable).unwrap_or(DEMO_MEMTABLE),
             Err(e) => {
-                let _ = writeln!(err, "tracedb demo: {e}");
+                let _ = writeln!(err, "smithling demo: {e}");
                 return 2;
             }
         },
@@ -152,34 +152,34 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
     if own.is_none() && memtable > MAX_URL_MEMTABLE {
         let _ = writeln!(
             err,
-            "tracedb demo: the server's memtable limit is {} MB; the demo would build and send up to three of them, so \
+            "smithling demo: the server's memtable limit is {} MB; the demo would build and send up to three of them, so \
              it stops above {} MB (run `serve` with a smaller --memtable)",
             memtable / MB,
             MAX_URL_MEMTABLE / MB
         );
         return 1;
     }
-    let s = scenario::generate(a.seed, tracedb_model::Ts::now().0, memtable);
+    let s = scenario::generate(a.seed, smithling_model::Ts::now().0, memtable);
     let loaded = match scenario::load(&url, &s).await {
         Ok(l) => l,
         Err(e @ SeedError::Unreachable(..)) => {
-            let _ = writeln!(err, "tracedb demo: {e}");
+            let _ = writeln!(err, "smithling demo: {e}");
             return 2;
         }
         Err(e) => {
-            let _ = writeln!(err, "tracedb demo: {e}");
+            let _ = writeln!(err, "smithling demo: {e}");
             return 1;
         }
     };
     let checks = match checks(&url, a.checks, &s, &loaded).await {
         Ok(c) => c,
         Err(e) => {
-            let _ = writeln!(err, "tracedb demo: {e}");
+            let _ = writeln!(err, "smithling demo: {e}");
             return 1;
         }
     };
     let header = format!(
-        "tracedb demo — {} checks  (seed {}, {} traces, {} flushes)",
+        "smithling demo — {} checks  (seed {}, {} traces, {} flushes)",
         a.checks.title(),
         a.seed,
         thousands(loaded.traces as u64),
@@ -213,7 +213,7 @@ impl Own {
 async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
     let tmp = match &a.data {
         Some(_) => None,
-        None => Some(tempfile::Builder::new().prefix("tracedb-demo-").tempdir()?),
+        None => Some(tempfile::Builder::new().prefix("smithling-demo-").tempdir()?),
     };
     let cfg = ServeConfig {
         data_dir: a
@@ -231,7 +231,7 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
         prices: None,
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
-    let (state, _) = tokio::task::spawn_blocking(move || tracedb_server::open(&cfg)).await??;
+    let (state, _) = tokio::task::spawn_blocking(move || smithling_server::open(&cfg)).await??;
     let addr = listener.local_addr()?;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {

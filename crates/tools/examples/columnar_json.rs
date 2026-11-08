@@ -1,11 +1,11 @@
 //! The same filter on typed columns vs inside one JSON text column (see SECRET_OF_COLUMNAR_DB.md §8).
 //!
-//! tracedb keeps promoted values (`metadata.*`, small `inputs.*` / `outputs.*` leaves) in one JSON text column,
+//! smithling keeps promoted values (`metadata.*`, small `inputs.*` / `outputs.*` leaves) in one JSON text column,
 //! `attrs`. This writes 1,000,000 rows with `prompt_version` and `status_code` both as typed columns and inside such
 //! a JSON column, then runs the same filter both ways.
 //!
 //! ```sh
-//! cargo run --release -p tracedb-tools --example columnar_json
+//! cargo run --release -p smithling-tools --example columnar_json
 //! ```
 
 use std::fs::File;
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         version.push(v);
         code.push(c);
-        // What tracedb's `attrs` column holds for a run: its promoted leaves as JSON text.
+        // What smithling's `attrs` column holds for a run: its promoted leaves as JSON text.
         attrs.push(format!(
             r#"{{"metadata.prompt_version":"{v}","metadata.task_id":"t-{}","metadata.user":"u-{}","outputs.status_code":{c}}}"#,
             i / 200,
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         (
             "inside JSON text (substring)",
-            // tracedb's pushdown does the same: a text match on `"path":value`, then an exact check (pushdown.rs).
+            // smithling's pushdown does the same: a text match on `"path":value`, then an exact check (pushdown.rs).
             col("attrs")
                 .like(lit(r#"%"metadata.prompt_version":"v7"%"#))
                 .and(col("attrs").like(lit(r#"%"outputs.status_code":429%"#))),

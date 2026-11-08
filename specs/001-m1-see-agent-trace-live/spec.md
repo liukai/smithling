@@ -6,10 +6,10 @@
 
 **Status**: Draft
 
-**Input**: User description: "M1 'See agent trace live' for tracedb … write it descriptively: goal + why, end state as 'As a <who>, I can <what>' with general capability first and a labeled Example, work tied to end state, plus the lifecycle of one run through M1. Reference master requirement IDs instead of copying."
+**Input**: User description: "M1 'See agent trace live' for smithling … write it descriptively: goal + why, end state as 'As a <who>, I can <what>' with general capability first and a labeled Example, work tied to end state, plus the lifecycle of one run through M1. Reference master requirement IDs instead of copying."
 
-**Master**: [specs/000-tracedb-master-plan](../000-tracedb-master-plan/spec.md) (requirements of record) ·
-[roadmap](../000-tracedb-master-plan/roadmap.md) (progress). This folder holds the M1 details of record.
+**Master**: [specs/000-smithling-master-plan](../000-smithling-master-plan/spec.md) (requirements of record) ·
+[roadmap](../000-smithling-master-plan/roadmap.md) (progress). This folder holds the M1 details of record.
 
 **Delivers from master**: FR-001 (JSON upload path only), FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-012 (basic:
 newest first, paged, no filters), FR-022 (runs list + trace view), FR-025, FR-027 (list, trace, run); QR-001, QR-002, QR-003.
@@ -18,7 +18,7 @@ newest first, paged, no filters), FR-022 (runs list + trace view), FR-025, FR-02
 
 ## Goal and why
 
-Prove the whole path works end to end, thinly: **agent → tracedb → durable record → browser**.
+Prove the whole path works end to end, thinly: **agent → smithling → durable record → browser**.
 
 - **It unblocks every later phase.** M2 puts disk storage and the query builder under the same API and screens. M3
   adds the remaining upload format and the speed work on top of the same capture path.
@@ -31,7 +31,7 @@ Prove the whole path works end to end, thinly: **agent → tracedb → durable r
 *Capability first; the Example under it is the scenario we use to prove it.*
 
 - As an **agent developer**, I can trace any agent built on the LangSmith SDK (LangChain, LangGraph, or plain
-  instrumented code) into tracedb by changing only its endpoint setting, and see each step in the browser within 1 s.
+  instrumented code) into smithling by changing only its endpoint setting, and see each step in the browser within 1 s.
   Steps still running show as running and update when they finish, however long that takes.
   - *Example*: the research agent from the master scenario, with a 40-minute root step that flips from `running` to `ok`.
 - As an agent developer, I can watch new runs arrive in a list, newest first, without refreshing, and page back
@@ -41,7 +41,7 @@ Prove the whole path works end to end, thinly: **agent → tracedb → durable r
   to read its complete inputs and outputs.
   - *Example*: a 250-step trace; clicking a `fetch_url` step shows its 40 KB response.
 - As an agent developer, I can send a link to any trace or step, and opening it shows the same view.
-- As an agent developer, I can have tracedb crash or be killed at any moment and lose nothing it acknowledged.
+- As an agent developer, I can have smithling crash or be killed at any moment and lose nothing it acknowledged.
   - *Example*: `kill -9` while 200 tasks are uploading, then restart: every acknowledged step is back.
 - As a **test user** without an agent, I can generate realistic traces (deep trees, late-finishing steps, large
   payloads, some errors) and explore them in the browser.
@@ -56,30 +56,30 @@ makes each stage happen.
 
 | # | When | What happens | M1 work |
 |---|---|---|---|
-| 1 | agent starts | The SDK asks tracedb what it supports. tracedb answers "send plain JSON batches". | Capability handshake |
-| 2 | 02:14:07 | The SDK sends the step's **start** (name, inputs, tags, metadata) in a batch. tracedb checks each item on its own, numbers it, and records it durably; only then does it confirm. | Accept SDK uploads; per-item validation; durable log |
+| 1 | agent starts | The SDK asks smithling what it supports. smithling answers "send plain JSON batches". | Capability handshake |
+| 2 | 02:14:07 | The SDK sends the step's **start** (name, inputs, tags, metadata) in a batch. smithling checks each item on its own, numbers it, and records it durably; only then does it confirm. | Accept SDK uploads; per-item validation; durable log |
 | 3 | +0 s | The step is held in memory and appears in the open runs list as `running` within 1 s. | In-memory store; live list |
 | 4 | +5 s | The SDK retries the same batch (a network hiccup). The repeat is recognized and ignored. | Duplicate detection |
-| 5 | 02:14:38 | The **update** arrives: end time, error, outputs. tracedb merges it into the same run (latest value wins), so status becomes `error` and latency 31 s. The open screens update. | Merge rule; live updates |
+| 5 | 02:14:38 | The **update** arrives: end time, error, outputs. smithling merges it into the same run (latest value wins), so status becomes `error` and latency 31 s. The open screens update. | Merge rule; live updates |
 | 6 | 08:00 | The developer opens the trace. The tree and waterfall show every step in order without loading any payloads. Clicking `fetch_url` loads its full input and output. | Trace view; run panel |
-| 7 | anytime | tracedb is killed and restarted. It replays its durable log, and the run is back exactly as before. | Replay on start |
+| 7 | anytime | smithling is killed and restarted. It replays its durable log, and the run is back exactly as before. | Replay on start |
 | 8 | every change | Automated checks re-run the crash test, the recorded-SDK-traffic test and the no-outbound check. | Automated gates |
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Trace an unmodified agent and watch it live (Priority: P1)
 
-An agent developer starts tracedb, sets one endpoint variable for their existing agent, and watches its runs appear and
+An agent developer starts smithling, sets one endpoint variable for their existing agent, and watches its runs appear and
 update in the browser as the agent works.
 
 **Why this priority**: it is the headline capability, and nothing else can be shown without data arriving.
 
-**Independent Test**: start tracedb on an empty data folder, run an unmodified LangGraph example agent with the endpoint
+**Independent Test**: start smithling on an empty data folder, run an unmodified LangGraph example agent with the endpoint
 set, and confirm in the browser that its runs appear within 1 s and update when they finish.
 
 **Acceptance Scenarios**:
 
-1. **Given** tracedb is running, **When** an agent using the LangSmith SDK runs with only its endpoint changed, **Then** every step of its trace appears in the runs list, with no code change and no extra settings.
+1. **Given** smithling is running, **When** an agent using the LangSmith SDK runs with only its endpoint changed, **Then** every step of its trace appears in the runs list, with no code change and no extra settings.
 2. **Given** a step that started 40 minutes ago, **When** its end arrives, **Then** the list and any open trace show its final status, end time and outputs without a manual refresh.
 3. **Given** a step that received several updates, **When** viewed, **Then** it shows one merged state where the latest value of each field wins and missing fields keep earlier values.
 4. **Given** the list is open and new runs arrive, **When** the developer is at the top, **Then** new runs appear at the top; **When** they have scrolled down, **Then** their place is kept and a "new runs" indicator appears.
@@ -109,18 +109,18 @@ before any payload loads, then open one step and read its full payload.
 
 ### User Story 3 - Never lose acknowledged data (Priority: P1)
 
-The developer can rely on everything tracedb confirmed being there after any crash or restart.
+The developer can rely on everything smithling confirmed being there after any crash or restart.
 
 **Why this priority**: a trace store that loses data is not trusted again; durability is cheapest to build in from the start.
 
-**Independent Test**: upload continuously, kill tracedb abruptly at random points, restart, and compare the stored runs
+**Independent Test**: upload continuously, kill smithling abruptly at random points, restart, and compare the stored runs
 with every confirmed upload, over 10 rounds.
 
 **Acceptance Scenarios**:
 
-1. **Given** uploads in progress, **When** tracedb is killed abruptly and restarted, **Then** every confirmed item is present and merged correctly.
+1. **Given** uploads in progress, **When** smithling is killed abruptly and restarted, **Then** every confirmed item is present and merged correctly.
 2. **Given** an upload that was not confirmed before the kill, **When** the SDK retries it after restart, **Then** it is stored once.
-3. **Given** a restart, **When** tracedb comes back, **Then** it is ready to accept uploads and show data within 30 s at the M1 capacity limit (decided 2026-11-05, design §11.4; measured 0.83 s at 500k runs).
+3. **Given** a restart, **When** smithling comes back, **Then** it is ready to accept uploads and show data within 30 s at the M1 capacity limit (decided 2026-11-05, design §11.4; measured 0.83 s at 500k runs).
 
 ---
 
@@ -128,7 +128,7 @@ with every confirmed upload, over 10 rounds.
 
 A test user generates realistic traces and explores them, without writing or running an agent.
 
-**Why this priority**: it lets anyone try tracedb in a minute, and gives UI work realistic data. It is not needed for
+**Why this priority**: it lets anyone try smithling in a minute, and gives UI work realistic data. It is not needed for
 the core demo, which uses a real agent.
 
 **Independent Test**: generate 100 traces, then confirm in the browser that they include deep trees, late-finishing
@@ -136,7 +136,7 @@ steps, errors and large payloads.
 
 **Acceptance Scenarios**:
 
-1. **Given** an empty tracedb, **When** the test user generates N traces, **Then** N traces appear, uploaded the same way an agent would send them.
+1. **Given** an empty smithling, **When** the test user generates N traces, **Then** N traces appear, uploaded the same way an agent would send them.
 2. **Given** generated data, **When** browsed, **Then** it includes depth 3–8, 20–300 steps per trace, about 5% errors, about 10% of steps finishing 30–120 s late, and payloads of 1–50 KB.
 3. **Given** the same generation settings and seed, **When** run twice, **Then** the same shapes are produced.
 
@@ -152,9 +152,9 @@ steps, errors and large payloads.
 - **Huge payload**: a single input or output up to 20 MB is accepted and viewable; larger ones are rejected with a reason.
 - **Agent address instead of a project** (SDK 0.14+): the run is accepted, and its project is `<agent id>/<environment>` from the address.
 - **Unknown fields**: kept rather than dropped; ignored fields (such as attachments) are acknowledged and noted.
-- **Memory limit reached** (M1 keeps data in memory): tracedb refuses new uploads with a clear reason instead of confirming and then losing them.
+- **Memory limit reached** (M1 keeps data in memory): smithling refuses new uploads with a clear reason instead of confirming and then losing them.
 - **Disk full**: uploads are refused with a clear reason; nothing confirmed is lost.
-- **Empty store**: the runs list explains how to point an agent at tracedb.
+- **Empty store**: the runs list explains how to point an agent at smithling.
 - **Agent asks for an unsupported upload format**: the capability answer steers the SDK to plain JSON batches; a request in another format gets a clear "unsupported in this version" reply.
 
 ## Requirements *(mandatory)*
@@ -188,13 +188,13 @@ Each requirement names the master requirement it delivers. The master text is no
 
 ### Measurable Outcomes
 
-- **SC-01**: A developer with an existing LangSmith-instrumented agent sees their first trace in the browser within 5 minutes of downloading tracedb, changing only one setting.
+- **SC-01**: A developer with an existing LangSmith-instrumented agent sees their first trace in the browser within 5 minutes of downloading smithling, changing only one setting.
 - **SC-02**: 99% of confirmed events are visible in the browser within 1 s of confirmation.
 - **SC-03**: A 250-step trace opens with tree and waterfall in under 1 s on the reference laptop.
 - **SC-04**: In 10 of 10 abrupt-kill rounds during upload, zero confirmed events are missing after restart.
 - **SC-05**: Zero outbound network connections during the full M1 demo.
 - **SC-06**: Recorded traffic from the pinned SDK versions replays with 100% of items accepted and runs identical to the recorded expectation.
-- **SC-07**: tracedb sustains at least 5,000 events/s on the reference laptop (M3 raises this to the master's 20,000).
+- **SC-07**: smithling sustains at least 5,000 events/s on the reference laptop (M3 raises this to the master's 20,000).
 
 ## Assumptions
 

@@ -13,7 +13,7 @@ flowchart TB
     H["HTTP routes<br/>routes/ingest.rs · langsmith_map.rs"]
     A["Ingest::accept<br/>validate · take permit"]
     W["writer thread (the only writer)<br/>see Scene 2"]
-    WAL[(".tracedb/wal/*.wal")]
+    WAL[(".smithling/wal/*.wal")]
     ST["RunStore<br/>(in memory)"]
     Q["Query → routes/api.rs"]
     T["routes/tail.rs<br/>SSE, every 100 ms"]
@@ -45,12 +45,12 @@ Four ideas carry the whole system:
 
 ```mermaid
 flowchart TB
-    tracedb["tracedb (binary)<br/>HTTP routes, CLI, seed, embedded UI"]
+    smithling["smithling (binary)<br/>HTTP routes, CLI, seed, embedded UI"]
     query["query<br/>reads, cursor"]
     ingest["ingest<br/>writer, WAL, store, dedup, hub"]
     model["model<br/>types, merge, derive, validate — no I/O"]
-    tracedb --> query
-    tracedb --> ingest
+    smithling --> query
+    smithling --> ingest
     query -->|"only trait Snapshot"| ingest
     ingest --> model
     query --> model
@@ -71,7 +71,7 @@ segments and DataFusion.
 | 5 | [ingest/src/wal.rs](../../crates/ingest/src/wal.rs) | **Critical.** On-disk format, torn tail vs corruption | 20 min |
 | 6 | [ingest/src/lib.rs](../../crates/ingest/src/lib.rs) (`open`, `accept`) | Startup replay, backpressure | 10 min |
 | 7 | [ingest/src/store.rs](../../crates/ingest/src/store.rs) | Indexes, keyset paging | 15 min |
-| 8 | [tracedb/src/routes/tail.rs](../../crates/server/src/routes/tail.rs) | **Critical.** Live fan-out and coalescing | 15 min |
+| 8 | [smithling/src/routes/tail.rs](../../crates/server/src/routes/tail.rs) | **Critical.** Live fan-out and coalescing | 15 min |
 | 9 | [langsmith_map.rs](../../crates/server/src/langsmith_map.rs), [routes/ingest.rs](../../crates/server/src/routes/ingest.rs) | Wire-format translation (skim) | 10 min |
 | 10 | [ui/src/live.ts](../../ui/src/live.ts), `RunsList.tsx` (removed in M2; `git show m1:ui/src/RunsList.tsx`) | How the browser stays in sync | 10 min |
 
@@ -123,7 +123,7 @@ session_name:"research"}]}`.
 
 | Step | Code |
 |---|---|
-| The route is registered | [tracedb/src/lib.rs:42](../../crates/server/src/lib.rs#L39) → `runs_batch` |
+| The route is registered | [smithling/src/lib.rs:42](../../crates/server/src/lib.rs#L39) → `runs_batch` |
 | post and patch items are tagged with an `Op` | [routes/ingest.rs:46-53](../../crates/server/src/routes/ingest.rs#L46) |
 | Each item is translated; a bad item is rejected alone, not the whole batch | [routes/ingest.rs:103-116](../../crates/server/src/routes/ingest.rs#L103) → `incoming()` [langsmith_map.rs:33](../../crates/server/src/langsmith_map.rs#L33) |
 | A hash of the raw body is taken for dedup | [langsmith_map.rs:39](../../crates/server/src/langsmith_map.rs#L39) |
@@ -314,23 +314,23 @@ flowchart TB
 | 429 + Retry-After: 1 | writer queue full | [ingest/src/lib.rs:267-273](../../crates/ingest/src/lib.rs#L267) |
 | 507 | memory budget full and the batch adds a new run | [writer.rs:82-89](../../crates/ingest/src/writer.rs#L82) |
 | 503 + Retry-After: 5 | WAL write or fsync failed | [writer.rs:133-140](../../crates/ingest/src/writer.rs#L133) |
-| 413 / 415 / 501 | body over 50 MB / multipart / feedback | [tracedb/src/lib.rs:55](../../crates/server/src/lib.rs#L52), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
+| 413 / 415 / 501 | body over 50 MB / multipart / feedback | [smithling/src/lib.rs:55](../../crates/server/src/lib.rs#L52), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
 
 The mapping from errors to codes is in [routes/errors.rs:23](../../crates/server/src/routes/errors.rs#L23).
 
 ## 5. Things to try while reading
 
 ```bash
-cargo run -p tracedb-model --example merge_demo     # the merge rule, step by step
-cargo test -p tracedb-model --test merge            # merge rules as tests
-cargo test -p tracedb-ingest --test wal_replay      # torn tail vs corruption
-cargo test -p tracedb --test e2e_tail               # live tail + burst coalescing
-cargo test --release -p tracedb --test crash -- --ignored   # kill -9 harness (slow)
+cargo run -p smithling-model --example merge_demo     # the merge rule, step by step
+cargo test -p smithling-model --test merge            # merge rules as tests
+cargo test -p smithling-ingest --test wal_replay      # torn tail vs corruption
+cargo test -p smithling --test e2e_tail               # live tail + burst coalescing
+cargo test --release -p smithling --test crash -- --ignored   # kill -9 harness (slow)
 ```
 
 The tests are the spec in executable form: [model/tests/merge.rs](../../crates/model/tests/merge.rs),
 [ingest/tests/wal_replay.rs](../../crates/ingest/tests/wal_replay.rs),
-[tracedb/tests/e2e_tail.rs](../../crates/server/tests/e2e_tail.rs).
+[smithling/tests/e2e_tail.rs](../../crates/server/tests/e2e_tail.rs).
 
 ## 6. Known rough edges (found while writing this guide, not fixed)
 

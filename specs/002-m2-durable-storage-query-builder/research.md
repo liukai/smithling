@@ -1,6 +1,6 @@
 # Research: M2 — Durable storage + query builder
 
-Phase 0 decisions for M2. Master decisions ([000 research](../000-tracedb-master-plan/research.md)) still hold; these
+Phase 0 decisions for M2. Master decisions ([000 research](../000-smithling-master-plan/research.md)) still hold; these
 refine them for M2. Format: decision, why, what else was considered. Versions checked against crates.io and the SDK
 source on 2026-11-06.
 
@@ -8,7 +8,7 @@ source on 2026-11-06.
 - **Decision**: `datafusion` **55.2** (default features off; `parquet`, `nested_expressions`, `datetime_expressions`),
   which brings `arrow` / `parquet` **59.3** and `object_store` **0.13.2**. `sqlx` **0.9** (`sqlite`, `postgres`,
   `runtime-tokio`), `ulid` 3, `moka` 0.12 for `Cache`. Resolved in a scratch crate: DataFusion 55.2 → arrow 59.3.2,
-  parquet 59.3.2, object_store 0.13.2. (M2 built no `Cache`, [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3's `Cache` uses moka, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
+  parquet 59.3.2, object_store 0.13.2. (M2 built no `Cache`, [D-013](../000-smithling-master-plan/decisions.md#d-013); M3's `Cache` uses moka, [D-028](../000-smithling-master-plan/decisions.md#d-028).)
 - **Why**: DataFusion 55 is the line `vortex-datafusion` 0.91 supports, and it pins `object_store` 0.13, exactly the
   pin backlog R-4 asked for. Taking arrow/parquet through DataFusion avoids two arrow versions in one binary (latest
   standalone arrow is 60.1).
@@ -52,13 +52,13 @@ source on 2026-11-06.
 - **Considered**: a JSON text column with a JSON UDF (reads big strings for every filter); one column per discovered
   path (schema changes every flush; DataFusion handles it but the catalog and files get messy); the
   `datafusion-functions-json` crate (still parses text per row).
-- **Superseded by [D-012](../000-tracedb-master-plan/decisions.md#d-012):** one JSON text column `attrs`, evaluated by our filter code after the scan (maps get
+- **Superseded by [D-012](../000-smithling-master-plan/decisions.md#d-012):** one JSON text column `attrs`, evaluated by our filter code after the scan (maps get
   no row-group or page pruning anyway). Unpromoted paths don't read payloads: they report `not_indexed`
-  ([D-011](../000-tracedb-master-plan/decisions.md#d-011)).
+  ([D-011](../000-smithling-master-plan/decisions.md#d-011)).
 
 ## M2-R7. Filter language
 - **Decision**: LangSmith's grammar as the canonical text form: `eq neq gt gte lt lte has and or not`, `null`, the
-  `filter` / `trace_filter` / `tree_filter` / `is_root` slots, `latency` in seconds. tracedb adds dotted JSON paths,
+  `filter` / `trace_filter` / `tree_filter` / `is_root` slots, `latency` in seconds. smithling adds dotted JSON paths,
   `in(…)`, and relative times. A hand-written recursive-descent parser in `model` with byte-range errors.
 - **Why**: SDK 0.14.17 still documents this grammar in `Client.list_runs` (backlog R-2 corrected). Agents and scripts
   that already speak it work unchanged. A hand-written parser gives the precise error messages FR-013 asks for.
@@ -72,7 +72,7 @@ source on 2026-11-06.
 - **Why**: constitution's architecture constraint (DataFusion + Arrow); the two custom pieces are the SmithDB-specific
   parts (fresh data, merge-on-read).
 - **Considered**: hand-rolled scan loops (fast to start, no joins, no path to M3 aggregates).
-- **Superseded by [D-017](../000-tracedb-master-plan/decisions.md#d-017):** DataFusion prunes, uses blooms and pushes filters into file scans; merging versions,
+- **Superseded by [D-017](../000-smithling-master-plan/decisions.md#d-017):** DataFusion prunes, uses blooms and pushes filters into file scans; merging versions,
   the exact filter, root / any-run conditions and ordering run in our code on the merged runs
   ([scan.rs](../../crates/query/src/scan.rs), [lib.rs](../../crates/query/src/lib.rs)). No `TableProvider`,
   `fresh_scan`, UDAF or semi-joins were built.
@@ -108,13 +108,13 @@ source on 2026-11-06.
 
 ## M2-R13. UI build outside `cargo build`
 - **Decision**: CI builds the UI as its own job and passes `ui/dist` to the Rust jobs; `build.rs` stops running npm
-  and embeds `ui/dist` when it exists, else a placeholder page. `tracedb serve --ui-dir PATH` (or `TRACEDB_UI_DIR`)
+  and embeds `ui/dist` when it exists, else a placeholder page. `smithling serve --ui-dir PATH` (or `SMITHLING_UI_DIR`)
   serves UI files from disk.
 - **Why**: M1 review: the Rust build shouldn't need Node; UI work shouldn't need a server rebuild. Users still get one
   binary: release builds always embed the UI.
 - **Considered**: committing `ui/dist` (noisy diffs, stale-build risk).
 
-## M2-R14. Scenario generator for `tracedb demo`
+## M2-R14. Scenario generator for `smithling demo`
 - **Decision**: a deterministic generator for the overnight-eval scenario, separate from `seed`, that plants exact
   counts: batch `2026-11-05-a` with 200 root tasks; 14 roots errored; 23 roots ok with at least one errored step;
   `metadata.prompt_version` on 1,840 runs (v6 928, v7 912); `fetch_url` steps with `outputs.status_code = 429`; late

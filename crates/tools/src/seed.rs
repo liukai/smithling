@@ -1,4 +1,4 @@
-//! `tracedb seed`: realistic research-agent traces, sent through `/runs/batch` like an agent would.
+//! `smithling seed`: realistic research-agent traces, sent through `/runs/batch` like an agent would.
 //!
 //! Shapes (spec Story 4): depth 3–8, 20–300 steps per trace, ~5% errors, ~10% of steps finishing
 //! 30–120 s late, payloads 1–50 KB. Shapes are deterministic for a given `--seed`; ids also depend on the
@@ -99,7 +99,7 @@ pub fn generate_before(seed: u64, n: usize, now_us: i64) -> Vec<GenTrace> {
         .flat_map(|(i, t)| t.steps.iter().map(move |s| (i, s)))
         .filter_map(|(i, s)| {
             let end = s.late_patch.as_ref().map_or(&s.post, |(_, p)| p)["end_time"].as_str()?;
-            Some(tracedb_model::Ts::parse(end)?.0 - i as i64 * SPACING_US)
+            Some(smithling_model::Ts::parse(end)?.0 - i as i64 * SPACING_US)
         })
         .max()
         .unwrap_or(0);
@@ -257,7 +257,7 @@ pub(crate) fn merge(into: &mut Value, from: Value) {
 }
 
 pub(crate) fn iso(us: i64) -> String {
-    tracedb_model::Ts(us).to_string()
+    smithling_model::Ts(us).to_string()
 }
 
 pub(crate) fn dotted_ts(us: i64) -> String {
@@ -267,7 +267,7 @@ pub(crate) fn dotted_ts(us: i64) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeedError {
-    #[error("tracedb is not reachable at {0}: {1}")]
+    #[error("smithling is not reachable at {0}: {1}")]
     Unreachable(String, String),
     #[error("upload failed: {0}")]
     Upload(String),
@@ -329,5 +329,5 @@ pub(crate) async fn batch(http: &reqwest::Client, url: &str, body: Value) -> Res
         }
         return Ok(());
     }
-    Err(SeedError::Upload("tracedb stayed busy for 60 s".into()))
+    Err(SeedError::Upload("smithling stayed busy for 60 s".into()))
 }

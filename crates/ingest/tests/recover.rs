@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use tracedb_ingest::{Ingest, IngestConfig, Limits};
+use smithling_ingest::{Ingest, IngestConfig, Limits};
 
 fn cfg(dir: &Path, dedup_window_us: i64) -> IngestConfig {
     let mut cfg = IngestConfig::new(dir);
@@ -20,7 +20,7 @@ fn cfg(dir: &Path, dedup_window_us: i64) -> IngestConfig {
     cfg
 }
 
-fn item(i: u128) -> tracedb_ingest::Incoming {
+fn item(i: u128) -> smithling_ingest::Incoming {
     let mut f = root(uuid(i), "2026-11-05T02:00:00Z", "r");
     f.inputs = Some(serde_json::json!({"q": "x".repeat(400)}));
     post(f)
@@ -34,7 +34,7 @@ async fn upload(ingest: &Ingest, from: u128, n: u128) {
                     assert_eq!(r.accepted, 1);
                     break;
                 }
-                Err(tracedb_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(smithling_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
                 Err(e) => panic!("{e}"),
             }
         }
@@ -85,7 +85,7 @@ fn wal_seqs(dir: &Path) -> Vec<u64> {
         std::fs::copy(e.path(), copy.path().join(e.file_name())).unwrap();
     }
     let mut seqs = Vec::new();
-    tracedb_ingest::wal::Wal::open(copy.path(), 1 << 20, |ev| seqs.push(ev.event_seq)).unwrap();
+    smithling_ingest::wal::Wal::open(copy.path(), 1 << 20, |ev| seqs.push(ev.event_seq)).unwrap();
     seqs
 }
 
@@ -223,7 +223,7 @@ async fn the_multi_version_set_is_rebuilt_from_needs_merge_rows() {
         // Updates for runs that are only in files: their new versions are flushed with `needs_merge`.
         for i in 1..=3 {
             let mut end = root(uuid(i), "2026-11-05T02:00:00Z", "r");
-            end.end_time = tracedb_model::Ts::parse("2026-11-05T02:05:00Z");
+            end.end_time = smithling_model::Ts::parse("2026-11-05T02:05:00Z");
             ingest.accept(vec![patch(end)]).await.unwrap();
         }
         wait_all_flushed(&ingest).await;
@@ -327,7 +327,7 @@ async fn a_second_process_on_the_same_folder_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (first, _) = Ingest::open(cfg(dir.path(), 0)).unwrap();
     let err = Ingest::open(cfg(dir.path(), 0)).err().expect("second open must fail");
-    assert!(matches!(err, tracedb_ingest::OpenError::Locked(_)), "{err}");
+    assert!(matches!(err, smithling_ingest::OpenError::Locked(_)), "{err}");
     drop(first);
     Ingest::open(cfg(dir.path(), 0)).expect("free again once the first is gone");
 }

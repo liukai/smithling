@@ -1,7 +1,7 @@
 //! `--ui-dir`: UI files come from a folder instead of the embedded copy (M2-FR-24).
 
-use tracedb_ingest::{Ingest, IngestConfig};
-use tracedb_server::{AppState, app};
+use smithling_ingest::{Ingest, IngestConfig};
+use smithling_server::{AppState, app};
 
 #[tokio::test]
 async fn serves_files_and_index_fallback_from_the_folder() {

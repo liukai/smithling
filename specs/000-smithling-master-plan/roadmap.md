@@ -1,11 +1,11 @@
-# tracedb master roadmap (plan of record)
+# smithling master roadmap (plan of record)
 
-> This is the master plan and progress tracker for tracedb. Every other doc points here for status and decisions.
+> This is the master plan and progress tracker for smithling. Every other doc points here for status and decisions.
 > Changes of direction (what we decided before, and why it changed) are logged in [decisions.md](decisions.md).
 > Requirements: [spec.md](spec.md) · Architecture and phases: [plan.md](plan.md) · Design: [design-notes.md](design-notes.md) ·
 > Principles: [constitution](../../.specify/memory/constitution.md). Each phase is its own spec (`specs/00N-…`); this file rolls them up.
 
-**Goal / Done when**: `tracedb demo` passes every scenario check and the speed targets (spec.md SC-001–SC-010) on a laptop
+**Goal / Done when**: `smithling demo` passes every scenario check and the speed targets (spec.md SC-001–SC-010) on a laptop
 with ~2M runs, and an unmodified LangGraph agent traces into it.
 
 **Scope**: spec.md Stories 1–7 and 9–12. Not in scope: backlog B1 (delete/retention), Vortex, OTLP. (The custom search index left this list when M3 built it, D-026; the cloud split left it as M5, D-036.)
@@ -24,7 +24,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05: **Ingestion, query and compaction are separate services** with explicit interfaces, in one process (design-notes §2.1).
 - 2026-11-05: **Hot-data cache stays in memory locally**, behind a `Cache` interface. *(Today `Cache` is a concrete struct in storage, not a trait: [D-013](decisions.md#d-013), [D-028](decisions.md#d-028).)*
 - 2026-11-05: **UI querying is Scuba/Honeycomb-style** (spec.md FR-029–032).
-- 2026-11-05: **Each phase is its own spec**. `000-tracedb-master-plan` is the master (requirements, architecture, roadmap), with no code tasks. Phase specs are numbered from 001.
+- 2026-11-05: **Each phase is its own spec**. `000-smithling-master-plan` is the master (requirements, architecture, roadmap), with no code tasks. Phase specs are numbered from 001.
 - 2026-11-05: **Phase details live in the phase folder.** Any new change to M1 goes into `specs/001-m1-see-agent-trace-live/`; this roadmap only links to it and tracks status.
 - 2026-11-05: **LangSmith JSON ingest is in M1** (`/info`, `/runs/batch`, `POST/PATCH /runs`), so the M1 demo uses a real agent. Multipart stays in M3.
 - 2026-11-05: **Merge rule**: the latest value wins for every field; nothing appends (research R1, because the SDK re-sends full values).
@@ -37,7 +37,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06: **Diagrams read top to bottom**: prefer vertical (`flowchart TB`) charts with short labels and few nodes per chart; no wide horizontal chains.
 - 2026-11-06: **Mark the delta in every phase spec and starter guide**: 🟢 New (green fill), 🟠 Improved / revised (orange), ⚪ Existing (grey) on end-state lines, lifecycle rows, stories, requirements, success criteria and every diagram node, plus a "Delta at a glance" section near the top of the spec.
 - 2026-11-06 (M3 scope): **multipart + zstd** accepted and advertised in `/info` (SDK defaults work unchanged; [D-030](decisions.md#d-030)); **attachment parts rejected per part** with a named reason (stored later; [D-031](decisions.md#d-031)); **text index without word positions** (staged SmithDB difference, revisit if text-search p99 misses); **M2 = built, passed locally** (browser and cloud checks open), M3 branches from the 002 tip.
-- 2026-11-06 (M3 plan): **memory defaults may change** to meet 200 MB idle (64 MB memtable measured as heap, 2 min flush age, 16 B dedup fingerprints with a cap, 32 MB cache, jemalloc; all configurable; heap-profile spike first); **feedback check added to `tracedb demo`**; **CI bench**: 200k smoke on PRs, full 2M on main + nightly; plan.md defaults accepted (four changed decisions to be logged, `feedback.<key>` = mean score, batch a now−30 h / b now−6 h, stats line `by <key> | <metrics>`, background index of M2 files, report rather than loosen a missed 1 s grouped target).
+- 2026-11-06 (M3 plan): **memory defaults may change** to meet 200 MB idle (64 MB memtable measured as heap, 2 min flush age, 16 B dedup fingerprints with a cap, 32 MB cache, jemalloc; all configurable; heap-profile spike first); **feedback check added to `smithling demo`**; **CI bench**: 200k smoke on PRs, full 2M on main + nightly; plan.md defaults accepted (four changed decisions to be logged, `feedback.<key>` = mean score, batch a now−30 h / b now−6 h, stats line `by <key> | <metrics>`, background index of M2 files, report rather than loosen a missed 1 s grouped target).
 - 2026-11-06 (standing approval): **implement all of M3** (specs/003 tasks), on branch `003-m3-search-aggregates-speed` cut from the 002 tip after the last M2 commit; M3 spec/plan/tasks committed as the branch's first commit; one local commit per plan unit, same per-unit quality bar as M2, no pushes; the last unit rewrites `specs/003-…/starter-guide.md` for the built code, colour-coded.
 - 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
@@ -49,28 +49,28 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-07: **Text search is benchmarked as three rows** (rare phrase, common word, search + filter), each held to median ≤ 500 ms and p99 ≤ 5× its own median, as M2 measured them ([D-032](decisions.md#d-032)).
 - 2026-11-07: **The full 2M-run quiet bench (T109) moves to the backlog** (D3-1): not practical on this machine; the bench code, its three search rows and the waived idle row ship in M3, and the nightly CI job runs the full bench once a remote exists ([D-032](decisions.md#d-032)).
 - 2026-11-07 (priority): **A working end-to-end version comes first; performance is not a concern for now.** Speed targets, the 2M bench and memory (D3-1, D3-2, the parked branch `wip/m3-bench-three-rows`, *superseded by `ea6af31`, which merged the three-row bench*) are deferred, not dropped. **Re-evaluate before M4 starts** (or once the end-to-end version is in use): resume or re-scope D3-1/D3-2 then ([D-033](decisions.md#d-033)).
-- 2026-11-08: **The `tracedb` crate is split** into `tracedb-server` (production surface), `tracedb-tools` (seed, demo, bench, CLI query) and the `tracedb` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `tracedb_server::testkit` ([D-034](decisions.md#d-034)).
+- 2026-11-08: **The `smithling` crate is split** into `smithling-server` (production surface), `smithling-tools` (seed, demo, bench, CLI query) and the `smithling` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `smithling_server::testkit` ([D-034](decisions.md#d-034)).
 - 2026-11-08: **Interfaces stay as built** ([D-035](decisions.md#d-035)): only `TextIndex` is a trait; catalog, cache and segment format stay concrete types until a second implementation is needed. Don't add traits yet.
 - 2026-11-08: **New milestone M5 — Disaggregated trace database**, after M4 compaction and before the agents milestone (now **M6**): ingestion, read workers and compaction as separate services over shared storage and catalog, one binary ([D-036](decisions.md#d-036); spec `specs/005-m5-disaggregated-trace-db/`, folder `004-` reserved for M4). Spec and plan only for now; no implementation.
 
-**STATE as of 2026-11-08** (verified on branch `refactor/split-tracedb-crates` at `4acfcdf` by `cargo test --workspace`
-303 passed / 0 failed / 7 ignored, clippy `-D warnings`, `cargo fmt --check` and `tracedb demo --seed 7` 10/10; `npm test` and the
-crash harness were last run at `22ca7c8` on 2026-11-07 and not re-run):
-M2 is **built, passed locally**. M3 is **built, passed locally** and on `master` (`ac69c4e`; 14 plan units; 123/128 tasks (T121, T124 unchecked to re-evaluate later)):
+**STATE as of 2026-11-08** (verified on `main` at the rename commit, D-037, by `cargo test --workspace` 303 passed /
+0 failed / 7 ignored (includes the `smithling demo` checks), clippy `-D warnings`, `cargo fmt --check`, `npm test` 248 passed;
+the `--ignored` crash harness was last run at `22ca7c8` on 2026-11-07 and runs in CI):
+M2 is **built, passed locally**. M3 is **built, passed locally** (merged into `main`; 14 plan units; 123/128 tasks (T121, T124 unchecked to re-evaluate later)):
 text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates, time series, distribution and batch
 comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive estimates; SDK multipart + zstd on
-defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI; `tracedb demo` checks M2 + M3 (also with
-`--url`, D3-8 closed); `tracedb bench` built with three text-search rows. The crate split ([D-034](decisions.md#d-034))
+defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI; `smithling demo` checks M2 + M3 (also with
+`--url`, D3-8 closed); `smithling bench` built with three text-search rows. The crate split ([D-034](decisions.md#d-034))
 is on `refactor/split-tracedb-crates` (`028bd38`, `4acfcdf`), **not yet merged to `master`**. **Deferred by decision**
 (end-to-end first, performance later, [D-033](decisions.md#d-033)): the full 2M bench (D3-1) and idle memory ≤ 200 MB
 (D3-2). **Not verified here**: cloud CI (D3-3), the UI in a real browser (D3-4), no-outbound under strace (D3-5).
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) Merge `refactor/split-tracedb-crates` into `master`. The CI workflow now triggers on `master` as well as
-`main` (`.github/workflows/ci.yml`, `branches: [main, master]`). 2) Push to a remote so CI (incl. cloud and the nightly
-bench) runs; the user looks at the UI in a browser (D3-4). 3) **Before M4: re-evaluate the deferred performance work**
-(D3-1, D3-2; only the 2M run itself remains), then plan M4.
+**NEXT**: 1) Push `main` and the tags `m1`–`m3` to [github.com/liukai/smithling](https://github.com/liukai/smithling)
+and watch the first CI run; a green `cloud` job and no-outbound check close D3-3 and D3-5. 2) The user reviews the M5
+draft (questions Q1–Q3 in its spec) and looks at the UI in a browser (D3-4). 3) **Before M4: re-evaluate the deferred
+performance work** (D3-1, D3-2), then plan M4.
 
 ## Progress
 
@@ -97,14 +97,14 @@ the UI a real data source from day one (UI first).
 
 **End state** (capability first; *Example* = the scenario we prove it with):
 - As an **agent developer**, I can trace any agent built on the LangSmith SDK (LangChain, LangGraph, or plain
-  `@traceable` code) into tracedb by changing only its endpoint setting, and see each step in the browser within 1 s.
+  `@traceable` code) into smithling by changing only its endpoint setting, and see each step in the browser within 1 s.
   Steps still running show as `running` and update when they finish, however long that takes.
   - *Example*: the research agent from the scenario, with a 40-minute root that flips from `running` to `ok`.
 - As an agent developer, I can open any trace and see its full tree and timing waterfall at once, then click any step to read its complete inputs and outputs.
   - *Example*: a 250-step trace; clicking `fetch_url` shows its 40 KB response.
 - As a **test user** without an agent, I can generate realistic traces (deep trees, late-finishing steps, large payloads) and explore them in the browser.
-  - *Example*: `tracedb seed --traces 100`.
-- As an agent developer, I can have tracedb crash or be killed at any moment and lose nothing it acknowledged.
+  - *Example*: `smithling seed --traces 100`.
+- As an agent developer, I can have smithling crash or be killed at any moment and lose nothing it acknowledged.
 - As a **maintainer**, I can trust all of the above stays true: CI runs the crash test (10 kill -9 rounds), the SDK contract test and the zero-outbound check on every PR.
 
 **Work needed → how it gets us there**:
@@ -115,7 +115,7 @@ the UI a real data source from day one (UI first).
 | Ingest: `/v1/events`, `/info` (advertises no multipart), `/runs/batch`, `POST/PATCH /runs` | Direct: an unmodified agent traces in (the headline demo) |
 | Query: trace tree, single run, root-runs list with cursor, live tail | Direct: the runs list and trace view have data. Indirect: M2 swaps in DataFusion behind the same API |
 | UI: runs list (live), trace tree + waterfall, run panel, empty state, shareable URLs | Direct: the demo is in the browser |
-| `tracedb seed` (deep trees, late ends, big payloads) | Direct: the 250-run demo. Indirect: realistic data for UI work and M2 scale tests |
+| `smithling seed` (deep trees, late ends, big payloads) | Direct: the 250-run demo. Indirect: realistic data for UI work and M2 scale tests |
 | Crash test, no-outbound check, SDK contract test in CI | Durable: keeps the end state true after M1 |
 
 **Delivers**: FR-001 (JSON path), FR-002–007, FR-012 (basic), FR-022 (list + trace), FR-025, FR-027 (partial); QR-001, QR-002, QR-003.
@@ -133,7 +133,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 - As an agent developer, I can see every field in my data with its most common values and counts, and filter on a value with one click.
   - *Example*: `prompt_version: v7 (912), v6 (928)` → click `v7`.
 - As an agent developer, I can share any view as a link that reopens exactly the same query.
-- As an agent developer, I can restart tracedb and keep all my data, at laptop scale (millions of runs).
+- As an agent developer, I can restart smithling and keep all my data, at laptop scale (millions of runs).
 - As a **test user**, I can generate the overnight-eval scenario and reproduce the example numbers above.
 - As a **maintainer**, I can trust queries return correct results on local disk and on cloud storage: CI checks the scenario numbers on both.
 
@@ -145,7 +145,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 | Filter DSL + tree-aware filters + cursor paging | Direct: the 14 and 23 counts |
 | Field catalog | Direct: field browser and value suggestions |
 | UI query builder (panel ↔ text, chips), field browser, Samples + Table views, click-to-filter | Direct: triage with no syntax (SC-010) |
-| `tracedb demo` (first checks); MinIO + Postgres CI job | Durable: the counts and cloud portability stay true |
+| `smithling demo` (first checks); MinIO + Postgres CI job | Durable: the counts and cloud portability stay true |
 
 **Delivers**: FR-008–010, FR-012, FR-013, FR-026, FR-029–031 (partial); QR-007.
 
@@ -173,7 +173,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 | Payload split + late materialization; progressive query; cache | Direct: speed targets for tree, run and filter |
 | Text search behind `TextIndex` (planned as bloom + scan; built as a per-segment text index, D-026) | Direct: the 31 hits |
 | Aggregations; Time series + Distribution views; comparison overlay | Direct: 14% / 31 s / $4.12, and batch a vs b |
-| `tracedb bench` | Durable: the speed claims are measured, not asserted |
+| `smithling bench` | Durable: the speed claims are measured, not asserted |
 
 **Delivers**: FR-001 (full), FR-011, FR-014, FR-015, FR-023, FR-024, FR-031; QR-004, QR-005, QR-006, QR-008.
 
@@ -212,7 +212,7 @@ is already cloud-ready (constitution V), so the work is between processes.
 
 **End state** (capability first; *Example* = the scenario we prove it with):
 - As an **operator**, I can run ingest, read and compaction services from the one binary against shared storage and catalog, and get the same answers as one-process mode.
-  - *Example*: 1 writer, 2 readers, 1 compactor; `tracedb demo` passes with identical counts.
+  - *Example*: 1 writer, 2 readers, 1 compactor; `smithling demo` passes with identical counts.
 - As an operator, I can add or restart read workers without touching ingestion; each replays the durable log and reports its lag.
 - As an **agent developer**, I see acknowledged steps on any reader within seconds, never twice and never missing across flushes and compactions.
 - As an operator, I can hand a shard to a new writer; the old one is fenced out.
@@ -247,7 +247,7 @@ is already cloud-ready (constitution V), so the work is between processes.
 | Work | Contribution |
 |---|---|
 | Claude Code importer (idempotent) | Direct: Variant B |
-| Agent tools (outline, error path, sliced payloads, clusters, diff, annotate) + `tracedb mcp` | Direct: Story 11 |
+| Agent tools (outline, error path, sliced payloads, clusters, diff, annotate) + `smithling mcp` | Direct: Story 11 |
 
 **Delivers**: FR-021, FR-028.
 
@@ -302,14 +302,14 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 
 | # | Item | Why not done | Done when |
 |---|---|---|---|
-| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Bench code done (three text-search rows; idle row reported "waived (M4)", merged in `ea6af31`); `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
+| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Bench code done (three text-search rows; idle row reported "waived (M4)", merged in `ea6af31`); `smithling bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
 | D3-2 | **Idle memory ≤ 200 MB** (QR-006 (M3 SC-05), T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
 | D3-3 | **Cloud CI job's first real run** (T122, and the S3/Postgres storage tests T121), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
 | D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
 | D3-5 | **No-outbound check under strace** (T124) | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
 | D3-6 | Chart metric and chosen group kept in the URL | Not in the URL contract | A shared link reopens the same chart metric and group |
 | D3-7 | Aggregate over a search stops early / cancels | The whole search runs before any estimate; closing the stream doesn't stop it | Estimate within 1 s with a search filter; cancel frees the scan |
-| D3-8 | ~~`tracedb demo --url` against a default `serve` fails "checks across memtable and files"~~ **Done 2026-11-07**: `/healthz` reports `memtable_limit_bytes`; `demo --url` sizes its load from it (10/10 against a default serve in ~5 s) | — | — |
+| D3-8 | ~~`smithling demo --url` against a default `serve` fails "checks across memtable and files"~~ **Done 2026-11-07**: `/healthz` reports `memtable_limit_bytes`; `demo --url` sizes its load from it (10/10 against a default serve in ~5 s) | — | — |
 | D3-9 | Unreadable text-index sidecar is reported and rebuilt | A *missing* sidecar is counted in `/healthz` (`unindexed_segments`) and backfilled; an *unreadable* one only logs a warning and the file is scanned on every search, never counted or rewritten (`ingest/src/backfill.rs`, `query/src/search.rs`) | An unreadable sidecar shows in `/healthz` and backfill writes a new one |
 | D3-10 | *(low priority)* Drop the special case that keeps the newest flush's `dedup_keys` row | The row was kept so start could rebuild the multi-version set from saved run ids; D-025 removed that use, so the row is now kept for no reason (one small row, harmless). Kept as is for now, with a code comment | The cleanup deletes every row older than the dedup window, with a test; or the comment is updated if a new use appears |
 
@@ -321,7 +321,7 @@ picked up.
 | # | Idea | Today | Pick up when |
 |---|---|---|---|
 | I-1 | **Shred hot JSON paths into typed columns** (the Parquet Variant / ClickHouse JSON idea): the most-used `metadata.*` and output keys get their own column; the rest stays in `attrs` | promoted leaves live in one JSON text column (D-012); filters on them read the whole column (5.5 MB vs 211 KB for typed columns in a 1M-row test) and statistics can't skip anything | metadata filters show up as slow in the bench, or data moves to S3 |
-| I-2 | **Cost-based condition order**: use the catalog's field stats (counts, top values) to run the most selective condition first, in the scan and in the evaluator | DataFusion orders pushed conditions by column size (`reorder_filters`); tracedb's evaluator keeps the written order (except `search` last) | filters with several conditions miss their targets |
+| I-2 | **Cost-based condition order**: use the catalog's field stats (counts, top values) to run the most selective condition first, in the scan and in the evaluator | DataFusion orders pushed conditions by column size (`reorder_filters`); smithling's evaluator keeps the written order (except `search` last) | filters with several conditions miss their targets |
 | I-3 | **Reorder run, root and tree conditions by cost** | fixed order: run filter, then root, then tree (in candidate chunks) | tree queries dominate latency |
 | I-4 | **Query-result cache** for repeated identical queries (dashboards, live views re-asking) | the cache holds file pieces (footers, pages), not answers | repeated queries show in profiles |
 | I-5 | **Benchmark Vortex against Parquet** on the 2M-run data (SmithDB's file format; `vortex-datafusion` 0.93 fits DataFusion 55 / `object_store` 0.13) | Parquet only; no format trait (D-035) | run lookup or payload reads miss targets in D3-1 |
@@ -369,5 +369,5 @@ Not designed yet; a checklist of basic ideas to start from.
 - 2026-11-05: M1 implemented (PR1–PR7). Found by recording real SDK traffic: `/info` must send every `batch_ingest_config` key (the SDK reads them without defaults), and an invalid `LANGSMITH_AGENT_ENVIRONMENT` makes the SDK skip tracing silently.
 - 2026-11-06: M2 built and passed locally (83/83 tasks; `c7595c6`).
 - 2026-11-07: M3 built and passed locally (125/128 tasks; `001d878`); three-row text-search bench, idle row waived, and `demo --url` fix (D3-8) merged to `master` at `ac69c4e`.
-- 2026-11-08: `crates/tracedb` split into `crates/server`, `crates/tools` and the binary (`028bd38`, D-034); newcomer starter guide and README layout (`4acfcdf`). On branch `refactor/split-tracedb-crates`, not yet on `master`.
+- 2026-11-08: `crates/smithling` split into `crates/server`, `crates/tools` and the binary (`028bd38`, D-034); newcomer starter guide and README layout (`4acfcdf`). On branch `refactor/split-tracedb-crates`, not yet on `master`.
 - 2026-11-08: M5 Disaggregated trace database inserted after M4; agents milestone renumbered M6 (D-036). Spec drafted in `specs/005-m5-disaggregated-trace-db/`.

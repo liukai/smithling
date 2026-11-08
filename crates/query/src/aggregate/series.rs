@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use tracedb_model::Ts;
-use tracedb_model::agg::{Bucket, Metric};
-use tracedb_model::filter::{CmpOp, Expr, Field, Path, TimeAt, Value, print};
+use smithling_model::Ts;
+use smithling_model::agg::{Bucket, Metric};
+use smithling_model::filter::{CmpOp, Expr, Field, Path, TimeAt, Value, print};
 
 use super::accum::{Acc, BIN_LOWER_MS, BINS, Cells, Keep};
 use super::{Accs, KeyVal};

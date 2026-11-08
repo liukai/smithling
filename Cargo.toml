@@ -7,7 +7,7 @@ members = [
     "crates/query",
     "crates/server",
     "crates/tools",
-    "crates/tracedb",
+    "crates/smithling",
 ]
 
 [workspace.package]
@@ -17,12 +17,12 @@ rust-version = "1.99"
 license = "MIT"
 
 [workspace.dependencies]
-tracedb-model = { path = "crates/model" }
-tracedb-storage = { path = "crates/storage" }
-tracedb-ingest = { path = "crates/ingest" }
-tracedb-query = { path = "crates/query" }
-tracedb-server = { path = "crates/server" }
-tracedb-tools = { path = "crates/tools" }
+smithling-model = { path = "crates/model" }
+smithling-storage = { path = "crates/storage" }
+smithling-ingest = { path = "crates/ingest" }
+smithling-query = { path = "crates/query" }
+smithling-server = { path = "crates/server" }
+smithling-tools = { path = "crates/tools" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }

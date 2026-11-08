@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 const LIMIT_MB: f64 = 200.0;
 
 fn serve(dir: &Path) -> (Child, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["serve", "--data", dir.to_str().unwrap(), "--port", "0"])
         .args(["--flush-age", "30s", "--dedup-window", "30s"])
         .stdout(Stdio::piped())
@@ -140,7 +140,7 @@ async fn idle_footprint_stays_under_200_mb() {
     let dir = tempfile::tempdir().unwrap();
     let (mut child, url) = serve(dir.path());
     let loaded = Instant::now();
-    let seed = Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let seed = Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["seed", "--traces", "3000", "--no-delay", "--url", &url])
         .output()
         .unwrap();

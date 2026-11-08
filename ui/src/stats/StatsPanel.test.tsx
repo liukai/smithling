@@ -250,7 +250,7 @@ describe("progressive stats", () => {
     act(() => metric("p99 latency").click());
     await waitFor(() => expect(streams.length).toBe(2));
     act(() => { for (const fn of streams[1].listeners.get("error") ?? []) fn(new Event("error") as MessageEvent); });
-    await waitFor(() => screen.getByText("Lost the connection to tracedb; change the query to retry."));
+    await waitFor(() => screen.getByText("Lost the connection to smithling; change the query to retry."));
     expect(streams[1].closed).toBe(true);
   });
 });

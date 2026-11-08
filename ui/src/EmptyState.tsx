@@ -3,13 +3,13 @@ export function EmptyState() {
   return (
     <div className="empty">
       <h2>No traces yet</h2>
-      <p>Point any agent built on the LangSmith SDK at tracedb. Only the endpoint changes; no code changes:</p>
+      <p>Point any agent built on the LangSmith SDK at smithling. Only the endpoint changes; no code changes:</p>
       <pre>{`export LANGSMITH_TRACING=true
 export LANGSMITH_ENDPOINT=${origin}
-export LANGSMITH_API_KEY=local   # any value; tracedb doesn't check it
+export LANGSMITH_API_KEY=local   # any value; smithling doesn't check it
 python your_agent.py`}</pre>
       <p>
-        No agent at hand? Generate realistic traces with <code>tracedb seed --traces 100</code>.
+        No agent at hand? Generate realistic traces with <code>smithling seed --traces 100</code>.
       </p>
     </div>
   );

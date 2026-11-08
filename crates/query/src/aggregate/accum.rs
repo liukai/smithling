@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use serde::Serialize;
-use tracedb_model::Status;
-use tracedb_model::agg::{Metric, Pct, SumOf};
-use tracedb_model::cost::Cost;
+use smithling_model::Status;
+use smithling_model::agg::{Metric, Pct, SumOf};
+use smithling_model::cost::Cost;
 
 /// Latency values kept per query before percentiles fall back to the histogram.
 pub const VALUE_CAP: usize = 4_000_000;

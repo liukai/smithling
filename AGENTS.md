@@ -1,7 +1,7 @@
 # Notes for coding agents
 
 Start with [STARTER_GUIDE.md](STARTER_GUIDE.md) (architecture, milestones) and the
-[roadmap](specs/000-tracedb-master-plan/roadmap.md) (status, decisions, next steps). Each milestone has its own folder
+[roadmap](specs/000-smithling-master-plan/roadmap.md) (status, decisions, next steps). Each milestone has its own folder
 in `specs/` with a spec, design, tasks and a code starter guide.
 
 ## Before committing
@@ -21,7 +21,7 @@ pull request that changes code, UI or specs without touching CHANGELOG.md (`scri
 | When | Do |
 |---|---|
 | a change someone would look up later (behavior, defaults, a new command or view, a deferred item) | one line under **Unreleased** in CHANGELOG.md, with its decision ID if any |
-| an earlier decision changes | a new row in [decisions.md](specs/000-tracedb-master-plan/decisions.md) and a line in the roadmap's Decisions list; link it from the changelog |
+| an earlier decision changes | a new row in [decisions.md](specs/000-smithling-master-plan/decisions.md) and a line in the roadmap's Decisions list; link it from the changelog |
 | a milestone closes | rename **Unreleased** to `## Mn: <name> (<date>, tag mn)`, start a new **Unreleased**, tag the closing commit `mn`, update the roadmap's STATE and Progress |
 
 ## Never commit

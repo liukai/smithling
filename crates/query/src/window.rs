@@ -3,7 +3,7 @@
 //! `dotted_order`) always fall in the same window, and every run in a later window sorts after every run in
 //! an earlier one.
 
-use tracedb_storage::segment::SegmentMeta;
+use smithling_storage::segment::SegmentMeta;
 
 /// Estimated rows in the first window; each next one is four times larger.
 pub const FIRST_WINDOW_ROWS: usize = 20_000;

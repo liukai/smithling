@@ -72,14 +72,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: crash, restart and throughput tests (slow)
-        run: cargo test --release -p tracedb --test crash --test restart --test throughput -- --ignored
+        run: cargo test --release -p smithling --test crash --test restart --test throughput -- --ignored
       - name: demo checks (local storage)
-        run: cargo run --release -p tracedb -- demo --seed 7
+        run: cargo run --release -p smithling -- demo --seed 7
       - name: no outbound connections
-        run: sudo apt-get install -y strace && cargo build --release -p tracedb && scripts/no-outbound.sh target/release/tracedb
+        run: sudo apt-get install -y strace && cargo build --release -p smithling && scripts/no-outbound.sh target/release/smithling
       - name: runs in a clean container (no Node, Rust or database)
         run: |
-          docker run -d --name tdb --network host -v "$PWD/target/release/tracedb:/usr/local/bin/tracedb:ro" ubuntu:24.04 tracedb serve --data /tmp/d --port 7171
+          docker run -d --name tdb --network host -v "$PWD/target/release/smithling:/usr/local/bin/smithling:ro" ubuntu:24.04 smithling serve --data /tmp/d --port 7171
           for i in $(seq 50); do curl -sf localhost:7171/healthz && break; sleep 0.2; done
           curl -sf localhost:7171/healthz
           curl -sf localhost:7171/ | grep -q '<div id="root">'
@@ -93,9 +93,9 @@ jobs:
     env:
       AWS_ENDPOINT: http://127.0.0.1:9000
       AWS_REGION: us-east-1
-      TRACEDB_TEST_S3_URL: s3://tracedb/test
-      TRACEDB_TEST_PG_URL: postgres://tracedb@127.0.0.1:5432/tracedb
-      TRACEDB_TEST_REQUIRE_CLOUD: "1"
+      SMITHLING_TEST_S3_URL: s3://smithling/test
+      SMITHLING_TEST_PG_URL: postgres://smithling@127.0.0.1:5432/smithling
+      SMITHLING_TEST_REQUIRE_CLOUD: "1"
     steps:
       - uses: actions/checkout@v4
       # Names the path of any duplicate key (a second `run:` slipped into a step once) before the slow steps.
@@ -135,27 +135,27 @@ jobs:
           docker compose -f ci/cloud.yml run --rm bucket
       - name: storage trait tests (S3, Postgres; incl. sidecar range reads, catalog v2, feedback table)
         shell: bash
-        run: cargo test -p tracedb-storage --test traits
+        run: cargo test -p smithling-storage --test traits
       - name: demo checks, M2 + M3 (local storage, then S3 + Postgres)
         shell: bash
         run: |
-          cargo run --release -p tracedb -- demo --seed 7 | tee demo-local.txt
-          cargo run --release -p tracedb -- demo --seed 7 --storage s3://tracedb/ci --metastore "$TRACEDB_TEST_PG_URL" | tee demo-cloud.txt
+          cargo run --release -p smithling -- demo --seed 7 | tee demo-local.txt
+          cargo run --release -p smithling -- demo --seed 7 --storage s3://smithling/ci --metastore "$SMITHLING_TEST_PG_URL" | tee demo-cloud.txt
       - name: same demo table as local storage
         shell: bash
         run: |
-          table() { grep -v '^tracedb demo' "$1" | sed -E 's/ +[0-9]+ ms$//'; }
+          table() { grep -v '^smithling demo' "$1" | sed -E 's/ +[0-9]+ ms$//'; }
           diff <(table demo-local.txt) <(table demo-cloud.txt)
       - name: sidecars in the bucket, feedback in Postgres
         shell: bash
         run: |
           docker compose -f ci/cloud.yml run --rm -T --entrypoint /bin/sh bucket -c \
-            'mc alias set local http://minio:9000 "$MC_ACCESS_KEY" "$MC_SECRET_KEY" >/dev/null && mc ls -r local/tracedb/ci/' \
-            | grep 'fts\.post$' >/dev/null || { echo "no text index sidecars under s3://tracedb/ci"; exit 1; }
-          n=$(docker compose -f ci/cloud.yml exec -T postgres psql -U tracedb -d tracedb -tAc 'SELECT count(*) FROM feedback')
+            'mc alias set local http://minio:9000 "$MC_ACCESS_KEY" "$MC_SECRET_KEY" >/dev/null && mc ls -r local/smithling/ci/' \
+            | grep 'fts\.post$' >/dev/null || { echo "no text index sidecars under s3://smithling/ci"; exit 1; }
+          n=$(docker compose -f ci/cloud.yml exec -T postgres psql -U smithling -d smithling -tAc 'SELECT count(*) FROM feedback')
           test "$n" = 2 || { echo "feedback rows in Postgres: $n, expected 2"; exit 1; }
       - name: crash harness (S3 + Postgres; incl. after_fts_put)
-        run: cargo test --release -p tracedb --test crash -- --ignored --nocapture
+        run: cargo test --release -p smithling --test crash -- --ignored --nocapture
       - name: container logs
         if: failure()
         run: docker compose -f ci/cloud.yml logs --no-color minio postgres
@@ -174,15 +174,15 @@ jobs:
         with:
           toolchain: "1.99"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p tracedb
+      - run: cargo build --release -p smithling
       - name: bench, 200k runs
         shell: bash
-        run: ./target/release/tracedb bench --smoke --check --json bench.json 2>&1 | tee bench.txt
+        run: ./target/release/smithling bench --smoke --check --json bench.json 2>&1 | tee bench.txt
       - name: table in the job summary
         if: always()
         shell: bash
         run: |
-          { echo '### tracedb bench --smoke'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### smithling bench --smoke'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -205,15 +205,15 @@ jobs:
         with:
           toolchain: "1.99"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p tracedb
+      - run: cargo build --release -p smithling
       - name: bench, 2M runs
         shell: bash
-        run: ./target/release/tracedb bench --runs 2000000 --check --json bench.json 2>&1 | tee bench.txt
+        run: ./target/release/smithling bench --runs 2000000 --check --json bench.json 2>&1 | tee bench.txt
       - name: table in the job summary
         if: always()
         shell: bash
         run: |
-          { echo '### tracedb bench --runs 2000000'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### smithling bench --runs 2000000'; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

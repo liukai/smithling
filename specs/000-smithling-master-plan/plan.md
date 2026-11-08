@@ -1,18 +1,18 @@
-# Master Plan: tracedb — architecture and phases
+# Master Plan: smithling — architecture and phases
 
-> **MASTER PLAN.** This folder (000) is the tracedb master: requirements of record, architecture and roadmap. It has
+> **MASTER PLAN.** This folder (000) is the smithling master: requirements of record, architecture and roadmap. It has
 > no code tasks. Each phase is its own spec folder (`specs/001-…`, `specs/002-…`) that delivers requirement IDs from
 > here. Phase details live in the phase folder; this folder links to it. Progress: [roadmap.md](roadmap.md).
 
-**Branch**: `000-tracedb-master-plan` | **Date**: 2026-11-05 | **Spec**: [spec.md](spec.md)
+**Branch**: `000-smithling-master-plan` | **Date**: 2026-11-05 | **Spec**: [spec.md](spec.md)
 
 **Progress and decisions**: [roadmap.md](roadmap.md) (plan of record) · **Decision changes**: [decisions.md](decisions.md).
 
-**Input**: Feature specification from `specs/000-tracedb-master-plan/spec.md`. Design input: [design-notes.md](design-notes.md).
+**Input**: Feature specification from `specs/000-smithling-master-plan/spec.md`. Design input: [design-notes.md](design-notes.md).
 
 ## Summary
 
-One Rust binary, `tracedb serve`, that accepts LangSmith SDK traffic unchanged, stores runs SmithDB-style (WAL →
+One Rust binary, `smithling serve`, that accepts LangSmith SDK traffic unchanged, stores runs SmithDB-style (WAL →
 memtable → immutable columnar segments + small metastore → tiered compaction), answers the seven trace workloads through
 DataFusion, and serves an embedded browser UI from day one. Three services (ingest, query, compaction) run in one process
 behind explicit interfaces. Five storage interfaces (`ObjectStore`, `Metastore`, `SegmentFormat`, `TextIndex`, `Cache`)
@@ -32,10 +32,10 @@ tests), serde_json, uuid, ulid, roaring, moka, rust-embed, clap. UI: React + Vit
 *As built*: no `roaring` (no delete vectors yet) and no uPlot (charts are hand-written, `ui/src/stats/chart.tsx`); `build.rs`
 embeds `ui/dist` if present instead of running Vite ([D-007](decisions.md#d-007)).
 
-**Storage**: `./.tracedb/`: WAL files, Parquet segments (core + payload split) on `object_store` (0.13 line, design-notes §12) local FS, SQLite metastore.
+**Storage**: `./.smithling/`: WAL files, Parquet segments (core + payload split) on `object_store` (0.13 line, design-notes §12) local FS, SQLite metastore.
 
 **Testing**: `cargo test` (unit + integration), contract tests replaying recorded LangSmith SDK traffic, scenario demo
-(`tracedb demo`) asserting spec numbers, crash test (kill -9 loop) and `tracedb bench` in CI.
+(`smithling demo`) asserting spec numbers, crash test (kill -9 loop) and `smithling bench` in CI.
 
 **Target Platform**: macOS and Linux laptops (x86_64, aarch64). Reference: 8+ cores, 16+ GB RAM, SSD.
 
@@ -56,12 +56,12 @@ All unknowns resolved in [research.md](research.md); no NEEDS CLARIFICATION rema
 
 | Principle | Check | Pre-design | Post-design |
 |---|---|---|---|
-| I. Rust, one binary | Rust workspace → one `tracedb` binary; UI embedded; SQLite in-process | PASS | PASS |
+| I. Rust, one binary | Rust workspace → one `smithling` binary; UI embedded; SQLite in-process | PASS | PASS |
 | II. SmithDB is the reference | Every component mapped (design-notes §2, §2.1); differences listed below with reasons, each behind an interface | PASS | PASS |
 | III. Local and private | No outbound calls; localhost default; all state under `--data` dir; UI assets embedded (no CDN) | PASS | PASS |
 | IV. UI first | Each phase below ships its UI view; M1 demo is in the browser | PASS | PASS |
 | V. Cloud-portable storage | All I/O via `ObjectStore` + `Metastore`; segments immutable; MinIO + Postgres CI job | PASS | PASS |
-| VI. Done is measured | `tracedb demo` asserts scenario numbers; `bench` P50/P99; crash test in CI | PASS | PASS |
+| VI. Done is measured | `smithling demo` asserts scenario numbers; `bench` P50/P99; crash test in CI | PASS | PASS |
 
 Recorded differences from SmithDB (Principle II):
 
@@ -78,7 +78,7 @@ Recorded differences from SmithDB (Principle II):
 ### Documentation (this feature)
 
 ```text
-specs/000-tracedb-master-plan/   # master: no tasks.md
+specs/000-smithling-master-plan/   # master: no tasks.md
 ├── spec.md · primer.md · design-notes.md
 ├── plan.md              # this file
 ├── research.md          # Phase 0
@@ -96,9 +96,9 @@ crates/
 ├── storage/      # Store (object_store), Metastore, Parquet segments, TextIndex (fts.rs), Cache
 ├── ingest/       # Ingest service: WAL, memtable, flush, dedup, feedback
 ├── query/        # Query service: filters, merge-on-read, progressive query, search, aggregates
-├── server/       # tracedb-server: axum router (LangSmith compat + native API), routes, UI serving; testkit
-├── tools/        # tracedb-tools: seed, scenario, CLI query, demo, bench
-└── tracedb/      # binary: CLI; default `tools` feature adds seed/query/demo/bench
+├── server/       # smithling-server: axum router (LangSmith compat + native API), routes, UI serving; testkit
+├── tools/        # smithling-tools: seed, scenario, CLI query, demo, bench
+└── smithling/      # binary: CLI; default `tools` feature adds seed/query/demo/bench
 ui/               # React + Vite SPA; `ui/dist` embedded by build.rs if present (D-007)
 tests/fixtures/   # recorded LangSmith SDK traffic (golden files), filter golden file
 ```
@@ -106,9 +106,9 @@ Compaction (planned as `compact/`) is M4 and not built; there is no `compact` cr
 
 **Structure Decision**: one crate per service plus shared `model` and `storage` crates. Crate boundaries enforce the
 service separation (ingest/query/compact may only depend on `model` + `storage` and on each other's traits), while the
-`tracedb` binary wires all three into one process. The existing `src/main.rs` scaffold moves into `crates/tracedb`.
-Since 2026-11-08 the server lives in `tracedb-server` and the demo/bench/CLI tooling in `tracedb-tools`;
-`cargo build -p tracedb --no-default-features` builds a serve-only binary ([D-034](decisions.md#d-034)).
+`smithling` binary wires all three into one process. The existing `src/main.rs` scaffold moves into `crates/smithling`.
+Since 2026-11-08 the server lives in `smithling-server` and the demo/bench/CLI tooling in `smithling-tools`;
+`cargo build -p smithling --no-default-features` builds a serve-only binary ([D-034](decisions.md#d-034)).
 
 ## Delivery Phases (the major plan)
 
@@ -117,10 +117,10 @@ Each phase ends with a browser demo and its automated checks. Status of record: 
 | Phase | Delivers (stories) | Demo / exit check |
 |---|---|---|
 | **M1 See agent trace live** | Native + LangSmith JSON ingest (`/info`, `/runs/batch`, `POST/PATCH /runs`), WAL + memtable, trace tree from memory; UI shell: runs list (live), trace tree + waterfall, run panel (S1 partial, S2) | Send a trace, watch it appear, open its tree. Crash test green. |
-| **M2 Durable storage + filtering** | Flush to segments, metastore, DataFusion scans with pruning, merge-on-read, filter DSL, cursor paging, field catalog; UI **query builder** (panel ↔ text, chips), field browser with suggestions, Samples + Table views, click-to-filter, shareable URLs (S3) | `tracedb seed` → 14 failing roots and 23 quiet failures found in the browser |
-| **M3 Core demo** | LangSmith `/runs/multipart` + feedback parts; payload split + late materialization; progressive query; text search (per-segment index, D-026; planned as scan + bloom); stats; Time series + Distribution views with comparison overlay; `bench` (S1, S4, S5) | `tracedb demo` passes steps 1–9 + QR-004/005 timings; unmodified LangGraph agent traces in. *As run*: demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
+| **M2 Durable storage + filtering** | Flush to segments, metastore, DataFusion scans with pruning, merge-on-read, filter DSL, cursor paging, field catalog; UI **query builder** (panel ↔ text, chips), field browser with suggestions, Samples + Table views, click-to-filter, shareable URLs (S3) | `smithling seed` → 14 failing roots and 23 quiet failures found in the browser |
+| **M3 Core demo** | LangSmith `/runs/multipart` + feedback parts; payload split + late materialization; progressive query; text search (per-segment index, D-026; planned as scan + bloom); stats; Time series + Distribution views with comparison overlay; `bench` (S1, S4, S5) | `smithling demo` passes steps 1–9 + QR-004/005 timings; unmodified LangGraph agent traces in. *As run*: demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | **M4 Follow-through** | Compaction tiers; threads; export; feedback write from the UI; find-what-stands-out (S6, S7, S9, S12) | demo steps 10, 11, 13 pass; late `end` correct before and after compaction |
-| **M5 Disaggregated trace database** | Ingest, read workers and compaction as separate services over shared storage and catalog: per-shard durable log, coverage, leases, fencing; cluster page ([spec](../005-m5-disaggregated-trace-db/spec.md), D-036) | `tracedb demo` passes against 1 writer + 2 readers + 1 compactor with identical counts; crash points green |
+| **M5 Disaggregated trace database** | Ingest, read workers and compaction as separate services over shared storage and catalog: per-shard durable log, coverage, leases, fencing; cluster page ([spec](../005-m5-disaggregated-trace-db/spec.md), D-036) | `smithling demo` passes against 1 writer + 2 readers + 1 compactor with identical counts; crash points green |
 | **M6 Zero-instrumentation + agents** | Claude Code importer; agent tools: outline, error path, sliced payloads, clusters, diff, annotate (S10, S11) | agent names the 429 cause with 31 cited runs |
 | **Backlog** | Delete + retention (B1), Vortex `SegmentFormat`, ~~custom `TextIndex`~~ (built in M3, D-026), OTLP ingest | — |
 

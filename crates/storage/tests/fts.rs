@@ -23,9 +23,9 @@ use object_store::{
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use tracedb_storage::fts::{self, Fts, TextField, TextIndex, TextRow};
-use tracedb_storage::segment::{self, SegmentMeta};
-use tracedb_storage::{StorageError, Store};
+use smithling_storage::fts::{self, Fts, TextField, TextIndex, TextRow};
+use smithling_storage::segment::{self, SegmentMeta};
+use smithling_storage::{StorageError, Store};
 
 #[derive(Clone, Debug, Default)]
 struct Reads {
@@ -182,7 +182,7 @@ fn naive(rows: &[Row], words: &[&str], field: TextField) -> Vec<u32> {
             match v {
                 Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
                 Value::Object(o) => o.values().for_each(|x| walk(x, out)),
-                s => out.extend(tracedb_model::text::scalar_tokens(s)),
+                s => out.extend(smithling_model::text::scalar_tokens(s)),
             }
         }
         let mut out = BTreeSet::new();
@@ -198,7 +198,7 @@ fn naive(rows: &[Row], words: &[&str], field: TextField) -> Vec<u32> {
                 TextField::Error => r
                     .error
                     .as_deref()
-                    .map(|e| tracedb_model::text::tokens(e).into_iter().collect())
+                    .map(|e| smithling_model::text::tokens(e).into_iter().collect())
                     .unwrap_or_default(),
             };
             words.iter().all(|w| have.contains(&w.to_lowercase()))
@@ -260,7 +260,7 @@ async fn dictionary_has_one_sorted_row_per_term_and_side() {
     let get = |t: &str, f: u8| dict.iter().find(|r| r.0 == t && r.1 == f).map(|r| r.2);
     // Leaves of inputs / outputs, numbers and booleans as text; error as a whole.
     assert_eq!(get("https", 0), Some(1));
-    for w in tracedb_model::text::tokens("https://api.example.com/v1") {
+    for w in smithling_model::text::tokens("https://api.example.com/v1") {
         assert_eq!(get(&w, 0), Some(1), "{w}: the tokenizer's words");
     }
     assert_eq!(get("3", 0), Some(1));
@@ -565,8 +565,8 @@ async fn a_lookup_without_a_sidecar_is_an_error() {
 /// is the version's `payload_row`.
 #[tokio::test]
 async fn segment_files_carry_a_sidecar_whose_rows_are_payload_rows() {
-    use tracedb_model::attrs::promote;
-    use tracedb_model::{Op, RunEvent, RunFields, Source, Ts, merge};
+    use smithling_model::attrs::promote;
+    use smithling_model::{Op, RunEvent, RunFields, Source, Ts, merge};
     let versions: Vec<segment::Version> = (0..50u128)
         .map(|n| {
             let id = uuid::Uuid::from_u128(0x4000_8000_0000_0000_0000 | (n * 7919 % 50));

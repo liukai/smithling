@@ -1,14 +1,14 @@
 //! `POST /api/aggregate` (contracts/http-api.md): groups and metrics or a stats line, errors that name the
 //! problem, the planted scenario's figures, and a damaged file skipped rather than a 500.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::time::{Duration, Instant};
 
 use common::*;
 use serde_json::{Value, json};
-use tracedb_model::Ts;
-use tracedb_tools::scenario::{self, generate, load};
+use smithling_model::Ts;
+use smithling_tools::scenario::{self, generate, load};
 
 async fn aggregate(server: &Server, body: Value) -> (u16, Value) {
     let r = reqwest::Client::new()

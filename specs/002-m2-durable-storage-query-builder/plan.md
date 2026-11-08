@@ -2,7 +2,7 @@
 
 **Branch**: `002-m2-durable-storage-query-builder` | **Date**: 2026-11-06 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md) | **Appendix A**: [starter guide](starter-guide.md) | **Status**: Built (M2 closed at `c7595c6`)
 
-**Input**: Feature specification from `specs/002-m2-durable-storage-query-builder/spec.md`. Master: [000 plan](../000-tracedb-master-plan/plan.md). Builds on: [M1 plan](../001-m1-see-agent-trace-live/plan.md).
+**Input**: Feature specification from `specs/002-m2-durable-storage-query-builder/spec.md`. Master: [000 plan](../000-smithling-master-plan/plan.md). Builds on: [M1 plan](../001-m1-see-agent-trace-live/plan.md).
 
 ## Summary
 
@@ -11,9 +11,9 @@ flusher writes it as immutable Parquet files (small filter columns and large pay
 registers them in a SQLite/Postgres metastore, and only then trims the WAL. Queries pin a file set, prune by project,
 time and key bloom filters, union the fresh memtables, merge the few multi-version runs, and evaluate LangSmith-style
 filters, including conditions on a run's root and on any run in its trace, through DataFusion (as built, DataFusion
-prunes and pre-filters; merge, filter and trace conditions run in our code, [D-017](../000-tracedb-master-plan/decisions.md#d-017)). The UI gets a
+prunes and pre-filters; merge, filter and trace conditions run in our code, [D-017](../000-smithling-master-plan/decisions.md#d-017)). The UI gets a
 Scuba-style query panel that is the same AST as the filter text, a field browser fed by flush-time stats, Samples and
-Table views, and live views for any query. `tracedb demo` asserts the scenario numbers on local and cloud-style storage.
+Table views, and live views for any query. `smithling demo` asserts the scenario numbers on local and cloud-style storage.
 Design: [design.md](design.md). How it all flows, as pseudo-code: [Appendix A](starter-guide.md).
 
 ## End-state map: where you see each requirement
@@ -30,7 +30,7 @@ refer to [quickstart.md](quickstart.md).
 | M2-FR-03 | As an agent developer, I can put conditions on the run, its root and any run in its trace | *Any run in trace* row (step 2.2) | 23 quiet failures | `demo` check; semi-join tests |
 | M2-FR-04 | As an agent developer, I can page newest first with no gaps or repeats while data arrives | scroll the 23 with page size 10 while `seed` runs | 23 distinct rows, newest first | cursor property test |
 | M2-FR-05 | As an agent developer, I get told exactly where my filter is wrong | *Text* → `staus` (step 2.4) | underline + "did you mean status" | parser golden tests |
-| M2-FR-06 | As a script or agent, I can use LangSmith filter text unchanged | `tracedb query 'and(…)'` | same rows as the panel | grammar tests from SDK docstring examples |
+| M2-FR-06 | As a script or agent, I can use LangSmith filter text unchanged | `smithling query 'and(…)'` | same rows as the panel | grammar tests from SDK docstring examples |
 | M2-FR-07 | As an agent developer, I can switch panel ⇄ text and keep the same query | *Text ⇄ Panel* toggle | identical chips after a round trip | UI round-trip test; print/parse property test |
 | M2-FR-08 | As an agent developer, I can click any value to filter, and negate/disable/remove chips | rows, badges, table cells, field browser | chip added; results update | UI component tests |
 | M2-FR-09 | As an agent developer, I can see every field with types and top values | field browser | `v6 (928)`, `v7 (912)` | `demo` check; field-stats tests |
@@ -45,7 +45,7 @@ refer to [quickstart.md](quickstart.md).
 | M2-FR-18 | As an agent developer, bursts slow my agent down instead of losing traces | `slowdown` test (step 4) | 429s, nothing lost, memory under cap | slowdown test |
 | M2-FR-19 | As a maintainer, I can switch to object storage + hosted DB by config | step 7 | same demo table | cloud CI job |
 | M2-FR-20 | As an M1 user, I can open my old data folder | start M2 on an M1 folder | same runs, then files after the first flush | migration test with an M1 fixture folder |
-| M2-FR-21 | As a test user, I can reproduce the scenario numbers | `tracedb demo` (step 1) | all checks ✓, exit 0 | CI |
+| M2-FR-21 | As a test user, I can reproduce the scenario numbers | `smithling demo` (step 1) | all checks ✓, exit 0 | CI |
 | M2-FR-22 | As a maintainer, I can trust the checks run on both storages | CI | local + cloud jobs green | CI workflow |
 | M2-FR-23 | As an SDK, I get the same answer when I retry a rejected item | ingest test | rejected twice with the same reason | writer test |
 | M2-FR-24 | As a maintainer, I can work on the UI without rebuilding the server | `serve --ui-dir ui/dist` (step 8) | edited UI after a reload | route test |
@@ -57,7 +57,7 @@ refer to [quickstart.md](quickstart.md).
 | Req | As a…, I can… | Where you see it | What you should see | Automated check |
 |---|---|---|---|---|
 | SC-03 | As an agent developer, queries feel interactive at 2M runs | `stats.ms` in responses; bench | filter p50 ≤ 500 ms; trace/run p50 ≤ 200 ms; suggestions p50 ≤ 500 ms | M2 bench (release CI) |
-| SC-04 | As an agent developer, tracedb stays light | `/healthz`; `du -sh .tracedb` | memory under limit; disk ≤ raw JSON | bench report |
+| SC-04 | As an agent developer, smithling stays light | `/healthz`; `du -sh .smithling` | memory under limit; disk ≤ raw JSON | bench report |
 | SC-05 | As an agent developer, nothing confirmed is lost | crash harness | 10/10 rounds, incl. flush kills | CI |
 | SC-06 | As an agent developer, restarts are quick | restart test | ≤ 10 s at 2M runs | release CI |
 | SC-07 | As an agent developer, uploads don't stall during flushes | throughput test | ≥ 5k events/s; p99 ≤ 1 s (M3 raised the test to 20k events/s while querying) | release CI |
@@ -78,7 +78,7 @@ Virtual stays).
 SQLite (`<data>/meta.sqlite`) or Postgres.
 
 **Testing**: `cargo test` (unit, proptest: merge-on-read, filter print/parse, cursor); crash harness with flush kill
-points; SDK contract fixtures (unchanged); `tracedb demo` checks; M2 bench; cloud CI job with MinIO + Postgres
+points; SDK contract fixtures (unchanged); `smithling demo` checks; M2 bench; cloud CI job with MinIO + Postgres
 containers; UI component tests (vitest).
 
 **Target Platform**: macOS and Linux laptops; CI on Linux.
@@ -102,11 +102,11 @@ No NEEDS CLARIFICATION remain. Five design questions with proposals are in desig
 | Principle | M2 check | Pre | Post |
 |---|---|---|---|
 | I. Rust, one binary | still one binary; SQLite in-process; UI embedded in release builds (dev builds may serve a placeholder or `--ui-dir`) | PASS | PASS |
-| II. SmithDB is the reference | immutable segments, metastore, merge-on-read, fresh data from memtables, late materialization, pruning (design §10). Differences: Parquet (b), SQLite (a), one process (a), memory cache (a; not built in M2, [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3, [D-028](../000-tracedb-master-plan/decisions.md#d-028)), no compaction/progressive/text index yet (c, staged to M3/M4 in the roadmap). All behind `SegmentFormat`, `Metastore`, `Cache`, service traits | PASS | PASS |
+| II. SmithDB is the reference | immutable segments, metastore, merge-on-read, fresh data from memtables, late materialization, pruning (design §10). Differences: Parquet (b), SQLite (a), one process (a), memory cache (a; not built in M2, [D-013](../000-smithling-master-plan/decisions.md#d-013); M3, [D-028](../000-smithling-master-plan/decisions.md#d-028)), no compaction/progressive/text index yet (c, staged to M3/M4 in the roadmap). All behind `SegmentFormat`, `Metastore`, `Cache`, service traits | PASS | PASS |
 | III. Local and private | local mode makes no outbound connections; data under `--data` (WAL, files, metastore); the cloud job talks only to its own containers | PASS | PASS |
 | IV. UI first | query panel, field browser, Samples/Table, live views ship with the API; CLI `query`/`demo` are equivalents | PASS | PASS |
 | V. Cloud-portable storage | all file and catalog access via `ObjectStore` + `Metastore`; write-once objects; same tests on MinIO + Postgres | PASS | PASS |
-| VI. Done is measured | `tracedb demo` asserts 14/23/top values; bench reports P50/P99; crash test extended to flush kill points, in CI | PASS | PASS |
+| VI. Done is measured | `smithling demo` asserts 14/23/top values; bench reports P50/P99; crash test extended to flush kill points, in CI | PASS | PASS |
 
 Architecture constraint "query execution builds on DataFusion and Arrow": met from M2 on (M1 had no DataFusion).
 
@@ -141,11 +141,11 @@ crates/
 │                   #   writer.rs: identity check before WAL, freeze, 429; wal.rs: replay_from, trim
 ├── query/          # + plan.rs (AST → DataFusion), provider.rs (Version + fresh TableProvider),
 │                   #   merge.rs (merge_versions UDAF), fields.rs, tail.rs (moved from routes)
-└── tracedb/        # routes: api.rs (+ /api/query, /api/fields), tail.rs (SSE framing only), ui.rs (--ui-dir);
+└── smithling/        # routes: api.rs (+ /api/query, /api/fields), tail.rs (SSE framing only), ui.rs (--ui-dir);
                     # demo.rs + scenario.rs (overnight-eval generator); main.rs (storage flags, demo, query)
 ```
 
-As built (M2 at `c7595c6`; paths as after the crate split, which moved `crates/tracedb` into three crates):
+As built (M2 at `c7595c6`; paths as after the crate split, which moved `crates/smithling` into three crates):
 
 ```text
 crates/
@@ -156,9 +156,9 @@ crates/
 │                   #   multi-version set in lib.rs (Ingest::multi_version); writer.rs, wal.rs
 ├── query/          # + scan.rs (pin, read_core, versions_of, merge_group), pushdown.rs, window.rs (D-021),
 │                   #   cursor.rs, fields.rs, tail.rs; select / trace / run in lib.rs (D-017: no plan/provider/UDAF)
-├── server/         # tracedb-server: lib.rs, routes/{api,ingest,tail,ui,errors}.rs, langsmith_map.rs, build.rs
-├── tools/          # tracedb-tools: seed.rs, scenario.rs, demo.rs, cli_query.rs (M3 adds bench.rs)
-└── tracedb/        # the binary: main.rs; tests that start it (crash, restart, throughput, demo, …)
+├── server/         # smithling-server: lib.rs, routes/{api,ingest,tail,ui,errors}.rs, langsmith_map.rs, build.rs
+├── tools/          # smithling-tools: seed.rs, scenario.rs, demo.rs, cli_query.rs (M3 adds bench.rs)
+└── smithling/        # the binary: main.rs; tests that start it (crash, restart, throughput, demo, …)
 ```
 
 M3 adds `storage/src/{cache,fts}.rs`, `ingest/src/{flushed,feedback,backfill}.rs`, `query/src/{search.rs,aggregate/}`;
@@ -180,13 +180,13 @@ them in step.
 | 5 | `ingest`: active/frozen memtables, flusher (write → register → trim), field stats, `429` slowdown | As an agent developer, I can upload past the old memory limit; `/healthz` shows segments |
 | 6 | `ingest::recover` + crash harness kill points in flush; M1-folder migration | As a maintainer, I can run 10/10 crash rounds with flush kills and restart ≤ 10 s |
 | 7 | `query`: provider over Version + fresh, prune, split, `merge_versions`, filters, cursor; `/api/query`; trace/run lookups over files | As an agent developer, I can `curl /api/query` and get 14 and 23; merge-on-read property test green |
-| 8 | Tree filters (semi-joins), field catalog endpoints, `tracedb query` | As an agent developer, I can find quiet failures and list fields from the API and CLI |
+| 8 | Tree filters (semi-joins), field catalog endpoints, `smithling query` | As an agent developer, I can find quiet failures and list fields from the API and CLI |
 | 9 | `query::tail` (re-query changed traces, `left`), SSE framing only in routes | As an agent developer, I can keep any query live |
 | 10 | UI: query panel ⇄ text, chips, field browser, click-to-filter, Samples/Table, URL state, M1 link translation | As an agent developer, I can triage the scenario by clicking |
-| 11 | `tracedb demo` + scenario generator; cloud CI job; M2 bench; quickstart verified | As a test user, I can run `tracedb demo`; as a maintainer, CI runs it on both storages |
+| 11 | `smithling demo` + scenario generator; cloud CI job; M2 bench; quickstart verified | As a test user, I can run `smithling demo`; as a maintainer, CI runs it on both storages |
 | 12 | **Code starter guide**: rewrite [starter-guide.md](starter-guide.md) from pre-code to a guide for reading the built M2 code, as M1's: reading order, every scene mapped to real functions with links and line numbers, vertical diagrams, rough edges found while writing it | As a new reader, I can follow one run through the M2 code (flush, recovery, merge-on-read, planner, live views, panel ⇄ text) with line-level links |
 
-As built, PR 3 has no `Cache` ([D-013](../000-tracedb-master-plan/decisions.md#d-013)), PR 7 no provider or UDAF and PR 8 no semi-joins ([D-017](../000-tracedb-master-plan/decisions.md#d-017)).
+As built, PR 3 has no `Cache` ([D-013](../000-smithling-master-plan/decisions.md#d-013)), PR 7 no provider or UDAF and PR 8 no semi-joins ([D-017](../000-smithling-master-plan/decisions.md#d-017)).
 
 PRs 1–2 and 3–4 can proceed in parallel; 5 needs 3–4; 7 needs 1 and 5; 10 needs 7–8 (it can start against a stub API). 12 is last: it reads the merged code, so M2 isn't done until it lands.
 
@@ -197,7 +197,7 @@ No violations. Two choices add moving parts and are justified in research:
 | Choice | Why needed | Simpler alternative rejected because |
 |---|---|---|
 | Single-version fast path (`needs_merge` + multi-version set) | merge-on-read at 2M runs within SC-03 | always merging every row in range costs a group-by over all runs per query (M2-R3) |
-| Promoted typed attribute maps | JSON-path filters without reading payloads | a JSON text column means reading and parsing large strings for every filter (M2-R6). Superseded: a JSON text column `attrs` of promoted leaves shipped ([D-012](../000-tracedb-master-plan/decisions.md#d-012)) |
+| Promoted typed attribute maps | JSON-path filters without reading payloads | a JSON text column means reading and parsing large strings for every filter (M2-R6). Superseded: a JSON text column `attrs` of promoted leaves shipped ([D-012](../000-smithling-master-plan/decisions.md#d-012)) |
 
 ## Appendix A: starter guide
 

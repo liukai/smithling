@@ -7,13 +7,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tracedb_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
-use tracedb_model::agg::{AggSpec, GroupKey, Metric};
-use tracedb_model::attrs::promote;
-use tracedb_model::cost::Prices;
-use tracedb_model::filter::{EvalStats, Row, eval, parse_filter};
-use tracedb_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Ts, merge};
-use tracedb_query::{Query, QuerySpec, QueryWarning};
+use smithling_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
+use smithling_model::agg::{AggSpec, GroupKey, Metric};
+use smithling_model::attrs::promote;
+use smithling_model::cost::Prices;
+use smithling_model::filter::{EvalStats, Row, eval, parse_filter};
+use smithling_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Ts, merge};
+use smithling_query::{Query, QuerySpec, QueryWarning};
 use uuid::Uuid;
 
 struct Rng(u64);
@@ -296,7 +296,7 @@ async fn all_pages(q: &Query, mut spec: QuerySpec, label: &str) -> BTreeSet<RunI
     let mut out = Vec::new();
     let mut keys = Vec::new();
     let positive = spec.filter.as_ref().is_some_and(|f| {
-        let t = tracedb_model::filter::print(f);
+        let t = smithling_model::filter::print(f);
         t.starts_with("search") || t.starts_with("and(search")
     });
     loop {
@@ -313,7 +313,7 @@ async fn all_pages(q: &Query, mut spec: QuerySpec, label: &str) -> BTreeSet<RunI
         out.extend(page.runs.iter().map(|r| r.header.run_id));
         keys.extend(page.runs.iter().map(|r| {
             (
-                -tracedb_storage::segment::start_key(&r.header.dotted_order),
+                -smithling_storage::segment::start_key(&r.header.dotted_order),
                 r.header.run_id,
             )
         }));

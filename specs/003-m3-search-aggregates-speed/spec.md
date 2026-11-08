@@ -4,15 +4,15 @@
 
 **Created**: 2026-11-06
 
-**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-tracedb-master-plan/roadmap.md) STATE)
+**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-smithling-master-plan/roadmap.md) STATE)
 
 **Input**: User description: "let's do 3rd milestone, outline what needs to be done." Scope from the
-[roadmap](../000-tracedb-master-plan/roadmap.md) M3 section ("Core demo"), plus the follow-ups and rough edges found
+[roadmap](../000-smithling-master-plan/roadmap.md) M3 section ("Core demo"), plus the follow-ups and rough edges found
 while building and reviewing M2. Written the same way as M2: goal and why, end state as "As a <who>, I can <what>" with
 the capability first and a labelled Example, then the work tied to the end state and the lifecycle of one run.
 
-**Master**: [specs/000-tracedb-master-plan](../000-tracedb-master-plan/spec.md) (requirements of record) ·
-[roadmap](../000-tracedb-master-plan/roadmap.md) (progress). This folder holds the M3 details of record.
+**Master**: [specs/000-smithling-master-plan](../000-smithling-master-plan/spec.md) (requirements of record) ·
+[roadmap](../000-smithling-master-plan/roadmap.md) (progress). This folder holds the M3 details of record.
 
 **Builds on**: [M2 — Durable storage + query builder](../002-m2-durable-storage-query-builder/spec.md). Everything M1
 and M2 promise stays true.
@@ -42,7 +42,7 @@ Answer "is this a pattern, and how bad is it?" at interactive speed. This is **t
 - **It makes the speed claims real.** M2's targets were sized for its own stage (500 ms lists). The master promises
   100 ms filters, 50 ms traces and 500 ms text search at 2M runs, measured on every change, not asserted.
 - **It removes the last setup step.** Before M3, the current LangSmith SDK needed a setting changed to avoid the
-  upload format tracedb didn't accept. Since M3, `/info` advertises multipart and zstd and both are accepted, so the
+  upload format smithling didn't accept. Since M3, `/info` advertises multipart and zstd and both are accepted, so the
   endpoint is the only setting.
 - **It completes the SmithDB read path.** Text search with an index, late materialization of payloads, progressive
   answers and a cache are the SmithDB pieces M2 left for later.
@@ -76,12 +76,12 @@ flowchart TB
 | 🟢 | Progressive answers | none | a first estimate for slow grouped queries, then the exact figures |
 | 🟢 | Feedback | rejected (`501`) | SDK-sent feedback stored, filterable and averaged |
 | 🟢 | Cost | not computed | reported cost, else tokens × a local editable price list |
-| 🟠 | SDK uploads | plain JSON batches; tracedb tells the SDK not to use multipart | multipart (incl. compressed parts) accepted; defaults work unchanged |
+| 🟠 | SDK uploads | plain JSON batches; smithling tells the SDK not to use multipart | multipart (incl. compressed parts) accepted; defaults work unchanged |
 | 🟠 | Speed | M2 targets: list ≤ 500 ms, trace/run ≤ 200 ms | master targets: list ≤ 100 ms, trace/run ≤ 50 ms, text ≤ 500 ms, grouped ≤ 1 s, p99 ≤ 5× median |
 | 🟠 | Footprint | disk 19% of raw JSON; memory capped by the memtable | idle memory ≤ 200 MB; disk incl. text index ≤ 50% |
 | 🟠 | Query panel and views | where-rows, chips, Samples, Table, live | + search chip, group by, metrics, comparison, charts |
-| 🟠 | `tracedb demo` | M2 checks (14, 23, prompt_version, 429) | + 31 hits, 14% / 31 s, $4.12, batch a vs b |
-| 🟠 | Benchmark | `#[ignore]` test run by hand | `tracedb bench` command; CI fails on a slipped target |
+| 🟠 | `smithling demo` | M2 checks (14, 23, prompt_version, 429) | + 31 hits, 14% / 31 s, $4.12, batch a vs b |
+| 🟠 | Benchmark | `#[ignore]` test run by hand | `smithling bench` command; CI fails on a slipped target |
 | 🟠 | M2 rough edges | bad file breaks every query; double-registered flush; no "N new" | fixed (Story 7) |
 | ⚪ | Durable write path, flush, recovery, crash safety | M2 | unchanged; crash harness keeps passing |
 | ⚪ | Filter language, trace conditions, cursor, live views, field browser | M2 | unchanged, except the new search condition |
@@ -214,13 +214,13 @@ table meets the targets in SC-03.
 
 ### 🟠 User Story 5 - Current SDK defaults work unchanged (Priority: P2)
 
-An agent on the current LangSmith SDK, with default settings, traces into tracedb with only the endpoint changed,
+An agent on the current LangSmith SDK, with default settings, traces into smithling with only the endpoint changed,
 including the SDK's multipart upload format and any feedback it sends.
 
 **Why this priority**: it removes the last "change this setting" step from getting started; the core triage works
 without it, so it follows the P1 stories.
 
-**Independent Test**: run the pinned SDK example agent with defaults (no upload-format override) against tracedb and
+**Independent Test**: run the pinned SDK example agent with defaults (no upload-format override) against smithling and
 confirm the full trace appears and nothing is reported as unsupported; send a feedback score and filter by it.
 
 **Acceptance Scenarios**:
@@ -228,7 +228,7 @@ confirm the full trace appears and nothing is reported as unsupported; send a fe
 1. **Given** the SDK's multipart upload with inputs and outputs as separate parts, **When** received, **Then** the run is stored exactly as if it had been sent as plain JSON.
 2. **Given** a multipart upload whose parts are compressed, **When** received, **Then** it is accepted and stored the same way.
 3. **Given** feedback (key, score, optional comment) sent by the SDK for a run, **When** received, **Then** the developer can filter runs by feedback score and see the average score in aggregates.
-4. **Given** feedback for a run tracedb has not seen yet, **When** the run arrives later, **Then** the feedback is attached to it.
+4. **Given** feedback for a run smithling has not seen yet, **When** the run arrives later, **Then** the feedback is attached to it.
 
 ---
 
@@ -262,7 +262,7 @@ Rough edges found while building and reviewing M2.
 2. **Given** a flush whose catalog commit landed but whose reply was lost, **When** it is retried, **Then** the same rows are not registered twice, and stored-row counts stay exact.
 3. **Given** the Samples view scrolled down while live, **When** new runs arrive, **Then** a "N new" indicator appears instead of shifting the rows under the reader (M1 behaviour, lost in M2).
 4. **Given** a run that stops matching a live Table view, **When** it is marked "no longer matching", **Then** its columns show its new values.
-5. **Given** `tracedb seed`, **When** it generates runs, **Then** no run starts in the future.
+5. **Given** `smithling seed`, **When** it generates runs, **Then** no run starts in the future.
 6. **Given** the M2 storage and query paths on cloud-style storage, **When** automated checks run, **Then** the demo and crash test pass there too (first real run of the M2 cloud job).
 
 ---
@@ -343,13 +343,13 @@ master text is not repeated.
 
 - 🟢 **SC-01**: On the scenario data, searching `"429 Too Many Requests"` returns exactly 31 runs, all `fetch_url` (master step 7).
 - 🟢 **SC-02**: Batch a grouped by name shows `fetch_url` at 14% errors and p95 31 s, and the batch total cost is $4.12 (step 9); batch a vs batch b appear side by side and overlaid (step 13).
-- 🟠 **SC-03**: At 2M runs (about 5 GB raw JSON) on the reference laptop, medians: trace tree ≤ 50 ms, single run ≤ 50 ms, filtered list ≤ 100 ms, text search ≤ 500 ms, grouped query or chart ≤ 1 s, field and value suggestions ≤ 200 ms; every 99th percentile ≤ 5× its median (master QR-004, QR-008). *As built*: `tracedb bench` times text search as three rows (rare phrase, common word, search + filter; 2026-11-07), each held to the 500 ms median; the full 2M run is in the backlog (D3-1).
+- 🟠 **SC-03**: At 2M runs (about 5 GB raw JSON) on the reference laptop, medians: trace tree ≤ 50 ms, single run ≤ 50 ms, filtered list ≤ 100 ms, text search ≤ 500 ms, grouped query or chart ≤ 1 s, field and value suggestions ≤ 200 ms; every 99th percentile ≤ 5× its median (master QR-004, QR-008). *As built*: `smithling bench` times text search as three rows (rare phrase, common word, search + filter; 2026-11-07), each held to the 500 ms median; the full 2M run is in the backlog (D3-1).
 - 🟠 **SC-04**: Upload throughput ≥ 20,000 events/s sustained while queries run (QR-005).
-- 🟠 **SC-05**: Idle memory ≤ 200 MB, and data on disk (including the text index) ≤ half the size of the same data as raw JSON (QR-006). *As built*: the idle part is waived for M3 ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) and left to M4 compaction (D3-2); the disk part stays in the bench verdict.
+- 🟠 **SC-05**: Idle memory ≤ 200 MB, and data on disk (including the text index) ≤ half the size of the same data as raw JSON (QR-006). *As built*: the idle part is waived for M3 ([D-028](../000-smithling-master-plan/decisions.md#d-028)) and left to M4 compaction (D3-2); the disk part stays in the bench verdict.
 - 🟢 **SC-06**: A grouped query over all 2M runs shows a first estimate within 1 s.
 - 🟠 **SC-07**: The demo command passes every check for steps 4–9 and 13 (plus the feedback check) on an empty folder, on local and cloud-style storage, with identical numbers.
 - 🟠 **SC-08**: An unmodified agent on the pinned SDK, with default settings and only the endpoint changed, traces in with zero items reported unsupported.
-- 🟢 **SC-09**: A developer new to tracedb answers "is this a pattern, and how bad is it?" on the scenario data (the 31 hits and the 14% / 31 s figures) in under 5 minutes using only the UI.
+- 🟢 **SC-09**: A developer new to smithling answers "is this a pattern, and how bad is it?" on the scenario data (the 31 hits and the 14% / 31 s figures) in under 5 minutes using only the UI.
 - 🟢 **SC-10**: Automated checks fail when any SC-03 target is missed by the benchmark, naming the query and the measured value.
 - ⚪ **SC-11**: All M1 and M2 success criteria still pass.
 

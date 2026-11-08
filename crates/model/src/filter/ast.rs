@@ -1,6 +1,6 @@
 use crate::ts::Ts;
 
-/// A filter expression: LangSmith's `filter` grammar plus tracedb's dotted JSON paths and `in()`.
+/// A filter expression: LangSmith's `filter` grammar plus smithling's dotted JSON paths and `in()`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     And(Vec<Expr>),

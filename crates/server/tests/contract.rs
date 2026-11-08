@@ -1,14 +1,14 @@
 //! Replays real LangSmith SDK traffic (recorded by scripts/record-sdk-fixtures.py) and compares the
 //! stored runs with the recorder's independent expectation.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::path::PathBuf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::Value;
-use tracedb_ingest::Include;
+use smithling_ingest::Include;
 
 fn fixture_dirs() -> Vec<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");

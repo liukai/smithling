@@ -1,20 +1,20 @@
 //! Filter AST → DataFusion expression for file scans.
 //!
 //! The rule that keeps results exact: a pushed-down expression may keep rows the filter rejects, but it must
-//! never drop a row the filter accepts. The final decision is always [`tracedb_model::filter::eval`] on the
+//! never drop a row the filter accepts. The final decision is always [`smithling_model::filter::eval`] on the
 //! merged run. So every leaf here either matches [`eval`]'s semantics exactly on single-version rows
 //! (absent values never match, types never mix), keeps a known superset (`exact: false`, never negated), or
 //! is left out (`None` = "can't push, keep everything").
 //!
-//! [`eval`]: tracedb_model::filter::eval
+//! [`eval`]: smithling_model::filter::eval
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::logical_expr::{Expr as DfExpr, col, lit};
 use datafusion::prelude::cast;
 use datafusion::scalar::ScalarValue;
-use tracedb_model::Ts;
-use tracedb_model::attrs::promotable_path;
-use tracedb_model::filter::{CmpOp, Expr, Field, Path, Value};
+use smithling_model::Ts;
+use smithling_model::attrs::promotable_path;
+use smithling_model::filter::{CmpOp, Expr, Field, Path, Value};
 
 /// A pushed-down expression and whether it is exact (equal to `eval`, not just a superset).
 pub struct Pushed {
@@ -178,7 +178,7 @@ pub fn id_lit(id: uuid::Uuid) -> DfExpr {
 
 #[cfg(test)]
 mod tests {
-    use tracedb_model::filter::parse_filter;
+    use smithling_model::filter::parse_filter;
 
     use super::*;
 

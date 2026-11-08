@@ -7,7 +7,7 @@ Extends the [M1 contract](../../001-m1-see-agent-trace-live/contracts/http-api.m
 | Method + path | Change |
 |---|---|
 | `GET /info`, `POST /runs/batch`, `POST /runs`, `PATCH /runs/{id}`, `POST /v1/events` | unchanged |
-| status `507` | **removed**: tracedb no longer refuses data for lack of memory |
+| status `507` | **removed**: smithling no longer refuses data for lack of memory |
 | status `429` + `Retry-After: 1` | also sent when the active memtable is full while a flush runs, or unflushed WAL ≥ 1 GB (R-8) |
 | `rejected[]` with `identity_conflict` | now stable: retrying the identical item returns the same rejection (M2-FR-23) |
 
@@ -35,9 +35,9 @@ Request (data-model §9; every field optional):
 
 By start time the server reads newest-first (oldest-first for `asc`) and stops once the page is full, so
 `stats.matched` counts only the runs read and `stats.complete` is `false`; `"count": true` reads everything and
-makes `matched` the total ([D-021](../../000-tracedb-master-plan/decisions.md#d-021)). `files_version_lookup` and
+makes `matched` the total ([D-021](../../000-smithling-master-plan/decisions.md#d-021)). `files_version_lookup` and
 `merge_rows` are the files searched for other versions of multi-version runs and the rows that search read (also in
-`rows_read`; [D-024](../../000-tracedb-master-plan/decisions.md#d-024)).
+`rows_read`; [D-024](../../000-smithling-master-plan/decisions.md#d-024)).
 
 Response `200`:
 
@@ -103,4 +103,4 @@ corrupt_segments: [id]}`. M3 adds `memtable_limit_bytes`, `damaged_segments` (`c
 | `/?project=&status=` | M1 link; translated on load |
 | `/trace/{id}?run={id}` | unchanged |
 
-Served from the embedded copy, or from `--ui-dir` / `TRACEDB_UI_DIR` when set.
+Served from the embedded copy, or from `--ui-dir` / `SMITHLING_UI_DIR` when set.

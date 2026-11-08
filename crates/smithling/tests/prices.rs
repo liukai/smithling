@@ -2,8 +2,8 @@
 
 use std::net::SocketAddr;
 
-use tracedb_ingest::Limits;
-use tracedb_server::{ServeConfig, open};
+use smithling_ingest::Limits;
+use smithling_server::{ServeConfig, open};
 
 fn cfg(dir: &std::path::Path, prices: Option<std::path::PathBuf>) -> ServeConfig {
     ServeConfig {
@@ -52,7 +52,7 @@ fn serve_with_an_invalid_price_list_fails_naming_the_line() {
     let dir = tempfile::tempdir().unwrap();
     let bad = dir.path().join("bad.toml");
     std::fs::write(&bad, "version = 1\n[models.\"x\"]\ninput = \"cheap\"\noutput = 1\n").unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["serve", "--port", "0", "--data"])
         .arg(dir.path().join("data"))
         .arg("--prices")

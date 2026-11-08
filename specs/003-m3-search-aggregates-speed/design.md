@@ -1,10 +1,10 @@
 # Design: M3 — Search, aggregates and speed
 
-**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-tracedb-master-plan/roadmap.md) STATE) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
+**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-smithling-master-plan/roadmap.md) STATE) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
 **Research**: [research.md](research.md) · **Starter guide**: [starter-guide.md](starter-guide.md) ·
 **Builds on**: [M2 design](../002-m2-durable-storage-query-builder/design.md) and the
 [M2 code guide](../002-m2-durable-storage-query-builder/starter-guide.md) · **Master design**:
-[design-notes.md](../000-tracedb-master-plan/design-notes.md)
+[design-notes.md](../000-smithling-master-plan/design-notes.md)
 
 **Delta key** (as in [spec.md](spec.md); every diagram node uses the fill colour):
 
@@ -172,7 +172,7 @@ flush(job):                                         # files and ids made once pe
 - **Cost**: tokenizing is the largest new CPU cost at flush. It runs on the flusher thread, so uploads don't wait;
   the bench load phase checks that 20k events/s holds while flushing and indexing (SC-04).
 - **Size**: estimated ~+12% of today's files (M3-R1); measured 0.2% of raw JSON on the bench load and 6.9% on
-  prose-like payloads ([D-026](../000-tracedb-master-plan/decisions.md#d-026)). `bench` reports index bytes
+  prose-like payloads ([D-026](../000-smithling-master-plan/decisions.md#d-026)). `bench` reports index bytes
   separately in the disk row.
 - **Crash safety** is M2's: a sidecar put before the commit is an orphan like any data file and is deleted on start.
 
@@ -199,7 +199,7 @@ select(Q with search(text, side)):
   - The verify step uses the merged text, so a replaced output stops matching (spec edge case).
   - Text added by a late update is found through the memtable or the newer file's index.
 - **Which conditions use the index**: a `search` at the top level of `filter` (or inside a top-level `and`). Under
-  `not` or `or`, it is checked by `eval` over the D-021 windows with early stop ([D-021](../000-tracedb-master-plan/decisions.md#d-021)).
+  `not` or `or`, it is checked by `eval` over the D-021 windows with early stop ([D-021](../000-smithling-master-plan/decisions.md#d-021)).
   `tree_filter: search(…)` uses the index to find candidate *traces*.
 - **Ordering**: candidates go through D-021's windows in page order, so the first page stops early as lists do.
 - **Excerpts** are computed for the page's runs only (late materialization). The verify step reads the payload
@@ -241,7 +241,7 @@ aggregate(spec):
 ```
 
 - **No double counting**: a run is clean only if no other version can exist. Today a second *start* for a run
-  already on disk isn't marked ([D-016](../000-tracedb-master-plan/decisions.md#d-016),
+  already on disk isn't marked ([D-016](../000-smithling-master-plan/decisions.md#d-016),
   [writer.rs:250](../../crates/ingest/src/writer.rs#L250)). Unit 1 fixes it before this engine exists:
   - the writer keeps a bloom filter of every flushed run id, rebuilt at start from the files' `run_id` columns;
   - a start that creates a new memtable state and hits that filter joins the multi-version set.
@@ -389,10 +389,10 @@ orphans = feedback whose run_id isn't found in scope           → GET /api/feed
 **Idle** is defined as: no uploads for one flush age, memtable flushed, dedup window drained; median physical
 footprint over 30 s.
 
-### 4.10 🟢 `tracedb bench`
+### 4.10 🟢 `smithling bench`
 
 ```text
-tracedb bench [--runs 2M] [--data DIR] [--json FILE] [--check]:
+smithling bench [--runs 2M] [--data DIR] [--json FILE] [--check]:
   calibrate: decode the shipped reference Parquet file 20× + a sort → r = runner / reference, clamped [1, 3]
   load: generator from tests/bench_m2.rs → HTTP /runs/batch from 8 clients, a query loop alongside → events/s
   queries (after warmup), n ≥ 100 each, varied values and windows:
@@ -507,7 +507,7 @@ real run, with the M3 demo.
 
 | | What | Test | Gate |
 |---|---|---|---|
-| 🟢 | Scenario numbers (31, 14% / 31 s, $4.12, a vs b) | `tracedb demo` | CI, local + cloud |
+| 🟢 | Scenario numbers (31, 14% / 31 s, $4.12, a vs b) | `smithling demo` | CI, local + cloud |
 | 🟢 | Search is exact | property: random runs, late updates, flush points; `search` via index == naive phrase check over merged runs; M2 files (no sidecar) give the same rows | CI |
 | 🟢 | Tokenizer | Unicode cases (CJK, emoji, accents, punctuation), phrase across leaves doesn't match | CI |
 | 🟢 | Aggregates are exact | property: aggregate == naive over merged runs, incl. `(none)`, `other`, tags, compare, buckets; estimate at 100% sample == exact | CI |
@@ -516,7 +516,7 @@ real run, with the M3 demo.
 | 🟢 | Feedback | fixtures (`create_feedback` before and after the run); orphan; idempotent retry | CI |
 | 🟠 | No double count | second start for a flushed run → multi-version; aggregate counts it once | CI |
 | 🟠 | Damaged files, flush retry | start-time and live damage; lost commit reply | CI |
-| 🟠 | Speed and footprint | `tracedb bench` with budgets | CI (smoke on PRs, 2M on pushes to main/master and nightly) |
+| 🟠 | Speed and footprint | `smithling bench` with budgets | CI (smoke on PRs, 2M on pushes to main/master and nightly) |
 | ⚪ | Crash safety | crash harness + `after_fts_put` kill point | CI |
 | 🟠 | UI | search chip ⇄ text, Stats table, charts, click-through conditions, URL round trip, "N new" | CI (vitest) |
 
@@ -541,16 +541,16 @@ per part; no word positions (c); branch `003-…` from the 002 tip. The nine bel
    doesn't fit.
    *Settled*: memtable limit measured as heap, 64 MB; flush age 2 min; dedup keys as 16 B fingerprints with a
    cap; cache 32 MB; jemalloc (`tikv-jemallocator` 0.7.0). All are flags; the M2 defaults remain available.
-   *Built* ([D-028](../000-tracedb-master-plan/decisions.md#d-028)); idle is still over target, waived for M3 and left to M4 compaction
+   *Built* ([D-028](../000-smithling-master-plan/decisions.md#d-028)); idle is still over target, waived for M3 and left to M4 compaction
    (D3-2).
 2. **Decision-log entries.** This plan changes the roadmap's "scan + bloom in v0, custom index backlog", D-013 (no
    `Cache`), D-016 (second start), and design-notes §4 (feedback by multipart by default).
    *Settled*: each logged at the start of its unit with the next free id:
-   [D-025](../000-tracedb-master-plan/decisions.md#d-025) second start,
-   [D-026](../000-tracedb-master-plan/decisions.md#d-026) text index,
-   [D-027](../000-tracedb-master-plan/decisions.md#d-027) feedback,
-   [D-028](../000-tracedb-master-plan/decisions.md#d-028) cache and memory, and
-   [D-029](../000-tracedb-master-plan/decisions.md#d-029) lists and single runs. D-024 went to an M2 fix.
+   [D-025](../000-smithling-master-plan/decisions.md#d-025) second start,
+   [D-026](../000-smithling-master-plan/decisions.md#d-026) text index,
+   [D-027](../000-smithling-master-plan/decisions.md#d-027) feedback,
+   [D-028](../000-smithling-master-plan/decisions.md#d-028) cache and memory, and
+   [D-029](../000-smithling-master-plan/decisions.md#d-029) lists and single runs. D-024 went to an M2 fix.
 3. **Feedback filter meaning.** A run with several scores for one key.
    *Settled*: `feedback.<key>` = the mean of that run's scores for the key (LangSmith-style
    `feedback_key` / `feedback_score` pairs map onto it). Built.
@@ -566,7 +566,7 @@ per part; no word positions (c); branch `003-…` from the 002 tip. The nine bel
 7. **Backfill of M2 files.**
    *Settled*: yes, in the background when idle (unit 6). It can be cut without breaking correctness (scan
    fallback). Built.
-8. **Stats line syntax** (tracedb's own, not LangSmith's).
+8. **Stats line syntax** (smithling's own, not LangSmith's).
    *Settled*: `by <key>[, <key>] | <metric>, …`, as in the filter contract. Built.
 9. **CI bench capacity.** The 2M run's time and disk on the CI runner aren't known.
    *Settled*: 200k smoke on PRs, 2M on pushes to `main`/`master` and nightly. If the runner can't hold 2M, run it

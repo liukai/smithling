@@ -1,4 +1,4 @@
-# Data Model: tracedb v0
+# Data Model: smithling v0
 
 Logical model. Physical layout: design-notes §3.2–3.3. Merge rule: research R1.
 

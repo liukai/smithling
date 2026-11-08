@@ -1,5 +1,5 @@
 //! Shows how a run's start and update messages become one run.
-//! Run with: cargo run -p tracedb-model --example merge_demo
+//! Run with: cargo run -p smithling-model --example merge_demo
 //!
 //! The story: an overnight eval of a research agent. For task t-117 the agent starts at 02:14:00 (the root run),
 //! and 7 s later calls its `fetch_url` tool (a child run). The API rate-limits it and the call fails 31 s later:
@@ -10,10 +10,10 @@
 //!     └── run 7c1e…a4  fetch_url     this demo: start message, then a failing update
 //! ```
 //!
-//! The SDK sends two messages for `fetch_url`: one when it starts, one when it ends. tracedb merges them.
+//! The SDK sends two messages for `fetch_url`: one when it starts, one when it ends. smithling merges them.
 
 use serde_json::json;
-use tracedb_model::{Op, RunEvent, RunFields, RunHeader, Source, Ts, merge, validate};
+use smithling_model::{Op, RunEvent, RunFields, RunHeader, Source, Ts, merge, validate};
 
 /// This step: the `fetch_url` tool call. Every message about this step carries it.
 const RUN_ID: &str = "7c1e0000-0000-4000-8000-0000000000a4";
@@ -47,7 +47,7 @@ fn main() {
         "metadata": {"prompt_version": "v7", "task_id": "t-117"}
     }))
     .unwrap();
-    // Message 2, sent 31 s later when it fails. Same three ids, so tracedb knows it's the same step.
+    // Message 2, sent 31 s later when it fails. Same three ids, so smithling knows it's the same step.
     // Fields not repeated here (name, inputs, tags…) keep their values from message 1.
     let update: RunFields = serde_json::from_value(json!({
         "id": RUN_ID,
@@ -82,7 +82,7 @@ fn main() {
     println!("\nmerged run, as the runs list and trace view will see it:");
     println!("{}", serde_json::to_string_pretty(&header).unwrap());
 
-    // Only an id: no trace_id or dotted_order, so tracedb can't place it in any tree.
+    // Only an id: no trace_id or dotted_order, so smithling can't place it in any tree.
     let mut bad: RunFields = serde_json::from_value(json!({"id": RUN_ID})).unwrap();
     println!(
         "\na malformed message is rejected with a reason: {:?}",

@@ -2,7 +2,7 @@
 
 Only what M3 adds or changes. Slots, grammar, fields, typing rules and errors are the
 [M2 contract](../../002-m2-durable-storage-query-builder/contracts/filter-language.md); the
-[master contract](../../000-tracedb-master-plan/contracts/filter-dsl.md) already lists `exists` and `search`.
+[master contract](../../000-smithling-master-plan/contracts/filter-dsl.md) already lists `exists` and `search`.
 
 **Delta key**: 🟢 New · 🟠 Improved · ⚪ Existing (as in [spec.md](../spec.md)).
 
@@ -35,7 +35,7 @@ as written.
 ## 🟢 The stats line
 
 A separate text slot (`stats` in the API, the *Text* view of the Stats panel) that says how to add up the runs the
-filter selects. tracedb's own syntax; LangSmith has none.
+filter selects. smithling's own syntax; LangSmith has none.
 
 ```ebnf
 stats    = [ "by" key { "," key } "|" ] metric { "," metric } [ "|" "top" number ] ;   (* no keys: totals only *)
@@ -73,7 +73,7 @@ Definitions:
 
 The M2 golden case `search("rate limit")` → "supported from M3" becomes an `ok` case.
 
-## Scenario queries (asserted by `tracedb demo`)
+## Scenario queries (asserted by `smithling demo`)
 
 | | Question | Query |
 |---|---|---|

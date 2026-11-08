@@ -1,5 +1,5 @@
 [package]
-name = "tracedb-storage"
+name = "smithling-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tracedb-model.workspace = true
+smithling-model.workspace = true
 datafusion.workspace = true
 object_store.workspace = true
 sqlx.workspace = true

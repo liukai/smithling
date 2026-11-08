@@ -5,7 +5,7 @@ use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use tracedb_ingest::{AcceptError, FeedbackError};
+use smithling_ingest::{AcceptError, FeedbackError};
 
 pub fn error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
     (

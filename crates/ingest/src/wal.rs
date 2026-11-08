@@ -8,7 +8,7 @@
 //! 2. [`Wal::append`] for each event in a group of requests (buffered in memory, not yet durable).
 //! 3. [`Wal::sync`] once per group (group commit: one fsync shared by many requests); only then confirm.
 //!
-//! On disk: `.tracedb/wal/00000000000000001042.wal`, one file per ~64 MB, named by its first `event_seq`
+//! On disk: `.smithling/wal/00000000000000001042.wal`, one file per ~64 MB, named by its first `event_seq`
 //! (zero-padded so names sort in sequence order). Each file starts with `TDBW` + a u32 version, then records:
 //!
 //! ```text
@@ -26,7 +26,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use tracedb_model::{Op, RunEvent, Source, Ts};
+use smithling_model::{Op, RunEvent, Source, Ts};
 
 const MAGIC: &[u8; 4] = b"TDBW";
 const VERSION: u32 = 1;
@@ -43,7 +43,7 @@ pub const DEFAULT_ROLL_BYTES: u64 = 64 * 1024 * 1024;
 pub enum WalError {
     #[error("wal i/o: {0}")]
     Io(#[from] io::Error),
-    #[error("wal file {file} is corrupt at byte {offset}: {why}; it is not the last file, so tracedb won't guess")]
+    #[error("wal file {file} is corrupt at byte {offset}: {why}; it is not the last file, so smithling won't guess")]
     Corrupt { file: PathBuf, offset: u64, why: String },
 }
 

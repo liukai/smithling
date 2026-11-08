@@ -6,14 +6,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as J, json};
-use tracedb_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
-use tracedb_model::agg::{AggSpec, GroupKey, Metric, Pct, SumOf};
-use tracedb_model::attrs::{Scalar, promote};
-use tracedb_model::cost::{self, Cost, Prices};
-use tracedb_model::filter::{EvalStats, Expr, Row, eval, parse_filter, status_name};
-use tracedb_model::run::run_type_str;
-use tracedb_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Status, Ts, merge};
-use tracedb_query::{Cells, Query, QuerySpec, TimeRange};
+use smithling_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
+use smithling_model::agg::{AggSpec, GroupKey, Metric, Pct, SumOf};
+use smithling_model::attrs::{Scalar, promote};
+use smithling_model::cost::{self, Cost, Prices};
+use smithling_model::filter::{EvalStats, Expr, Row, eval, parse_filter, status_name};
+use smithling_model::run::run_type_str;
+use smithling_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Status, Ts, merge};
+use smithling_query::{Cells, Query, QuerySpec, TimeRange};
 use uuid::Uuid;
 
 struct Rng(u64);
@@ -427,7 +427,7 @@ fn matching<'a>(runs: &'a HashMap<RunId, RunState>, c: &Case) -> Vec<&'a RunStat
         c.from.map(|f| Ts::parse(f).unwrap().0),
         c.to.map(|t| Ts::parse(t).unwrap().0),
     );
-    let key = |s: &RunState| tracedb_storage::segment::start_key(&s.run.dotted_order);
+    let key = |s: &RunState| smithling_storage::segment::start_key(&s.run.dotted_order);
     runs.values()
         .filter(|s| from.is_none_or(|f| key(s) >= f) && to.is_none_or(|t| key(s) <= t))
         .filter(in_project)
@@ -441,8 +441,8 @@ fn matching<'a>(runs: &'a HashMap<RunId, RunState>, c: &Case) -> Vec<&'a RunStat
 fn spec_of(c: &Case) -> QuerySpec {
     QuerySpec {
         time: TimeRange {
-            from: c.from.map(|f| tracedb_model::filter::TimeAt::parse(f).unwrap()),
-            to: c.to.map(|t| tracedb_model::filter::TimeAt::parse(t).unwrap()),
+            from: c.from.map(|f| smithling_model::filter::TimeAt::parse(f).unwrap()),
+            to: c.to.map(|t| smithling_model::filter::TimeAt::parse(t).unwrap()),
         },
         project: c.project.map(str::to_string),
         filter: c.filter.map(|f| parse_filter(f).unwrap()),
@@ -535,7 +535,7 @@ async fn aggregates_match_naive_accumulation_whatever_was_flushed() {
                 let none_key = vec![Some(J::from("(none)"))];
                 let rankable = |g: &Vec<Option<J>>| g.iter().all(Option::is_some) && !(single && *g == none_key);
                 let other_key = vec![J::from("(other)"); keys.len()];
-                let shown: Vec<&tracedb_query::Group> = got.groups.iter().filter(|g| g.key != other_key).collect();
+                let shown: Vec<&smithling_query::Group> = got.groups.iter().filter(|g| g.key != other_key).collect();
                 let mut shown_keys = HashSet::new();
                 let mut least = u64::MAX;
                 for g in &shown {

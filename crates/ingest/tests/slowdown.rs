@@ -6,7 +6,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
-use tracedb_ingest::{AcceptError, Ingest, IngestConfig, Limits};
+use smithling_ingest::{AcceptError, Ingest, IngestConfig, Limits};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_burst_gets_busy_then_everything_lands() {

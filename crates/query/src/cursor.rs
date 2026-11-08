@@ -4,7 +4,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use tracedb_model::RunId;
+use smithling_model::RunId;
 
 /// Position in an ordered result: the order value (start key or latency) and the run id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

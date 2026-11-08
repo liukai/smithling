@@ -5,16 +5,16 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
-use tracedb_ingest::Incoming;
-use tracedb_model::validate::{json_size, parse_ts, parse_uuid};
-use tracedb_model::{JsonMap, Op, Reason, Reject, RunFields, Source};
+use smithling_ingest::Incoming;
+use smithling_model::validate::{json_size, parse_ts, parse_uuid};
+use smithling_model::{JsonMap, Op, Reason, Reject, RunFields, Source};
 use xxhash_rust::xxh64::xxh64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
     /// LangSmith SDK runs: `session_name`, `extra.metadata`, …
     LangSmith,
-    /// tracedb's own field names (`project`, `metadata`, …), as in `RunFields`.
+    /// smithling's own field names (`project`, `metadata`, …), as in `RunFields`.
     Native,
 }
 

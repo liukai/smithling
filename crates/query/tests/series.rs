@@ -6,12 +6,12 @@
 mod common;
 
 use common::*;
-use tracedb_model::agg::{AggSpec, Bucket, GroupKey, Metric, Pct, View};
-use tracedb_model::cost::Prices;
-use tracedb_model::filter::{Expr, parse_filter};
-use tracedb_query::aggregate::accum::BIN_LOWER_MS;
-use tracedb_query::aggregate::series::AUTO_STEPS_MIN;
-use tracedb_query::{AggResult, Cells, Query, QuerySpec};
+use smithling_model::agg::{AggSpec, Bucket, GroupKey, Metric, Pct, View};
+use smithling_model::cost::Prices;
+use smithling_model::filter::{Expr, parse_filter};
+use smithling_query::aggregate::accum::BIN_LOWER_MS;
+use smithling_query::aggregate::series::AUTO_STEPS_MIN;
+use smithling_query::{AggResult, Cells, Query, QuerySpec};
 
 fn batch_a() -> QuerySpec {
     QuerySpec {
@@ -39,7 +39,7 @@ async fn totals_where(q: &Query, spec: &QuerySpec, wheres: &[&str], metrics: &[M
     q.aggregate(&spec, &agg, &Prices::embedded()).await.unwrap().totals
 }
 
-fn series_of(r: &AggResult) -> &tracedb_query::aggregate::Series {
+fn series_of(r: &AggResult) -> &smithling_query::aggregate::Series {
     r.series.as_ref().expect("view: series adds series")
 }
 
@@ -75,7 +75,7 @@ async fn series_buckets_on_a_round_step_and_match_the_table_per_bucket() {
         assert_eq!(t % (s.step_ms * 1000), 0, "on whole steps");
         assert_eq!(t, s.buckets[0].t.unwrap().0 + i as i64 * s.step_ms * 1000);
         assert_eq!(b.per_group.len(), r.groups.len());
-        let t1 = tracedb_model::Ts(t + s.step_ms * 1000);
+        let t1 = smithling_model::Ts(t + s.step_ms * 1000);
         assert_eq!(
             b.where_,
             format!(
@@ -148,7 +148,8 @@ async fn a_given_step_shows_the_0230_spike_and_bins_are_fixed_log_latency() {
         .iter()
         .filter(|b| b.per_group[0].as_ref().is_some_and(|c| c.finished >= 20))
         .max_by(|x, y| {
-            let rate = |b: &&tracedb_query::aggregate::SeriesBucket| b.per_group[0].as_ref().and_then(|c| c.error_rate);
+            let rate =
+                |b: &&smithling_query::aggregate::SeriesBucket| b.per_group[0].as_ref().and_then(|c| c.error_rate);
             rate(x).partial_cmp(&rate(y)).unwrap()
         })
         .unwrap();

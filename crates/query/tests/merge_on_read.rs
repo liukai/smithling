@@ -5,11 +5,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tracedb_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
-use tracedb_model::attrs::promote;
-use tracedb_model::filter::{EvalStats, Row, eval, parse_filter};
-use tracedb_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Ts, merge};
-use tracedb_query::{Query, QuerySpec};
+use smithling_ingest::{AcceptError, Incoming, Ingest, IngestConfig, Limits};
+use smithling_model::attrs::promote;
+use smithling_model::filter::{EvalStats, Row, eval, parse_filter};
+use smithling_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Ts, merge};
+use smithling_query::{Query, QuerySpec};
 use uuid::Uuid;
 
 struct Rng(u64);
@@ -288,7 +288,7 @@ fn expected(runs: &HashMap<RunId, RunState>, c: &Case) -> BTreeSet<RunId> {
     });
     let from = c.from.map(|f| Ts::parse(f).unwrap().0);
     runs.values()
-        .filter(|s| from.is_none_or(|f| tracedb_storage::segment::start_key(&s.run.dotted_order) >= f))
+        .filter(|s| from.is_none_or(|f| smithling_storage::segment::start_key(&s.run.dotted_order) >= f))
         .filter(|s| c.project.is_none_or(|p| s.run.project == p))
         .filter(|s| c.root.is_none_or(|r| s.run.is_root == r))
         .filter(|s| c.filter.is_none_or(|f| m(s, f)))
@@ -322,7 +322,7 @@ async fn all_pages(q: &Query, mut spec: QuerySpec) -> Vec<RunId> {
         let page = q.query(&spec).await.unwrap();
         out.extend(page.runs.iter().map(|r| r.header.run_id));
         keys.extend(page.runs.iter().map(|r| {
-            let k = tracedb_storage::segment::start_key(&r.header.dotted_order);
+            let k = smithling_storage::segment::start_key(&r.header.dotted_order);
             (if spec.ascending { k } else { -k }, r.header.run_id)
         }));
         match page.next_cursor {
@@ -368,8 +368,8 @@ async fn queries_match_the_naive_answer_whatever_was_flushed() {
         merged += q.query(&QuerySpec::default()).await.unwrap().stats.rows_merged;
         for (i, c) in CASES.iter().enumerate() {
             let spec = QuerySpec {
-                time: tracedb_query::TimeRange {
-                    from: c.from.map(|f| tracedb_model::filter::TimeAt::parse(f).unwrap()),
+                time: smithling_query::TimeRange {
+                    from: c.from.map(|f| smithling_model::filter::TimeAt::parse(f).unwrap()),
                     to: None,
                 },
                 project: c.project.map(str::to_string),
@@ -415,7 +415,7 @@ async fn queries_match_the_naive_answer_whatever_was_flushed() {
             let r = q
                 .run(
                     st.run.run_id,
-                    tracedb_ingest::Include {
+                    smithling_ingest::Include {
                         inputs: true,
                         outputs: true,
                         events: true,

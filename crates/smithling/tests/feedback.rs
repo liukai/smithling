@@ -1,7 +1,7 @@
 //! `POST /feedback`, `PATCH /feedback/{id}` and `GET /api/feedback` (contracts/http-api.md): stored in the catalog
 //! whether or not the run exists, attached when it arrives, reloaded on start, kept through kill -9.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -50,7 +50,7 @@ fn base(s: &Server) -> String {
 async fn post_stores_and_answers_the_row() {
     let s = common::start().await;
     let b = base(&s);
-    let before = tracedb_model::Ts::now();
+    let before = smithling_model::Ts::now();
     let (st, row) = post(&b, &fb(&uid(901), &uid(1), "correctness", json!(0.0))).await;
     assert_eq!(st, 200, "{row}");
     assert_eq!(row["id"], uid(901));
@@ -60,7 +60,7 @@ async fn post_stores_and_answers_the_row() {
     assert_eq!(row["comment"], "gave up on 429");
     assert_eq!(row["feedback_source"], json!({"type": "api", "metadata": {}}));
     assert_eq!(row["created_at"], "2026-11-06T08:10:00.000000Z");
-    let modified = tracedb_model::Ts::parse(row["modified_at"].as_str().unwrap()).unwrap();
+    let modified = smithling_model::Ts::parse(row["modified_at"].as_str().unwrap()).unwrap();
     assert!(modified >= before, "modified_at is the write time");
     assert_eq!(row["extend_trace_retention"], true, "unknown fields kept: {row}");
 
@@ -207,7 +207,7 @@ async fn get_api_feedback_needs_one_question() {
 }
 
 fn spawn(data: &std::path::Path) -> (Child, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["serve", "--data", data.to_str().unwrap(), "--port", "0"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

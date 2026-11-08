@@ -168,7 +168,7 @@ impl Metastore {
             SCHEMA_VERSION => {}
             v => {
                 return Err(StorageError::Metastore(format!(
-                    "catalog schema version {v}, this tracedb understands {SCHEMA_VERSION}"
+                    "catalog schema version {v}, this smithling understands {SCHEMA_VERSION}"
                 )));
             }
         }

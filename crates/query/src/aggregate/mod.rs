@@ -19,16 +19,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Serialize, Serializer};
-use tracedb_ingest::{FeedbackLookup, Feedbacks};
-use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, SumOf, View};
-use tracedb_model::attrs::{Attrs, Scalar};
-use tracedb_model::cost::{self, Prices};
-use tracedb_model::filter::{
+use smithling_ingest::{FeedbackLookup, Feedbacks};
+use smithling_model::agg::{AggSpec, Compare, GroupKey, Metric, SumOf, View};
+use smithling_model::attrs::{Attrs, Scalar};
+use smithling_model::cost::{self, Prices};
+use smithling_model::filter::{
     AttrRoot, CmpOp, EvalStats, Expr, Field, Path, Row, TimeAt, Value, eval_with, print, status_name,
 };
-use tracedb_model::run::run_type_str;
-use tracedb_model::{Run, RunId, TraceId, Ts};
-use tracedb_storage::segment::{SegmentMeta, start_key};
+use smithling_model::run::run_type_str;
+use smithling_model::{Run, RunId, TraceId, Ts};
+use smithling_storage::segment::{SegmentMeta, start_key};
 
 pub use accum::{Acc, Cells, Facts, Keep};
 pub use progressive::{AggMsg, AggStream, Cancel, StreamOpts};
@@ -192,7 +192,7 @@ pub(crate) fn run_type_text(run: &Run) -> &str {
 /// `feedback.<key>` prints and parses back as itself (keys are stored as sent, e.g. with spaces).
 pub(crate) fn filterable_feedback_key(key: &str) -> bool {
     matches!(
-        tracedb_model::filter::parse_filter(&format!("exists(feedback.{key})")),
+        smithling_model::filter::parse_filter(&format!("exists(feedback.{key})")),
         Ok(Expr::Exists { path: Path::Feedback(k) }) if k == key
     )
 }
@@ -243,7 +243,7 @@ impl Plan<'_> {
         self.scope
             .project
             .as_ref()
-            .is_none_or(|p| project.unwrap_or(tracedb_model::DEFAULT_PROJECT) == p)
+            .is_none_or(|p| project.unwrap_or(smithling_model::DEFAULT_PROJECT) == p)
             && self.scope.traces.as_ref().is_none_or(|t| t.contains(&trace))
             && self.traces.as_ref().is_none_or(|t| t.contains(&trace))
     }
@@ -359,7 +359,7 @@ impl Accs {
                 }
             }
             View::Dist => {
-                if let Some(ms) = f.latency_ms.filter(|_| f.status != tracedb_model::Status::Running) {
+                if let Some(ms) = f.latency_ms.filter(|_| f.status != smithling_model::Status::Running) {
                     if !self.bins.contains_key(&key) {
                         self.bins.insert(key.clone(), Box::new([0; accum::BINS]));
                     }

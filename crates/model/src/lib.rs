@@ -1,4 +1,4 @@
-//! tracedb's run model: events, merged runs, the merge rule and validation. No I/O.
+//! smithling's run model: events, merged runs, the merge rule and validation. No I/O.
 
 pub mod agg;
 pub mod attrs;

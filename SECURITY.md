@@ -1,6 +1,6 @@
 # Security
 
-## What tracedb is built to be
+## What smithling is built to be
 
 A **single-user, local** tool. Its safety model is "nothing leaves your machine", not "safe to expose":
 

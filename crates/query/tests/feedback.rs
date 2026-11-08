@@ -9,11 +9,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use common::{Rng, batches, open, send, settle, uid};
 use serde_json::{Value as J, json};
-use tracedb_ingest::Feedback;
-use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, View};
-use tracedb_model::filter::{Expr, Path, parse_filter};
-use tracedb_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Status, Ts, merge};
-use tracedb_query::{Cells, Query, QuerySpec};
+use smithling_ingest::Feedback;
+use smithling_model::agg::{AggSpec, Compare, GroupKey, Metric, View};
+use smithling_model::filter::{Expr, Path, parse_filter};
+use smithling_model::{Op, RunEvent, RunFields, RunId, RunState, Source, Status, Ts, merge};
+use smithling_query::{Cells, Query, QuerySpec};
 
 const KEYS: [&str; 2] = ["correctness", "helpfulness"];
 
@@ -114,11 +114,11 @@ fn filtered<'a>(
     runs.values()
         .filter(|st| {
             f.is_none_or(|f| {
-                let attrs = tracedb_model::attrs::promote(&st.run);
+                let attrs = smithling_model::attrs::promote(&st.run);
                 let fb = |k: &str| means.get(&(st.run.run_id, k.to_string())).copied();
-                tracedb_model::filter::eval_with(
+                smithling_model::filter::eval_with(
                     f,
-                    &tracedb_model::filter::Row {
+                    &smithling_model::filter::Row {
                         run: &st.run,
                         attrs: &attrs,
                     },
@@ -193,7 +193,7 @@ async fn feedback_filters_and_averages_match_the_naive_mean() {
                     ..AggSpec::default()
                 };
                 let got = q
-                    .aggregate(&spec, &agg, &tracedb_model::cost::Prices::embedded())
+                    .aggregate(&spec, &agg, &smithling_model::cost::Prices::embedded())
                     .await
                     .unwrap();
                 let l = format!("{label} filter {f:?} avg {key}");
@@ -227,7 +227,7 @@ async fn feedback_filters_and_averages_match_the_naive_mean() {
             ..AggSpec::default()
         };
         let got = q
-            .aggregate(&QuerySpec::default(), &agg, &tracedb_model::cost::Prices::embedded())
+            .aggregate(&QuerySpec::default(), &agg, &smithling_model::cost::Prices::embedded())
             .await
             .unwrap();
         let every: Vec<&RunState> = runs.values().collect();
@@ -261,7 +261,7 @@ async fn feedback_filters_and_averages_match_the_naive_mean() {
             ..AggSpec::default()
         };
         let got = q
-            .aggregate(&QuerySpec::default(), &agg, &tracedb_model::cost::Prices::embedded())
+            .aggregate(&QuerySpec::default(), &agg, &smithling_model::cost::Prices::embedded())
             .await
             .unwrap();
         assert!(got.overlap, "{label}");
@@ -283,7 +283,7 @@ async fn feedback_filters_and_averages_match_the_naive_mean() {
                 naive_groups.entry(k.into()).or_default().push(st);
             }
         }
-        let got_groups: BTreeMap<String, &tracedb_query::Group> = got
+        let got_groups: BTreeMap<String, &smithling_query::Group> = got
             .groups
             .iter()
             .map(|g| (g.key[0].as_str().unwrap().to_string(), g))

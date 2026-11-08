@@ -6,9 +6,9 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use tracedb_ingest::Include;
-use tracedb_model::{Op, RunFields, RunHeader};
-use tracedb_query::Query;
+use smithling_ingest::Include;
+use smithling_model::{Op, RunFields, RunHeader};
+use smithling_query::Query;
 
 const TRACES: u64 = 30;
 const STEPS: u64 = 10;
@@ -20,7 +20,7 @@ fn step_id(t: u64, k: u64) -> u64 {
 /// `TRACES` traces of a root and `STEPS` steps over many small files; then, after they're flushed, step 1 of
 /// every trace and every root ends by an update (another version, in another file); the last trace's updates
 /// stay in the memtable.
-async fn loaded() -> (tempfile::TempDir, tracedb_ingest::Ingest) {
+async fn loaded() -> (tempfile::TempDir, smithling_ingest::Ingest) {
     const MEMTABLE: u64 = 16 * 1024;
     let (dir, ingest) = open(MEMTABLE);
     // A trace per upload, so the small memtable freezes between them.

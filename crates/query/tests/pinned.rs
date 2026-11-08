@@ -12,10 +12,10 @@ use std::sync::{Arc, Weak};
 use std::task::Poll;
 
 use common::*;
-use tracedb_ingest::{Ingest, Version};
-use tracedb_model::{Op, Status};
-use tracedb_query::{Page, Query, QuerySpec};
-use tracedb_storage::SegmentMeta;
+use smithling_ingest::{Ingest, Version};
+use smithling_model::{Op, Status};
+use smithling_query::{Page, Query, QuerySpec};
+use smithling_storage::SegmentMeta;
 
 const MEMTABLE: u64 = 8 * 1024;
 

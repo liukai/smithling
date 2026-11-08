@@ -1,4 +1,4 @@
-# Specification Quality Checklist: tracedb — local trace store and viewer for AI agents
+# Specification Quality Checklist: smithling — local trace store and viewer for AI agents
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-11-05

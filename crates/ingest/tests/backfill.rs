@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use tracedb_ingest::{Ingest, IngestConfig, Limits};
+use smithling_ingest::{Ingest, IngestConfig, Limits};
 
 const AGE: Duration = Duration::from_millis(400);
 
@@ -101,7 +101,7 @@ async fn upload(ingest: &Ingest, n: u128) {
         loop {
             match ingest.accept(vec![post(f.clone())]).await {
                 Ok(_) => break,
-                Err(tracedb_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(smithling_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
                 Err(e) => panic!("{e}"),
             }
         }

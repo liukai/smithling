@@ -6,9 +6,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracedb_ingest::{AcceptError, AcceptResult, Feedback, Incoming, Rejected};
-use tracedb_model::validate::Reject;
-use tracedb_model::{Op, Source, Ts};
+use smithling_ingest::{AcceptError, AcceptResult, Feedback, Incoming, Rejected};
+use smithling_model::validate::Reject;
+use smithling_model::{Op, Source, Ts};
 
 use crate::AppState;
 use crate::langsmith_map::{Dialect, incoming};
@@ -20,7 +20,7 @@ pub const BATCH_SIZE_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 pub async fn info() -> Json<Value> {
     Json(json!({
         "version": "",
-        "tracedb_version": env!("CARGO_PKG_VERSION"),
+        "smithling_version": env!("CARGO_PKG_VERSION"),
         "license_expiration_time": null,
         "batch_ingest_config": {
             "use_multipart_endpoint": true,

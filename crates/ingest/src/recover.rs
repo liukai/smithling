@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tracedb_model::{Op, RunId, Ts};
-use tracedb_storage::{DedupKeys, SegmentMeta, StorageError, fts, segment};
+use smithling_model::{Op, RunId, Ts};
+use smithling_storage::{DedupKeys, SegmentMeta, StorageError, fts, segment};
 
 use crate::dedup::{self, Dedup, DedupKey};
 use crate::flushed::FlushedIds;

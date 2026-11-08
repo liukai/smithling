@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use serde_json::json;
-use tracedb_model::{Op, RunEvent, RunState, Warning, merge, merge_versions};
+use smithling_model::{Op, RunEvent, RunState, Warning, merge, merge_versions};
 
 #[derive(Clone, Debug)]
 struct Step {

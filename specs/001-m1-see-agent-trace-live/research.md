@@ -1,7 +1,7 @@
 # Research: M1 — See agent trace live
 
 Master decisions that apply unchanged: R1 merge rule, R2 LangSmith compatibility, R3 UI stack, R7 durability, R9
-cursor, R11 dedup ([master research](../000-tracedb-master-plan/research.md)). The decisions below are specific to M1.
+cursor, R11 dedup ([master research](../000-smithling-master-plan/research.md)). The decisions below are specific to M1.
 
 ## M1-R1. One writer task
 - **Decision**: all accepted events go through one tokio task via a bounded channel. The task does dedup → seq → WAL →

@@ -3,9 +3,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tracedb_model::attrs::Attrs;
-use tracedb_model::filter::EvalStats;
-use tracedb_model::{RunId, RunState};
+use smithling_model::attrs::Attrs;
+use smithling_model::filter::EvalStats;
+use smithling_model::{RunId, RunState};
 
 use super::progressive::Cancel;
 use super::{Accs, AggStats, Pick, Plan, keys_of};

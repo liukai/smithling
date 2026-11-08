@@ -1,10 +1,10 @@
-# tracedb Constitution
+# smithling Constitution
 
 ## Core Principles
 
 ### I. Rust, One Binary
 
-- tracedb MUST be written in Rust and MUST ship as a single executable.
+- smithling MUST be written in Rust and MUST ship as a single executable.
 - Running it MUST NOT require installing anything else: no container runtime, database server, JVM, or
   separate language runtime. The browser UI MUST be embedded in the binary.
 - Optional external services (cloud storage, a hosted metadata database) are allowed only as
@@ -30,7 +30,7 @@ learning and the path to cloud scale.
 
 ### III. Local and Private
 
-- In local mode tracedb MUST make zero outbound network connections: no telemetry, update checks, or
+- In local mode smithling MUST make zero outbound network connections: no telemetry, update checks, or
   remote assets.
 - All persisted state MUST live under one data directory chosen at startup.
 - The server MUST bind to localhost by default.

@@ -8,10 +8,10 @@ ingest, query and storage heavily, so on today's code many line numbers point el
 (`git show 6e77f12:<path>`), or search for the function name. For the code as it is now, see the
 [M3 starter guide](../003-m3-search-aggregates-speed/starter-guide.md). Since the crate split, paths point at the new
 crate locations (`crates/server`, `crates/tools`), while line numbers are as of `6e77f12`, when those files were under
-`crates/tracedb`.
+`crates/smithling`.
 
 For *why* it is built this way, see [design.md](design.md); for the PR order, [plan.md](plan.md). Where the code
-differs from the design, the [decision log](../000-tracedb-master-plan/decisions.md) says why (D-012 to D-024 are the
+differs from the design, the [decision log](../000-smithling-master-plan/decisions.md) says why (D-012 to D-024 are the
 M2 ones; D-023 and D-024 came after this guide; D-025 to D-029 are M3's). This guide is about *where* things live.
 
 **Colour key** (diagrams use the fill colour; tables and headings use the marker):
@@ -41,7 +41,7 @@ Four ideas carry M2 (on top of M1's four):
    query never sees a half-done freeze or flush.
 3. **One merge rule, one evaluator.** File rows and memtable rows become `RunState`s, runs with several versions are
    merged with the M1 rule, and one `eval` decides the filter. DataFusion only prunes and pre-filters
-   ([D-017](../000-tracedb-master-plan/decisions.md#d-017)).
+   ([D-017](../000-smithling-master-plan/decisions.md#d-017)).
 4. **A live view is the same query, re-run.** It runs only over the traces that changed, at most every 100 ms.
 
 ## 1. Goals → functionality → where it lives
@@ -59,7 +59,7 @@ Four ideas carry M2 (on top of M1's four):
 | 🟠 | Bursts slow down, never fail | `429` when the next memtable fills during a flush, or unflushed WAL ≥ 1 GB | [writer.rs](../../crates/ingest/src/writer.rs) |
 | 🟠 | Fast restart | catalog read, small WAL replay, multi-version set from one column | [recover.rs](../../crates/ingest/src/recover.rs) |
 | 🟢 | Same results on cloud storage | `Store` (local or S3), `Metastore` (SQLite or Postgres) | [object.rs](../../crates/storage/src/object.rs), [metastore.rs](../../crates/storage/src/metastore.rs) |
-| 🟢 | Scenario numbers on every change | `tracedb demo`, overnight-eval scenario | [demo.rs](../../crates/tools/src/demo.rs), [scenario.rs](../../crates/tools/src/scenario.rs) |
+| 🟢 | Scenario numbers on every change | `smithling demo`, overnight-eval scenario | [demo.rs](../../crates/tools/src/demo.rs), [scenario.rs](../../crates/tools/src/scenario.rs) |
 | 🟠 | Honest retries | identity check before the WAL | [writer.rs](../../crates/ingest/src/writer.rs) |
 | 🟠 | UI work without server rebuilds; Rust build without Node | `--ui-dir`; `build.rs` embeds `ui/dist` if present | [routes/ui.rs](../../crates/server/src/routes/ui.rs), [build.rs](../../crates/server/build.rs) |
 
@@ -140,7 +140,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    A["tracedb: HTTP, SSE, CLI, demo, UI files"]:::revised
+    A["smithling: HTTP, SSE, CLI, demo, UI files"]:::revised
     B["query: scan, merge, filter, fields, tail"]:::revised
     C["ingest: writer, WAL, memtables, flusher, recovery"]:::revised
     D["storage: data files, catalog, Parquet format"]:::new
@@ -154,7 +154,7 @@ flowchart TB
 Each crate uses only the ones below it. `query` reads ingest through `Ingest::mem()`
 ([ingest/src/lib.rs:586](../../crates/ingest/src/lib.rs#L586)), `multi_version()` and `subscribe()`. It never
 writes. Only `storage` knows file paths, Parquet and SQL. `Version` lives in ingest next to the memtables, not in
-storage ([D-015](../000-tracedb-master-plan/decisions.md#d-015)).
+storage ([D-015](../000-smithling-master-plan/decisions.md#d-015)).
 
 ## 3. Suggested reading order (about 3 hours)
 
@@ -237,21 +237,21 @@ sequenceDiagram
 
 What changed from M1: a rejected item never reaches the WAL and gets no dedup key, so an identical retry is rejected
 again. This fixes the first rough edge in the [M1 guide](../001-m1-see-agent-trace-live/starter-guide.md). Runs only on
-disk aren't checked here ([D-009](../000-tracedb-master-plan/decisions.md#d-009)); see Scene 4.
+disk aren't checked here ([D-009](../000-smithling-master-plan/decisions.md#d-009)); see Scene 4.
 
 ### 🟠 Scene 2: the memtable fills, and uploads don't pause
 
 | Step | Code |
 |---|---|
-| Limits (M2): 128 MB or 10 min per memtable, 1 GB unflushed WAL (`serve --memtable`, `--flush-age`); M3: 64 MB measured as heap, 2 min ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) | [lib.rs:39-61](../../crates/ingest/src/lib.rs#L39), [main.rs:32-40](../../crates/tracedb/src/main.rs#L32) |
+| Limits (M2): 128 MB or 10 min per memtable, 1 GB unflushed WAL (`serve --memtable`, `--flush-age`); M3: 64 MB measured as heap, 2 min ([D-028](../000-smithling-master-plan/decisions.md#d-028)) | [lib.rs:39-61](../../crates/ingest/src/lib.rs#L39), [main.rs:32-40](../../crates/smithling/src/main.rs#L32) |
 | Freeze when full, old, or the WAL passes half its limit, and no flush is running | [writer.rs:98-111](../../crates/ingest/src/writer.rs#L98) |
 | Roll the WAL first, so every older file holds only frozen events | [writer.rs:112-117](../../crates/ingest/src/writer.rs#L112) → [wal.rs:159](../../crates/ingest/src/wal.rs#L159) |
 | O(1) swap: active becomes frozen, a fresh active takes uploads | [writer.rs:118-123](../../crates/ingest/src/writer.rs#L118) |
 | Hand the flusher the frozen memtable, its max seq and its dedup keys | [writer.rs:124-131](../../crates/ingest/src/writer.rs#L124) |
 | "Busy" only if the *next* memtable fills during a flush, or the WAL is over 1 GB → `429 Retry-After: 1` | [writer.rs:90-94](../../crates/ingest/src/writer.rs#L90), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/server/src/routes/errors.rs#L25) |
 
-`507` is gone ([D-006](../000-tracedb-master-plan/decisions.md#d-006)). `--max-memory` and `--max-runs` are still
-accepted, with a notice ([main.rs:118-120](../../crates/tracedb/src/main.rs#L122)).
+`507` is gone ([D-006](../000-smithling-master-plan/decisions.md#d-006)). `--max-memory` and `--max-runs` are still
+accepted, with a notice ([main.rs:118-120](../../crates/smithling/src/main.rs#L122)).
 
 ### 🟢 Scene 3: the flush (the part that must never lose data)
 
@@ -266,7 +266,7 @@ accepted, with a notice ([main.rs:118-120](../../crates/tracedb/src/main.rs#L122
 | Readers see the new files and stop seeing the frozen memtable in one step | [flush.rs:158](../../crates/ingest/src/flush.rs#L158), [flush.rs:184-188](../../crates/ingest/src/flush.rs#L184) → `Version::with_flush` [memtable.rs:31](../../crates/ingest/src/memtable.rs#L31) |
 | **③ trim**: delete WAL files whose events are all ≤ `flushed_seq` (never the last file) | [flush.rs:160-164](../../crates/ingest/src/flush.rs#L160) → `wal::trim` [wal.rs:177](../../crates/ingest/src/wal.rs#L177) |
 | Recount unflushed WAL bytes from the files (drives `429`) | [flush.rs:167-169](../../crates/ingest/src/flush.rs#L167) → [wal.rs:363](../../crates/ingest/src/wal.rs#L363) |
-| Kill points for the crash harness: `during_put`, `after_put`, `after_commit`, `during_trim`, `after_trim` | [lib.rs:191](../../crates/ingest/src/lib.rs#L191), [crash.rs:144-148](../../crates/tracedb/tests/crash.rs#L144) |
+| Kill points for the crash harness: `during_put`, `after_put`, `after_commit`, `during_trim`, `after_trim` | [lib.rs:191](../../crates/ingest/src/lib.rs#L191), [crash.rs:144-148](../../crates/smithling/tests/crash.rs#L144) |
 
 ```mermaid
 flowchart TB
@@ -288,15 +288,15 @@ At every arrow each confirmed event, and its dedup key, is in at least one durab
 argument.
 
 Where the design moved:
-- **Dedup keys live in the catalog** ([D-022](../000-tracedb-master-plan/decisions.md#d-022)). The design kept
+- **Dedup keys live in the catalog** ([D-022](../000-smithling-master-plan/decisions.md#d-022)). The design kept
   flushed WAL files for the 10-minute dedup window. That was 5.2 GB of 6.1 GB at 2M runs, so each flush now saves
   only its keys (a `dedup_keys` row, [metastore.rs:43-46](../../crates/storage/src/metastore.rs#L43)) and the WAL is
   trimmed right away.
-- **No bloom lookup at flush** ([D-016](../000-tracedb-master-plan/decisions.md#d-016)). `needs_merge` comes from
+- **No bloom lookup at flush** ([D-016](../000-smithling-master-plan/decisions.md#d-016)). `needs_merge` comes from
   "created by an update" or the multi-version set (Scene 4). M3: the writer keeps a filter of flushed run ids, so a
-  second start for a run on disk joins the set too ([D-025](../000-tracedb-master-plan/decisions.md#d-025), [flushed.rs](../../crates/ingest/src/flushed.rs)).
+  second start for a run on disk joins the set too ([D-025](../000-smithling-master-plan/decisions.md#d-025), [flushed.rs](../../crates/ingest/src/flushed.rs)).
 - **Field stats are summed in memory from the pinned `Version`**, not by SQL
-  ([D-020](../000-tracedb-master-plan/decisions.md#d-020)); the catalog stays the durable copy.
+  ([D-020](../000-smithling-master-plan/decisions.md#d-020)); the catalog stays the durable copy.
 
 ### 🟠 Scene 4: the late update meets a run that's already on disk
 
@@ -310,7 +310,7 @@ Where the design moved:
 
 The file row and the memtable row now both belong to one multi-version run. Neither is rewritten; the merge happens
 at read time (Scene 6). A version is just a `RunState` with a `present` bitmask
-([D-010](../000-tracedb-master-plan/decisions.md#d-010)).
+([D-010](../000-smithling-master-plan/decisions.md#d-010)).
 
 ### 🟠 Scene 5: restart (recovery and the folder lock)
 
@@ -336,8 +336,8 @@ flowchart TB
 | Read `flushed_seq`, active segments, field stats, saved key sets, and the file listing | [recover.rs:35-43](../../crates/ingest/src/recover.rs#L35) |
 | Orphans = data files not in the catalog. Refuse to delete them if the WAL doesn't reach back to `flushed_seq` (wrong `--metastore`?) | [recover.rs:46-81](../../crates/ingest/src/recover.rs#L46) |
 | A registered file that's missing is left out and reported in `/healthz` `corrupt_segments` | [recover.rs:87-91](../../crates/ingest/src/recover.rs#L87) |
-| Multi-version set: read `run_id` + `needs_merge` of each file that has such rows (an unreadable one is left out). M3 reads every file's columns and footer, and rebuilds the flushed-ids filter from them ([D-025](../000-tracedb-master-plan/decisions.md#d-025)) | [recover.rs:92-104](../../crates/ingest/src/recover.rs#L92) → [segment.rs:792](../../crates/storage/src/segment.rs#L792) |
-| Saved dedup keys → window entries and "already flushed" run ids (M3: the flushed-ids filter replaces the latter, [D-025](../000-tracedb-master-plan/decisions.md#d-025)) | [recover.rs:124-138](../../crates/ingest/src/recover.rs#L124) → `unpack` [dedup.rs:28](../../crates/ingest/src/dedup.rs#L28) |
+| Multi-version set: read `run_id` + `needs_merge` of each file that has such rows (an unreadable one is left out). M3 reads every file's columns and footer, and rebuilds the flushed-ids filter from them ([D-025](../000-smithling-master-plan/decisions.md#d-025)) | [recover.rs:92-104](../../crates/ingest/src/recover.rs#L92) → [segment.rs:792](../../crates/storage/src/segment.rs#L792) |
+| Saved dedup keys → window entries and "already flushed" run ids (M3: the flushed-ids filter replaces the latter, [D-025](../000-smithling-master-plan/decisions.md#d-025)) | [recover.rs:124-138](../../crates/ingest/src/recover.rs#L124) → `unpack` [dedup.rs:28](../../crates/ingest/src/dedup.rs#L28) |
 | Replay: skip `seq ≤ S`; apply the rest through the same `RunStore::apply`; a new state from an update joins the multi-version set | [recover.rs:144-169](../../crates/ingest/src/recover.rs#L144) |
 | Flushed records left by a crash between commit and trim: save their keys, then trim | [recover.rs:174-191](../../crates/ingest/src/recover.rs#L174) |
 | An M1 folder (only `wal/`) gets a fresh catalog with `flushed_seq = 0` | [recover.rs:3](../../crates/ingest/src/recover.rs#L3), [metastore.rs:97-103](../../crates/storage/src/metastore.rs#L97) |
@@ -374,13 +374,13 @@ flowchart TB
 | One `QuerySpec` for every read (UI, API, CLI, live, demo) | [query/lib.rs:60](../../crates/query/src/lib.rs#L60) |
 | Cursor: checked against a hash of the query; later pages narrow the time bound to the cursor | [lib.rs:265-279](../../crates/query/src/lib.rs#L265) → [cursor.rs:27](../../crates/query/src/cursor.rs#L27) |
 | **Pin**: under the memtable lock take the `Version` and copies of the memtable runs in scope, without payloads | [lib.rs:281](../../crates/query/src/lib.rs#L281) → `scan::pin` [scan.rs:162](../../crates/query/src/scan.rs#L162) |
-| **Windows** (by start time, no `count`): read the newest ~20k rows first, ×4 each next, stop at limit + 1 matches ([D-021](../000-tracedb-master-plan/decisions.md#d-021)) | [lib.rs:282-298](../../crates/query/src/lib.rs#L282), [lib.rs:318-378](../../crates/query/src/lib.rs#L318) → [window.rs:80](../../crates/query/src/window.rs#L80) |
+| **Windows** (by start time, no `count`): read the newest ~20k rows first, ×4 each next, stop at limit + 1 matches ([D-021](../000-smithling-master-plan/decisions.md#d-021)) | [lib.rs:282-298](../../crates/query/src/lib.rs#L282), [lib.rs:318-378](../../crates/query/src/lib.rs#L318) → [window.rs:80](../../crates/query/src/window.rs#L80) |
 | **Pushdown**: compile what's safe; `is_root` added | `matching` [lib.rs:215-234](../../crates/query/src/lib.rs#L215) → `compile` [pushdown.rs:26](../../crates/query/src/pushdown.rs#L26) |
 | Pushdown rule: may keep extra rows, never drop a match; a promoted-string `eq` becomes a text match on `attrs` | [pushdown.rs:1-9](../../crates/query/src/pushdown.rs#L1), `attr` [pushdown.rs:142](../../crates/query/src/pushdown.rs#L142) |
 | **Prune**: files by project (or unknown project), start-key range, trace-id range | `file_in_scope` [scan.rs:75](../../crates/query/src/scan.rs#L75) |
 | **Scan**: DataFusion reads core files with scope ∧ (pushed ∨ `needs_merge`) | [scan.rs:304-310](../../crates/query/src/scan.rs#L304) → `read_core` [scan.rs:221](../../crates/query/src/scan.rs#L221) |
 | **Multi-version ids**: marked in a file, created by an update, or in the multi-version set | [scan.rs:312-322](../../crates/query/src/scan.rs#L312) |
-| Fetch every version of those, from every file that may hold one (any project), `run_id IN (…)` in chunks; blooms skip most files. Changed by [D-024](../000-tracedb-master-plan/decisions.md#d-024) (`7c5b094`): up to 2,000 ids one `IN` scan, more read each file's run ids first; M3: lists use merged file rows kept across requests ([D-029](../000-tracedb-master-plan/decisions.md#d-029)) | [scan.rs:323-341](../../crates/query/src/scan.rs#L323) → `versions_of` [scan.rs:244](../../crates/query/src/scan.rs#L244) |
+| Fetch every version of those, from every file that may hold one (any project), `run_id IN (…)` in chunks; blooms skip most files. Changed by [D-024](../000-smithling-master-plan/decisions.md#d-024) (`7c5b094`): up to 2,000 ids one `IN` scan, more read each file's run ids first; M3: lists use merged file rows kept across requests ([D-029](../000-smithling-master-plan/decisions.md#d-029)) | [scan.rs:323-341](../../crates/query/src/scan.rs#L323) → `versions_of` [scan.rs:244](../../crates/query/src/scan.rs#L244) |
 | **Merge**: group by run id, merge versions and their attributes | [scan.rs:343-361](../../crates/query/src/scan.rs#L343) → `merge_group` [scan.rs:365](../../crates/query/src/scan.rs#L365) |
 | **Filter**: one evaluator on merged runs, for file and memtable rows alike | [lib.rs:235-252](../../crates/query/src/lib.rs#L235) → `eval` [eval.rs:25](../../crates/model/src/filter/eval.rs#L25) |
 | **Trace / tree conditions**: for each chunk of 2,000 candidates in page order, re-run `matching` over their whole traces (roots for `trace_filter`, any run for `tree_filter`) and keep traces that match | [lib.rs:356-372](../../crates/query/src/lib.rs#L356) → `trace_conditions` [lib.rs:434-463](../../crates/query/src/lib.rs#L434) |
@@ -391,11 +391,11 @@ version, merges them, and the merged run is `error`, so its trace qualifies. The
 passes the run filter on its own.
 
 Where the design moved:
-- **No DataFusion UDAF or semi-joins** ([D-017](../000-tracedb-master-plan/decisions.md#d-017)). DataFusion prunes
+- **No DataFusion UDAF or semi-joins** ([D-017](../000-smithling-master-plan/decisions.md#d-017)). DataFusion prunes
   and pre-filters; merging, the exact filter and trace/tree conditions run in our code.
-- **Early stop by start-time windows** ([D-021](../000-tracedb-master-plan/decisions.md#d-021)). `stats.matched`
+- **Early stop by start-time windows** ([D-021](../000-smithling-master-plan/decisions.md#d-021)). `stats.matched`
   covers the runs read; `"count": true` reads everything.
-- **`child_count` is 0 in result lists** ([D-018](../000-tracedb-master-plan/decisions.md#d-018),
+- **`child_count` is 0 in result lists** ([D-018](../000-smithling-master-plan/decisions.md#d-018),
   [lib.rs:413](../../crates/query/src/lib.rs#L413)).
 
 ### 🟠 Scene 7: opening the trace
@@ -405,11 +405,11 @@ Where the design moved:
 | `GET /api/traces/{id}` | [routes/api.rs:243](../../crates/server/src/routes/api.rs#L243) |
 | Scope = one trace id: files pruned by `min/max_trace_id`, then DataFusion uses the `trace_id` bloom | [query/lib.rs:466-472](../../crates/query/src/lib.rs#L466), [scan.rs:66-73](../../crates/query/src/scan.rs#L66), [scan.rs:104-106](../../crates/query/src/scan.rs#L104) |
 | Same merge as Scene 6; child counts computed from the trace; sorted by `dotted_order` (the M1 tree order) | [lib.rs:476-492](../../crates/query/src/lib.rs#L476) |
-| `GET /api/runs/{id}?include=…`: header by run id, then payload from the memtable or payload files, newest version per field (M2 probes every file in scope; M3 reads each payload by row number from the file of its flush, [D-029](../000-tracedb-master-plan/decisions.md#d-029)) | [lib.rs:496-528](../../crates/query/src/lib.rs#L496) → `scan::payload` [scan.rs:391](../../crates/query/src/scan.rs#L391) |
+| `GET /api/runs/{id}?include=…`: header by run id, then payload from the memtable or payload files, newest version per field (M2 probes every file in scope; M3 reads each payload by row number from the file of its flush, [D-029](../000-smithling-master-plan/decisions.md#d-029)) | [lib.rs:496-528](../../crates/query/src/lib.rs#L496) → `scan::payload` [scan.rs:391](../../crates/query/src/scan.rs#L391) |
 | The UI tree and step panel are M1's | [ui/src/TraceView.tsx](../../ui/src/TraceView.tsx) |
 
 `/api/roots` (M1's list) is now a query: [api.rs:196-234](../../crates/server/src/routes/api.rs#L196).
-`/api/projects` counts every run, from the catalog ([D-019](../000-tracedb-master-plan/decisions.md#d-019),
+`/api/projects` counts every run, from the catalog ([D-019](../000-smithling-master-plan/decisions.md#d-019),
 [lib.rs:532](../../crates/query/src/lib.rs#L532)).
 
 ### 🟠 Scene 8: the live view
@@ -453,7 +453,7 @@ conditions, only runs newer than the tab's load are sent ([tail.rs:103-107](../.
 The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.test.ts) and
 [model/tests/filter.rs](../../crates/model/tests/filter.rs) keep them in step.
 
-### 🟢 Scene 11: `tracedb demo`
+### 🟢 Scene 11: `smithling demo`
 
 | Step | Code |
 |---|---|
@@ -482,14 +482,14 @@ The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.tes
 Checked on 2026-11-06 with the release binary (port 7070 assumed; add `--port`/`--url` to change it):
 
 ```bash
-tracedb demo --seed 7                      # 5 checks, all pass; ~1 s, 2 flushes (M3: add --checks m2; default is 10 checks)
+smithling demo --seed 7                      # 5 checks, all pass; ~1 s, 2 flushes (M3: add --checks m2; default is 10 checks)
 
-tracedb serve --data /tmp/tdb --memtable 4MB &
-tracedb seed --traces 300 --no-delay       # ~49k runs, ~245 flushes at 4 MB
+smithling serve --data /tmp/tdb --memtable 4MB &
+smithling seed --traces 300 --no-delay       # ~49k runs, ~245 flushes at 4 MB
 curl -s localhost:7070/healthz | jq '{segments, flushes, flushed_seq, unflushed_wal_bytes, corrupt_segments}'
 
-tracedb query --root --tree-filter 'eq(status, "error")' 'eq(status, "ok")'
-tracedb query 'eq(stauts, "ok")'           # exit 1; caret under the typo, "did you mean status?"
+smithling query --root --tree-filter 'eq(status, "error")' 'eq(status, "ok")'
+smithling query 'eq(stauts, "ok")'           # exit 1; caret under the typo, "did you mean status?"
 curl -s localhost:7070/api/query -H 'content-type: application/json' \
   -d '{"limit": 1, "count": true}' | jq .stats      # files_scanned, rows_read, rows_merged, matched
 
@@ -505,10 +505,10 @@ ls /tmp/tdb/data/*/*/ /tmp/tdb/wal        # immutable files; the WAL is trimmed 
 The tests are the spec in executable form. I didn't run these here (they build the workspace):
 
 ```bash
-cargo test -p tracedb-query --test merge_on_read   # query == naive answer, random flush points
-cargo test -p tracedb-ingest --test recover        # orphans, saved keys, missing files, folder lock
-cargo test -p tracedb --test e2e_live              # live views over HTTP
-cargo test --release -p tracedb --test crash -- --ignored   # kill -9 at every flush step (slow)
+cargo test -p smithling-query --test merge_on_read   # query == naive answer, random flush points
+cargo test -p smithling-ingest --test recover        # orphans, saved keys, missing files, folder lock
+cargo test -p smithling --test e2e_live              # live views over HTTP
+cargo test --release -p smithling --test crash -- --ignored   # kill -9 at every flush step (slow)
 ```
 
 ## 7. Where M2 is most likely to be wrong (read these tests first)
@@ -517,7 +517,7 @@ cargo test --release -p tracedb --test crash -- --ignored   # kill -9 at every f
    [merge_on_read.rs:328](../../crates/query/tests/merge_on_read.rs#L328) compares every query with a naive fold
    over all events, whatever was flushed. Two rows for one run, or a stale field, means the `needs_merge` /
    multi-version rule is broken.
-2. **Flush crash windows**: [crash.rs:141](../../crates/tracedb/tests/crash.rs#L141) kills the binary at each kill
+2. **Flush crash windows**: [crash.rs:141](../../crates/smithling/tests/crash.rs#L141) kills the binary at each kill
    point. Duplicates mean replay didn't skip `seq ≤ S`; losses mean trim ran too early.
 3. **Early stop** ([early_stop.rs](../../crates/query/tests/early_stop.rs), new with D-021): a late version with a
    different `dotted_order` must stay with its run across windows.
@@ -534,7 +534,7 @@ marked **Fixed in …**.
 - **A corrupt data file is caught at start only if it has `needs_merge` rows.** Only those files are read at start
   ([recover.rs:92](../../crates/ingest/src/recover.rs#L92)). Overwrite a file that has none, restart, and
   `/healthz` says `ok: true, corrupt_segments: []`. Then every query whose scope includes that file fails with `500
-  query_failed` ("Corrupt footer"). **Fixed in `9a10d84`** (M3, [D-025](../000-tracedb-master-plan/decisions.md#d-025)): start checks every file's footer.
+  query_failed` ("Corrupt footer"). **Fixed in `9a10d84`** (M3, [D-025](../000-smithling-master-plan/decisions.md#d-025)): start checks every file's footer.
 - **A data file that disappears after start breaks queries, not health.** Start does check that every file exists
   ([recover.rs:87](../../crates/ingest/src/recover.rs#L87)). Delete one while serving, and every query over it
   returns `500` ("No files found at …"), while `/healthz` stays `ok`. It doesn't return fewer rows silently.
@@ -543,23 +543,23 @@ marked **Fixed in …**.
 - **The field browser counts versions, not runs.** Stats are per stored version, so a late update's version adds
   to the counts. On a seeded folder `/api/fields/values?path=run_type` lists `other 4873`, yet
   `eq(run_type, "other")` with `"count": true` matches 0: the update versions have no `run_type` until merged.
-  `status` is likewise counted 53,625 times for 48,752 runs. **Fixed in `8cc8d83`** ([D-023](../000-tracedb-master-plan/decisions.md#d-023)): multi-version runs
+  `status` is likewise counted 53,625 times for 48,752 runs. **Fixed in `8cc8d83`** ([D-023](../000-smithling-master-plan/decisions.md#d-023)): multi-version runs
   are counted once, merged.
 - **A second *start* for a run already on disk isn't marked `needs_merge`**
-  ([D-016](../000-tracedb-master-plan/decisions.md#d-016)). Reads still merge versions they happen to see
+  ([D-016](../000-smithling-master-plan/decisions.md#d-016)). Reads still merge versions they happen to see
   ([scan.rs:350](../../crates/query/src/scan.rs#L350)). A pushed-down filter can drop one of them, though, and then
-  the run is judged on the other. The SDK doesn't send this. **Fixed in `9a10d84`** (M3, [D-025](../000-tracedb-master-plan/decisions.md#d-025)): a filter of
+  the run is judged on the other. The SDK doesn't send this. **Fixed in `9a10d84`** (M3, [D-025](../000-smithling-master-plan/decisions.md#d-025)): a filter of
   flushed run ids marks such a start multi-version.
 - **Identity conflicts for runs only on disk are accepted** and reported as a warning, not rejected
-  ([D-009](../000-tracedb-master-plan/decisions.md#d-009)).
+  ([D-009](../000-smithling-master-plan/decisions.md#d-009)).
 - **Cloud paths are untested.** The S3 branch of `Store::open` ([object.rs:32](../../crates/storage/src/object.rs#L32))
   and the Postgres placeholders ([metastore.rs:120](../../crates/storage/src/metastore.rs#L120)) never run in a test.
   `ci/cloud.yml` and the cloud CI job (tasks T003, T068, T069) are still open, so "same results on cloud storage" is
   unproven. **Tasks closed in `4ae49f0`**, but the job and the S3/Postgres tests have still not run (no Docker or
-  remote CI here; backlog D3-3 in the [roadmap](../000-tracedb-master-plan/roadmap.md)).
+  remote CI here; backlog D3-3 in the [roadmap](../000-smithling-master-plan/roadmap.md)).
 - **No browser check of the UI.** UI tests run in jsdom (vitest). I didn't open the UI, and didn't render this
   guide's Mermaid charts.
-- **`tracedb seed` timestamps run into the future.** Traces are spaced 7 s apart from "now", so 300 traces end ~35
+- **`smithling seed` timestamps run into the future.** Traces are spaced 7 s apart from "now", so 300 traces end ~35
   min ahead. `--time 12h` still includes them (there's no upper bound); a `time.to` of now would not. **Fixed in
   `9a10d84`**: runs never start in the future.
 - **`crates/query` line numbers will move.** The early-stop change (D-021: `window.rs`, `select`, `scan.rs`,

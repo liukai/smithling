@@ -1,6 +1,6 @@
 //! A 250-step trace with 40 KB payloads opens fast (SC-03): the tree API returns headers only.
 
-use tracedb_server::testkit as common;
+use smithling_server::testkit as common;
 
 use std::time::{Duration, Instant};
 

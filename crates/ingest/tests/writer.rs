@@ -4,10 +4,10 @@ use std::fs;
 use std::path::Path;
 
 use common::*;
-use tracedb_ingest::store::Include;
-use tracedb_ingest::wal::{DEFAULT_ROLL_BYTES, Wal};
-use tracedb_ingest::{AcceptError, Ingest, IngestConfig};
-use tracedb_model::Reason;
+use smithling_ingest::store::Include;
+use smithling_ingest::wal::{DEFAULT_ROLL_BYTES, Wal};
+use smithling_ingest::{AcceptError, Ingest, IngestConfig};
+use smithling_model::Reason;
 
 fn open(dir: &Path) -> Ingest {
     Ingest::open(IngestConfig::new(dir)).unwrap().0
@@ -132,7 +132,7 @@ async fn changes_are_published_before_confirmation() {
         .unwrap();
     let change = rx.try_recv().expect("published by the time accept returns");
     assert_eq!(change.header.run_id, t);
-    assert_eq!(change.kind, tracedb_model::ChangeKind::NewRoot);
+    assert_eq!(change.kind, smithling_model::ChangeKind::NewRoot);
     assert!(change.is_new());
 
     let u = uuid(2);
@@ -219,10 +219,10 @@ async fn identity_conflicts_inside_one_batch_are_rejected() {
 
 fn flushing(dir: &Path) -> IngestConfig {
     let mut cfg = IngestConfig::new(dir);
-    cfg.limits = tracedb_ingest::Limits {
+    cfg.limits = smithling_ingest::Limits {
         flush_age_us: 100_000,
         dedup_window_us: 0,
-        ..tracedb_ingest::Limits::default()
+        ..smithling_ingest::Limits::default()
     };
     cfg
 }
@@ -258,7 +258,7 @@ fn forget_dedup_keys(dir: &Path) {
     .unwrap();
 }
 
-fn again(i: u128) -> tracedb_ingest::Incoming {
+fn again(i: u128) -> smithling_ingest::Incoming {
     let mut f = root(uuid(i), "2026-11-05T02:14:07Z", "r");
     f.inputs = Some(serde_json::json!({"q": "second start"}));
     post(f)

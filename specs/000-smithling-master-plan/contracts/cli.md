@@ -8,4 +8,4 @@ one milestone at a time, and each milestone's contract is the source of truth fo
 3. [M3](../../003-m3-search-aggregates-speed/contracts/cli.md): `bench`, aggregate flags for `query`, memory and
    cache flags, the M3 `demo` checks.
 
-`tracedb --help` (and `tracedb <command> --help`) prints the flags of the binary you have.
+`smithling --help` (and `smithling <command> --help`) prints the flags of the binary you have.

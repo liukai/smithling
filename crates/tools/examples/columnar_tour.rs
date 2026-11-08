@@ -5,8 +5,8 @@
 //! columnar layout). Then answers five questions with each and prints what each had to read.
 //!
 //! ```sh
-//! cargo run --release -p tracedb-tools --example columnar_tour            # 1,000,000 runs
-//! cargo run --release -p tracedb-tools --example columnar_tour -- 200000  # fewer
+//! cargo run --release -p smithling-tools --example columnar_tour            # 1,000,000 runs
+//! cargo run --release -p smithling-tools --example columnar_tour -- 200000  # fewer
 //! ```
 
 use std::fs::File;
@@ -203,7 +203,7 @@ fn write_columns(path: &Path, runs: &[Run]) -> Result<(), Box<dyn std::error::Er
             strs(|r| &r.output),
         ],
     )?;
-    // The same settings tracedb uses for its data files (crates/storage/src/segment.rs).
+    // The same settings smithling uses for its data files (crates/storage/src/segment.rs).
     let props = WriterProperties::builder()
         .set_max_row_group_row_count(Some(ROW_GROUP_ROWS))
         .set_statistics_enabled(EnabledStatistics::Page)

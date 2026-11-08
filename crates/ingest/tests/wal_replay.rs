@@ -4,8 +4,8 @@ use std::fs;
 
 use common::*;
 use proptest::prelude::*;
-use tracedb_ingest::wal::{DEFAULT_ROLL_BYTES, Wal, WalError};
-use tracedb_model::RunEvent;
+use smithling_ingest::wal::{DEFAULT_ROLL_BYTES, Wal, WalError};
+use smithling_model::RunEvent;
 
 fn replay(dir: &std::path::Path) -> Vec<RunEvent> {
     let mut out = Vec::new();

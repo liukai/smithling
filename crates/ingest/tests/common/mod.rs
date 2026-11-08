@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use tracedb_ingest::Incoming;
-use tracedb_model::{Op, RunEvent, RunFields, Source, Ts};
+use smithling_ingest::Incoming;
+use smithling_model::{Op, RunEvent, RunFields, Source, Ts};
 use uuid::Uuid;
 
 pub fn uuid(n: u128) -> Uuid {

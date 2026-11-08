@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use futures_util::StreamExt;
-use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, Pct, SumOf, View};
-use tracedb_model::cost::Prices;
-use tracedb_model::filter::parse_filter;
-use tracedb_query::aggregate::{AggMsg, StreamOpts};
-use tracedb_query::{AggResult, Cells, Query, QuerySpec};
+use smithling_model::agg::{AggSpec, Compare, GroupKey, Metric, Pct, SumOf, View};
+use smithling_model::cost::Prices;
+use smithling_model::filter::parse_filter;
+use smithling_query::aggregate::{AggMsg, StreamOpts};
+use smithling_query::{AggResult, Cells, Query, QuerySpec};
 
 fn every_file() -> StreamOpts {
     StreamOpts {
@@ -255,17 +255,17 @@ async fn dropping_the_stream_stops_reading() {
 }
 
 /// SC-06 at 2M runs: time to the first estimate on a cold server (merged rows of multi-version runs not read
-/// yet) and a warm one, and to the exact result. Slow: `cargo test --release -p tracedb-query --test progressive
-/// -- --ignored --nocapture`; `TRACEDB_2M_DIR` keeps the data between runs, `TRACEDB_2M_MEMTABLE_MB` sizes files.
+/// yet) and a warm one, and to the exact result. Slow: `cargo test --release -p smithling-query --test progressive
+/// -- --ignored --nocapture`; `SMITHLING_2M_DIR` keeps the data between runs, `SMITHLING_2M_MEMTABLE_MB` sizes files.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn timings_at_2m_runs() {
-    use tracedb_ingest::{Incoming, Ingest, IngestConfig};
-    use tracedb_model::{Op, RunFields, Source, Ts};
+    use smithling_ingest::{Incoming, Ingest, IngestConfig};
+    use smithling_model::{Op, RunFields, Source, Ts};
     const RUNS: u64 = 2_000_000;
-    let dir = std::env::var("TRACEDB_2M_DIR").unwrap_or_else(|_| "/tmp/tracedb-2m-u7".into());
+    let dir = std::env::var("SMITHLING_2M_DIR").unwrap_or_else(|_| "/tmp/smithling-2m-u7".into());
     // About unit 4's spike shape (38 files) by default.
-    let mb: u64 = std::env::var("TRACEDB_2M_MEMTABLE_MB").map_or(24, |v| v.parse().unwrap());
+    let mb: u64 = std::env::var("SMITHLING_2M_MEMTABLE_MB").map_or(24, |v| v.parse().unwrap());
     let open = || {
         let mut cfg = IngestConfig::new(&dir);
         cfg.limits.memtable_bytes = mb * 1024 * 1024;
@@ -341,7 +341,7 @@ async fn timings_at_2m_runs() {
             loop {
                 match ingest.accept(items.clone()).await {
                     Ok(_) => break,
-                    Err(tracedb_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
+                    Err(smithling_ingest::AcceptError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
                     Err(e) => panic!("{e}"),
                 }
             }

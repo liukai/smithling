@@ -4,7 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use tracedb_model::{Op, RunId, Ts};
+use smithling_model::{Op, RunId, Ts};
 
 /// 10 minutes: SDK retries come within seconds; a longer window doesn't fit in memory at M2 scale (D-008).
 pub const DEFAULT_WINDOW_US: i64 = 10 * 60 * 1_000_000;

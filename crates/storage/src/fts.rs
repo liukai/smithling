@@ -26,8 +26,8 @@ use datafusion::parquet::schema::types::ColumnPath;
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, TryStreamExt};
 use serde_json::Value;
-use tracedb_model::present;
-use tracedb_model::text;
+use smithling_model::present;
+use smithling_model::text;
 
 use crate::cache::{Cache, CachedReader};
 use crate::segment::{SegmentMeta, Version};

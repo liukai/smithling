@@ -5,10 +5,10 @@ use bytes::Bytes;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
 use serde_json::json;
-use tracedb_model::attrs::promote;
-use tracedb_model::{Op, RunEvent, RunFields, RunState, Source, Ts, merge, merge_versions};
-use tracedb_storage::segment::{self, Version, decode_core, decode_payload, start_key};
-use tracedb_storage::{DedupKeys, Metastore, Store};
+use smithling_model::attrs::promote;
+use smithling_model::{Op, RunEvent, RunFields, RunState, Source, Ts, merge, merge_versions};
+use smithling_storage::segment::{self, Version, decode_core, decode_payload, start_key};
+use smithling_storage::{DedupKeys, Metastore, Store};
 use uuid::Uuid;
 
 fn uid(n: u128) -> Uuid {
@@ -174,7 +174,7 @@ fn field_stats_count_types_and_top_values() {
 
 #[test]
 fn stats_resume_from_their_full_listing() {
-    use tracedb_storage::segment::StatsBuilder;
+    use smithling_storage::segment::StatsBuilder;
     let runs: Vec<RunState> = (1..=30).map(|n| state(n, 1, n % 4 != 0)).collect();
     let add = |b: &mut StatsBuilder, rs: &[RunState]| rs.iter().for_each(|st| b.add_run(st, &promote(&st.run)));
     let mut whole = StatsBuilder::default();
@@ -310,11 +310,11 @@ async fn a_catalog_from_before_dedup_keys_is_upgraded_on_open() {
 #[test]
 fn passwords_are_redacted() {
     assert_eq!(
-        tracedb_storage::redact("error connecting to postgres://tdb:s3cret@db:5432/x failed"),
+        smithling_storage::redact("error connecting to postgres://tdb:s3cret@db:5432/x failed"),
         "error connecting to postgres://tdb:***@db:5432/x failed"
     );
     assert_eq!(
-        tracedb_storage::redact("sqlite:///tmp/meta.sqlite"),
+        smithling_storage::redact("sqlite:///tmp/meta.sqlite"),
         "sqlite:///tmp/meta.sqlite"
     );
 }
@@ -398,8 +398,8 @@ fn a_state_without_its_payload_is_never_rewritten() {
 #[test]
 fn only_missing_or_undecodable_files_count_as_damaged() {
     use datafusion::parquet::errors::ParquetError;
-    use tracedb_storage::StorageError;
-    use tracedb_storage::segment::damage;
+    use smithling_storage::StorageError;
+    use smithling_storage::segment::damage;
     let not_found = || object_store::Error::NotFound {
         path: "a".into(),
         source: "gone".into(),

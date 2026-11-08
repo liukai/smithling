@@ -1,4 +1,4 @@
 [env]
-# The server's allocator (jemalloc, crates/tracedb): no thread caches, and freed pages go back to the OS as they
+# The server's allocator (jemalloc, crates/smithling): no thread caches, and freed pages go back to the OS as they
 # are freed, so an idle server shrinks (research M3-R12). `_RJEM_MALLOC_CONF` overrides it at run time.
 JEMALLOC_SYS_WITH_MALLOC_CONF = "tcache:false,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:8"

@@ -1,7 +1,7 @@
 //! The word tokenizer shared by search terms and the text index (M3-R2).
 
 use serde_json::json;
-use tracedb_model::text::{scalar_tokens, tokens};
+use smithling_model::text::{scalar_tokens, tokens};
 
 fn t(s: &str) -> Vec<String> {
     tokens(s)
@@ -68,8 +68,8 @@ fn scalars_as_text() {
 
 // Phrases and excerpts (M3-R3, data-model §6): consecutive words within one leaf, on the merged run's text.
 
-use tracedb_model::filter::Side;
-use tracedb_model::text::{EXCERPT_CHARS, Text, excerpt, phrase_in};
+use smithling_model::filter::Side;
+use smithling_model::text::{EXCERPT_CHARS, Text, excerpt, phrase_in};
 
 fn w(s: &str) -> Vec<String> {
     tokens(s)
@@ -83,7 +83,7 @@ fn outputs(v: &serde_json::Value) -> Text<'_> {
 }
 
 /// The excerpt's marked part, by character offsets.
-fn marked(m: &tracedb_model::text::Match) -> String {
+fn marked(m: &smithling_model::text::Match) -> String {
     m.excerpt.chars().skip(m.start).take(m.end - m.start).collect()
 }
 

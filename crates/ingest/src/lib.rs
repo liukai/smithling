@@ -24,14 +24,14 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::sync::{Semaphore, broadcast, oneshot};
-use tracedb_model::validate::json_size;
-use tracedb_model::{
+use smithling_model::validate::json_size;
+use smithling_model::{
     Op, Reason, RunFields, RunHeader, RunId, RunState, RunView, Source, Status, TraceId, TraceView, Ts, merge_versions,
     validate,
 };
-use tracedb_storage::cache::Cache;
-use tracedb_storage::{Metastore, SegmentMeta, StorageError, Store};
+use smithling_storage::cache::Cache;
+use smithling_storage::{Metastore, SegmentMeta, StorageError, Store};
+use tokio::sync::{Semaphore, broadcast, oneshot};
 
 pub use feedback::{Feedback, FeedbackError, FeedbackLookup, Feedbacks, KeyStat};
 pub use flush::FlushHealth;
@@ -59,7 +59,7 @@ pub struct Limits {
     pub dedup_window_us: i64,
     /// Dedup keys kept at most (the oldest go first).
     pub dedup_keys: usize,
-    /// The data cache's bound ([`tracedb_storage::cache::Cache`]).
+    /// The data cache's bound ([`smithling_storage::cache::Cache`]).
     pub cache_bytes: u64,
 }
 
@@ -71,7 +71,7 @@ impl Default for Limits {
             max_unflushed_wal: DEFAULT_MAX_UNFLUSHED_WAL,
             dedup_window_us: dedup::DEFAULT_WINDOW_US,
             dedup_keys: dedup::DEFAULT_CAP,
-            cache_bytes: tracedb_storage::cache::DEFAULT_BYTES,
+            cache_bytes: smithling_storage::cache::DEFAULT_BYTES,
         }
     }
 }
@@ -145,7 +145,7 @@ pub struct AcceptResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AcceptError {
-    #[error("tracedb is busy; retry shortly")]
+    #[error("smithling is busy; retry shortly")]
     Busy,
     #[error("storage error: {0}")]
     Storage(String),
@@ -161,7 +161,7 @@ pub enum OpenError {
     Storage(#[from] StorageError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
-    #[error("data folder {0} is in use by another tracedb process")]
+    #[error("data folder {0} is in use by another smithling process")]
     Locked(PathBuf),
     #[error("could not lock the data folder: {0}")]
     Lock(std::io::Error),
@@ -229,9 +229,9 @@ pub struct Damaged {
     pub segment: Arc<SegmentMeta>,
 }
 
-/// Test hook: `TRACEDB_TEST_CRASH_AT=<point>` aborts the process at that point of a flush.
+/// Test hook: `SMITHLING_TEST_CRASH_AT=<point>` aborts the process at that point of a flush.
 pub(crate) fn crash_point(point: &str) {
-    if std::env::var("TRACEDB_TEST_CRASH_AT").is_ok_and(|p| p == point) {
+    if std::env::var("SMITHLING_TEST_CRASH_AT").is_ok_and(|p| p == point) {
         eprintln!("crash point: {point}");
         std::process::abort();
     }
@@ -271,7 +271,7 @@ impl Storage {
     pub fn open(cfg: &IngestConfig) -> Result<Storage, StorageError> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("tracedb-storage")
+            .thread_name("smithling-storage")
             .enable_all()
             .build()?;
         let store = Store::open(&cfg.storage_spec())?;
@@ -567,7 +567,7 @@ impl Ingest {
             stop: stop.clone(),
         };
         let flusher_thread = std::thread::Builder::new()
-            .name("tracedb-flusher".into())
+            .name("smithling-flusher".into())
             .spawn(move || flusher.run(flush_rx))
             .map_err(OpenError::Thread)?;
 
@@ -585,7 +585,7 @@ impl Ingest {
         };
         let last_seq = wal_stats.last_seq.max(flushed_seq);
         let thread = std::thread::Builder::new()
-            .name("tracedb-writer".into())
+            .name("smithling-writer".into())
             .spawn(move || writer::run(rx, wal, dedup, pending, last_seq, shared))
             .map_err(OpenError::Thread)?;
 
@@ -593,7 +593,7 @@ impl Ingest {
             let (mem, storage, projects, stop) = (mem.clone(), storage.clone(), projects.clone(), stop.clone());
             let (health, age) = (flush_health.clone(), cfg.limits.flush_age_us.max(0) as u64);
             std::thread::Builder::new()
-                .name("tracedb-backfill".into())
+                .name("smithling-backfill".into())
                 .spawn(move || {
                     flush::backfill_projects(&mem, &storage, &projects, &stop);
                     backfill::run(&mem, &storage, &health, Duration::from_micros(age), &stop);

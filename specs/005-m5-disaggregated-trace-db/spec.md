@@ -12,9 +12,9 @@ input was the 2026-11-08 system-design note (proposed architecture, write path, 
 compaction publication, sharding, reliability, open questions). The note's claims about today's code are checked in
 [review.md](review.md); this spec builds on what the code actually does.
 
-**Master**: [specs/000-tracedb-master-plan](../000-tracedb-master-plan/spec.md) (requirements of record) ·
-[roadmap](../000-tracedb-master-plan/roadmap.md) (progress; this milestone is inserted as M5, the agents milestone
-becomes M6, [D-036](../000-tracedb-master-plan/decisions.md#d-036)). This folder holds the M5 details of record.
+**Master**: [specs/000-smithling-master-plan](../000-smithling-master-plan/spec.md) (requirements of record) ·
+[roadmap](../000-smithling-master-plan/roadmap.md) (progress; this milestone is inserted as M5, the agents milestone
+becomes M6, [D-036](../000-smithling-master-plan/decisions.md#d-036)). This folder holds the M5 details of record.
 
 **Builds on**: M4 — Follow-through (compaction with an atomic catalog swap, threads, export). Spec folder `004-m4-…`
 is reserved for it; M5 starts after M4's compaction exit check passes. Everything M1–M4 promise stays true in the
@@ -36,7 +36,7 @@ without changing its contract"); design-notes §2 "Cloud path" column; backlog R
 
 ## Goal and why
 
-Run tracedb as a **disaggregated trace database**: ingestion, read serving and compaction as separate services that
+Run smithling as a **disaggregated trace database**: ingestion, read serving and compaction as separate services that
 scale on their own, over shared durable storage whose capacity doesn't depend on any one machine.
 
 - **Long-running agents produce multi-day traces.** One process holding the live tail, the queries and the background
@@ -86,10 +86,10 @@ flowchart TB
 
 *Capability first; the Example under it is the scenario we use to prove it.*
 
-- 🟢 As an **operator**, I can run ingestion, read serving and compaction as separate services from the one tracedb
+- 🟢 As an **operator**, I can run ingestion, read serving and compaction as separate services from the one smithling
   binary, pointed at the same storage and catalog, and get the same answers as the one-process mode.
   - *Example*: 1 writer, 2 readers, 1 compactor on one machine (shared folder + Postgres) and on cloud-style storage:
-    `tracedb demo` passes every M2–M4 check with identical counts.
+    `smithling demo` passes every M2–M4 check with identical counts.
 - 🟢 As an operator, I can add or remove read workers without touching ingestion, and a new reader serves complete
   answers after replaying only what isn't in files yet.
   - *Example*: start a third reader during the demo load; it reports caught up and answers the 14 / 23 / 31 checks.
@@ -97,7 +97,7 @@ flowchart TB
   steps of a trace that has been running for days, and never see a run twice or lose one while files are being
   flushed or compacted.
   - *Example*: a 3-day trace updated across 50+ flushes and 5+ compactions shows one tree, latest values, on every reader.
-- 🟠 As an agent developer, I lose nothing tracedb acknowledged, for the failures it promises to survive.
+- 🟠 As an agent developer, I lose nothing smithling acknowledged, for the failures it promises to survive.
   - *Example*: kill any service at any of the named crash points (10 rounds each); zero acknowledged events missing.
 - 🟢 As an operator, I can hand a shard to a new writer (planned or after a crash) and the old one can no longer write
   or publish, even if it comes back.
@@ -126,25 +126,25 @@ The `fetch_url` step from the scenario, in a split deployment.
 ### 🟢 User Story 1 - Split deployment gives the same answers (Priority: P1)
 
 An operator starts ingest, read and compaction services separately, pointed at the same storage and catalog, and uses
-tracedb exactly as before.
+smithling exactly as before.
 
 **Why this priority**: the definition of the milestone. Nothing else matters if the split shape returns different answers.
 
-**Independent Test**: start 1 writer, 2 readers and 1 compactor; run `tracedb demo` against a reader; every check passes
+**Independent Test**: start 1 writer, 2 readers and 1 compactor; run `smithling demo` against a reader; every check passes
 with the same numbers as the one-process mode, on local shared storage and on cloud-style storage.
 
 **Acceptance Scenarios**:
 
 1. **Given** a split deployment on an empty store, **When** the demo replays the scenario and waits until the reader has applied the last acknowledged position, **Then** every M2–M4 check passes with identical counts.
 2. **Given** the same load, **When** any read query (list, trace, run, search, aggregate, live view) is sent to either reader, **Then** both return the same result once both have applied the same position.
-3. **Given** `tracedb serve` with no role options, **When** it starts, **Then** it runs every role in one process as today, makes no outbound connections, and passes every M1–M4 check unchanged.
+3. **Given** `smithling serve` with no role options, **When** it starts, **Then** it runs every role in one process as today, makes no outbound connections, and passes every M1–M4 check unchanged.
 4. **Given** a reader asked to write, or a writer asked a read query, **When** the request arrives, **Then** it is refused with a message naming the service that handles it.
 
 ---
 
 ### 🟠 User Story 2 - Acknowledged writes survive the promised failures (Priority: P1)
 
-Every write tracedb confirms survives the failures stated in the durability contract, through every step from log to
+Every write smithling confirms survives the failures stated in the durability contract, through every step from log to
 files to compaction.
 
 **Why this priority**: a trace store that loses acknowledged steps can't be trusted for debugging; the constitution
@@ -257,7 +257,7 @@ Every queue and buffer is bounded and pushes back instead of growing; scaling an
 
 **Why this priority**: separate services fail separately; unbounded lag or backlog turns a slow reader into an outage.
 
-**Independent Test**: `tracedb bench` in split mode reports write throughput per shard, read throughput for 1/2/4
+**Independent Test**: `smithling bench` in split mode reports write throughput per shard, read throughput for 1/2/4
 readers, freshness P50/P99, bootstrap time and catch-up time, separating data-volume growth from read and write load.
 
 **Acceptance Scenarios**:
@@ -289,8 +289,8 @@ readers, freshness P50/P99, bootstrap time and catch-up time, separating data-vo
 
 **Deployment shape**
 
-- 🟢 **M5-FR-01** (constitution I, Arch. Constraints): The one tracedb binary MUST be able to run any one role (ingest, read, compaction) or all of them; running all in one process MUST stay the default and behave exactly as M4.
-- 🟢 **M5-FR-02** (constitution III, V): Moving between one-process and split mode MUST be a configuration change only; in one-process local mode tracedb MUST still make zero outbound connections.
+- 🟢 **M5-FR-01** (constitution I, Arch. Constraints): The one smithling binary MUST be able to run any one role (ingest, read, compaction) or all of them; running all in one process MUST stay the default and behave exactly as M4.
+- 🟢 **M5-FR-02** (constitution III, V): Moving between one-process and split mode MUST be a configuration change only; in one-process local mode smithling MUST still make zero outbound connections.
 - 🟢 **M5-FR-03**: Services MUST discover the store's shards, owners and positions through the shared catalog; no service needs another's address configured except for request routing.
 
 **Durable log and acknowledgment**
@@ -350,7 +350,7 @@ readers, freshness P50/P99, bootstrap time and catch-up time, separating data-vo
 
 ### Measurable Outcomes
 
-- 🟢 **SC-01**: In a split deployment (1 writer, 2 readers, 1 compactor), `tracedb demo` passes every M2–M4 check with counts identical to one-process mode, on local shared storage and on cloud-style storage.
+- 🟢 **SC-01**: In a split deployment (1 writer, 2 readers, 1 compactor), `smithling demo` passes every M2–M4 check with counts identical to one-process mode, on local shared storage and on cloud-style storage.
 - 🟠 **SC-02**: Zero acknowledged events lost or duplicated across 10 kill rounds at each crash point of User Story 2, in CI.
 - 🟢 **SC-03**: From acknowledgment to visible on every caught-up reader: P50 ≤ 1 s, P99 ≤ 2 s at the reference write load (SmithDB's ingestion-to-queryable is 630 ms / 1.47 s).
 - 🟢 **SC-04**: With 2 readers, sustained read throughput is ≥ 1.7× one reader's, and with 4 readers ≥ 3×, with write throughput within 10% of one-reader mode.
@@ -370,7 +370,7 @@ readers, freshness P50/P99, bootstrap time and catch-up time, separating data-vo
 - **Same version everywhere**: rolling upgrades and schema evolution across mixed versions are out of scope; mismatched services refuse to join (edge case).
 - **Log retention default**: 24 h after coverage, configurable. Long enough for a reader outage; replay beyond it starts from a snapshot.
 - **Shard key, if several shards** (Q3): by project, because ingest's per-project state (project map, flushed-run filter, multi-version set; D-024, D-025) then stays within one shard. Splitting one hot project across shards is out of scope.
-- **Performance priority** ([D-033](../000-tracedb-master-plan/decisions.md#d-033)): correctness and the split working end to end come first; SC-03–SC-06 are measured and reported, and may be deferred by decision as M3's speed rows were.
+- **Performance priority** ([D-033](../000-smithling-master-plan/decisions.md#d-033)): correctness and the split working end to end come first; SC-03–SC-06 are measured and reported, and may be deferred by decision as M3's speed rows were.
 - **Delete and retention of trace data** stay in backlog B1; M5 defines no delete semantics beyond compaction replacing files.
 - **Agent debugging** (recorded-trace investigation vs live stepping) is M6's question, not this milestone's.
-- **Out of scope for M5**: autoscaling, multi-region, a managed log service operated by tracedb, cross-shard transactions, splitting one trace across shards, the hosted product.
+- **Out of scope for M5**: autoscaling, multi-region, a managed log service operated by smithling, cross-shard transactions, splitting one trace across shards, the hosted product.

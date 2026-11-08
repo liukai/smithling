@@ -1,10 +1,10 @@
 # Design: M2 — Durable storage + query builder
 
 **Status**: Built (M2 closed at `c7595c6`); the design as reviewed before implementation, with notes where the code
-differs ([decision log](../000-tracedb-master-plan/decisions.md): D-012–D-024 in M2, D-025–D-029 in M3) ·
+differs ([decision log](../000-smithling-master-plan/decisions.md): D-012–D-024 in M2, D-025–D-029 in M3) ·
 **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
 **Starter guide**: [starter-guide.md](starter-guide.md) · **Parquet + DataFusion primer**: [parquet-datafusion-primer.md](parquet-datafusion-primer.md) · **Builds on**: [M1 design](../001-m1-see-agent-trace-live/design.md) ·
-**Master design**: [design-notes.md](../000-tracedb-master-plan/design-notes.md)
+**Master design**: [design-notes.md](../000-smithling-master-plan/design-notes.md)
 
 ## 1. What this design has to achieve
 
@@ -21,7 +21,7 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
 ## 2. Big picture
 
 ```
-                                tracedb (one process)
+                                smithling (one process)
  SDK ──HTTP──▶ ┌─────────────────────────────── HTTP layer ────────────────────────────────┐ ◀── Browser
                │ LangSmith compat · native · /api/query · /api/fields · /api/tail · UI     │
                └──────┬────────────────────────────┬───────────────────────────┬──────────┘
@@ -41,7 +41,7 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
                │ storage crate:  ObjectStore (local FS | S3)   Metastore (SQLite | PG)  │
                │                 SegmentFormat (Parquet)       Cache (memory LRU, M3)    │
                └───────────────────────────────────────────────────────────────────────┘
-   ./.tracedb/wal/*.wal (local)    ./.tracedb/data/<project>/<day>/seg-*.parquet    ./.tracedb/meta.sqlite
+   ./.smithling/wal/*.wal (local)    ./.smithling/data/<project>/<day>/seg-*.parquet    ./.smithling/meta.sqlite
 ```
 
 **The ideas to hold on to:**
@@ -66,14 +66,14 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
 | 4 | **WAL** | Append-only log; replay from `flushed_seq` | `append`, `sync`, `replay_from(seq)`, `trim(through_seq)` | WAL on ingestion node | + trim, replay-from |
 | 5 | **Memtables** | Active (mutable, writer only) and frozen (immutable `Arc`, being flushed) | `apply`, `freeze() -> Arc<Frozen>` | memtable (×2) | was the whole run store |
 | 6 | **Flusher** | Frozen memtable → core + payload Parquet per project → register → field stats → trim WAL | background thread; `flush(Arc<Frozen>)` | flush | new |
-| 7 | **`storage`** crate | `ObjectStore`, `Metastore`, `SegmentFormat`, `Cache` traits + v0 implementations (no `Cache` in M2: [D-013](../000-tracedb-master-plan/decisions.md#d-013)) | [data-model.md §5–6](data-model.md) | object storage, metastore, Vortex files, SSD cache | new |
-| 8 | **Query service** | Filter → plan over pinned files ∪ fresh memtable rows (DataFusion prunes and pre-filters; merge, filter and tree conditions in our code, [D-017](../000-tracedb-master-plan/decisions.md#d-017)); merge-on-read; tree filters; cursor paging; trace and run lookups; field catalog reads; live views | `query(Query) -> Page`, `trace(id)`, `run(id, include)`, `fields(scope)`, `values(scope, path)`, `tail(Query) -> Stream<TailMsg>` | query service | DataFusion; owns live views |
+| 7 | **`storage`** crate | `ObjectStore`, `Metastore`, `SegmentFormat`, `Cache` traits + v0 implementations (no `Cache` in M2: [D-013](../000-smithling-master-plan/decisions.md#d-013)) | [data-model.md §5–6](data-model.md) | object storage, metastore, Vortex files, SSD cache | new |
+| 8 | **Query service** | Filter → plan over pinned files ∪ fresh memtable rows (DataFusion prunes and pre-filters; merge, filter and tree conditions in our code, [D-017](../000-smithling-master-plan/decisions.md#d-017)); merge-on-read; tree filters; cursor paging; trace and run lookups; field catalog reads; live views | `query(Query) -> Page`, `trace(id)`, `run(id, include)`, `fields(scope)`, `values(scope, path)`, `tail(Query) -> Stream<TailMsg>` | query service | DataFusion; owns live views |
 | 9 | **UI** | Query panel ↔ text, chips, field browser, Samples + Table views, click-to-filter, live toggle, links | consumes the HTTP API | LangSmith UI | + query builder |
 | 10 | **CLI** | `serve` (+ storage flags), `seed`, `demo`, `query` | [contracts/cli.md](contracts/cli.md) | — | + `demo`, `query` |
 
-Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`. `compact` waits for M4. (Since
-the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `tools` (seed, scenario, demo, query CLI, bench) and
-`tracedb` (the binary).)
+Crates in M2: `model`, `storage` (new), `ingest`, `query`, `smithling`, plus `ui/`. `compact` waits for M4. (Since
+the crate split after M3, `smithling` is three crates: `server` (HTTP layer), `tools` (seed, scenario, demo, query CLI, bench) and
+`smithling` (the binary).)
 
 **Boundary rules** (unchanged in spirit from M1):
 - `query` depends on `model`, `storage`, and two read-only traits exported by `ingest` (`Fresh`, `Changes`); never on
@@ -85,7 +85,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
 ### 3.1 What each component can and cannot do in M2
 
 #### 1. `model`
-- **Can**: parse the LangSmith filter grammar subset plus tracedb's dotted JSON paths into an AST, with error
+- **Can**: parse the LangSmith filter grammar subset plus smithling's dotted JSON paths into an AST, with error
   positions; print an AST back to canonical text; merge two run *versions* (not only event onto state).
 - **Cannot**: run a query (no I/O); full-text `search()` (M3, parse error says "supported from M3"); feedback fields.
   (M3: both parse.)
@@ -110,7 +110,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
 #### 5. Memtables
 - **Can**: hold merged run states (with payloads) for recent events, with M1's indexes (by trace, roots by project);
   freeze in O(1) by swapping a pointer.
-- **Cannot**: hold everything. Default limit: **128 MB** per memtable (configurable; M3: 64 MB measured as heap, [D-028](../000-tracedb-master-plan/decisions.md#d-028)). At most one frozen memtable
+- **Cannot**: hold everything. Default limit: **128 MB** per memtable (configurable; M3: 64 MB measured as heap, [D-028](../000-smithling-master-plan/decisions.md#d-028)). At most one frozen memtable
   exists; a second freeze waits for the flush, and uploads get `429` meanwhile.
 
 #### 6. Flusher
@@ -122,7 +122,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
 - **Can**: put/get/range-read immutable objects on local FS or S3-compatible stores; keep the segment catalog and field
   stats in SQLite or Postgres with the same SQL; write and read Parquet with page indexes and bloom filters; cache
   footers, bloom filters and hot row groups in memory (M2 built no cache of its own, only DataFusion's metadata cache,
-  [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3 adds a 32 MB `Cache`, [D-028](../000-tracedb-master-plan/decisions.md#d-028)).
+  [D-013](../000-smithling-master-plan/decisions.md#d-013); M3 adds a 32 MB `Cache`, [D-028](../000-smithling-master-plan/decisions.md#d-028)).
 - **Cannot**: rename or overwrite objects (object-storage semantics, constitution V); Vortex (backlog R-4).
 
 #### 8. Query service
@@ -130,7 +130,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
   multi-version runs; evaluate run, root and any-run-in-trace conditions; page with a stable cursor; serve live
   views by re-querying changed traces.
 - **Cannot**: text search, group by, metrics, charts, comparison (M3); progressive early-stop scanning (M3; lists by
-  start time do stop early since [D-021](../000-tracedb-master-plan/decisions.md#d-021)); pick a different plan per user hint.
+  start time do stop early since [D-021](../000-smithling-master-plan/decisions.md#d-021)); pick a different plan per user hint.
 
 #### 9. UI
 - **Can**: build queries with chips (this run / its root / any run in its trace), negate/disable/remove chips, edit as
@@ -139,7 +139,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
 - **Cannot**: Time series, Distribution, group by, compare (M3); saved queries.
 
 #### 10. CLI
-- **Can**: `tracedb serve --storage … --metastore … --ui-dir …`; `tracedb demo` (M2 checks); `tracedb query '<filter>'`.
+- **Can**: `smithling serve --storage … --metastore … --ui-dir …`; `smithling demo` (M2 checks); `smithling query '<filter>'`.
 - **Cannot**: `bench`, `tail`, `import` (M3, M6). (M3 built `bench`; `demo` runs the M2 and M3 checks by default.)
 
 ## 4. Key flows
@@ -196,16 +196,16 @@ The dedup keys `(run_id, op, body_hash, received_at)` of the flushed events (33 
 same transaction, so a restart rebuilds the window without the WAL. The flush deletes key rows whose newest key is
 older than the window, but keeps the latest flush's (start uses its run ids to rebuild the multi-version set) (D-022).
 M3: start no longer reads run ids from saved keys; a bloom filter of every flushed run id, rebuilt from the files,
-replaces that ([D-025](../000-tracedb-master-plan/decisions.md#d-025)). In memory the window holds 16 B fingerprints, at most 1M ([D-028](../000-tracedb-master-plan/decisions.md#d-028)).
+replaces that ([D-025](../000-smithling-master-plan/decisions.md#d-025)). In memory the window holds 16 B fingerprints, at most 1M ([D-028](../000-smithling-master-plan/decisions.md#d-028)).
 
 **Triggers**: active ≥ 128 MB, or the oldest event in active is ≥ 10 min old, or unflushed WAL ≥ half its 1 GB
 limit (`maybe_freeze` in [writer.rs](../../crates/ingest/src/writer.rs)). There is no freeze at shutdown: unflushed
 events stay in the WAL and are replayed on the next start. The 10-minute age limit bounds how much the WAL must replay
-on restart, without creating thousands of tiny files. (M3 defaults: 64 MB measured as heap, 2 min, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
+on restart, without creating thousands of tiny files. (M3 defaults: 64 MB measured as heap, 2 min, [D-028](../000-smithling-master-plan/decisions.md#d-028).)
 
 ### 4.3 Read path: one query
 
-As built ([D-017](../000-tracedb-master-plan/decisions.md#d-017), [D-021](../000-tracedb-master-plan/decisions.md#d-021)): DataFusion only prunes and pre-filters file scans; merging, the exact filter, root /
+As built ([D-017](../000-smithling-master-plan/decisions.md#d-017), [D-021](../000-smithling-master-plan/decisions.md#d-021)): DataFusion only prunes and pre-filters file scans; merging, the exact filter, root /
 any-run conditions and paging run in our code (`select` in [query/src/lib.rs](../../crates/query/src/lib.rs),
 [scan.rs](../../crates/query/src/scan.rs), [window.rs](../../crates/query/src/window.rs)). The reviewed design had a
 `TableProvider` over a `fresh_scan` batch, a `merge_versions` UDAF and semi-joins; none of those were built.
@@ -251,29 +251,29 @@ query(Q):
   carry `needs_merge = true`, and only those are grouped. In the scenario that's about 10% of runs (late finishers).
 - **What sets `needs_merge`**: a version started by an update rather than a start (the run's start is elsewhere), or
   the flusher finding the run id in an older file's bloom filter (a run started in one file and updated in the next).
-  (Built without bloom lookups, [D-016](../000-tracedb-master-plan/decisions.md#d-016): `created_by_patch() || mvset.contains(id)` in
+  (Built without bloom lookups, [D-016](../000-smithling-master-plan/decisions.md#d-016): `created_by_patch() || mvset.contains(id)` in
   [flush.rs](../../crates/ingest/src/flush.rs). M3: a second start for a run already on disk joins the set through
-  the writer's filter of flushed ids, [flushed.rs](../../crates/ingest/src/flushed.rs), [D-025](../000-tracedb-master-plan/decisions.md#d-025).)
+  the writer's filter of flushed ids, [flushed.rs](../../crates/ingest/src/flushed.rs), [D-025](../000-smithling-master-plan/decisions.md#d-025).)
   When the writer creates such a version in the memtable, it adds the run id to the in-memory *multi-version set*,
   and the query treats **every** row whose run id is in that set as `needs_merge`, including the older file row that
   was written as single-version.
 - **Pushdown** into the file scan is `Q.filter OR needs_merge OR run_id ∈ multi-version set`. Single-version rows are
   filtered in the scan; rows that may have other versions always come through to the merge, so no version is dropped
   before its run is complete. Only identity predicates (project, time, trace id) are pushed down unconditionally.
-- **Where a version without a project goes** ([D-024](../000-tracedb-master-plan/decisions.md#d-024)). SDK late
+- **Where a version without a project goes** ([D-024](../000-smithling-master-plan/decisions.md#d-024)). SDK late
   updates carry no `session_name`. The flusher files such a version under its run's project, from a bounded recent
   run → project map in ingest, and the memtable pin applies the same rule. Only versions whose run is unknown go
   to `""`, which every project's scope reads.
 - **Version lookup**: each candidate file (same time and trace bounds, any project) is read once. Up to 2,000 ids
   use `run_id IN (…)`, so blooms skip most files; more ids read the file's run ids first, then only the rows it holds
-  ([D-024](../000-tracedb-master-plan/decisions.md#d-024); before it, `IN` scans in 2,000-id chunks over every file). M3: lists take multi-version runs in scope
-  from merged file rows kept across requests, so their file rows aren't scanned ([D-029](../000-tracedb-master-plan/decisions.md#d-029)).
+  ([D-024](../000-smithling-master-plan/decisions.md#d-024); before it, `IN` scans in 2,000-id chunks over every file). M3: lists take multi-version runs in scope
+  from merged file rows kept across requests, so their file rows aren't scanned ([D-029](../000-smithling-master-plan/decisions.md#d-029)).
 - **Time pruning uses `start_key`**, the run's own start time taken from the last segment of its `dotted_order`.
   Every version has it, even a late update with no `start_time`, so time pruning never drops a late version.
 - **Tree filters** are semi-joins on `trace_id` (master research R10); built as `trace_conditions` in our code
-  ([D-017](../000-tracedb-master-plan/decisions.md#d-017)). `tree_filter` matches *other* runs in the trace,
+  ([D-017](../000-smithling-master-plan/decisions.md#d-017)). `tree_filter` matches *other* runs in the trace,
   as the SDK documents it; M2 includes the run itself too, which matches the spec's "any run in the same trace".
-- **Stopping early** ([D-021](../000-tracedb-master-plan/decisions.md#d-021)). By start time, the steps above run
+- **Stopping early** ([D-021](../000-smithling-master-plan/decisions.md#d-021)). By start time, the steps above run
   per `start_key` window in page order (sized from file key bounds, row counts and memtable keys; about 20k rows
   first, ×4 each next), and trace conditions per 2,000 candidates in page order; reading stops once limit + 1 runs
   match. Windows are disjoint in `start_key`; a run is listed in the window of its merged start key, with its
@@ -336,7 +336,7 @@ open:
 
 At 2M runs this reads the catalog, one boolean + id column per file, and at most ~10 minutes / 1 GB of WAL: well
 inside the 10 s target (SC-06). (As built in M2, only files with `needs_merge` rows were read; M3 reads every file's
-footer and `run_id` / `needs_merge` columns, with ranged reads, [D-025](../000-tracedb-master-plan/decisions.md#d-025).) An M1 data folder has no metastore: it is created with `flushed_seq = 0`, the WAL replays
+footer and `run_id` / `needs_merge` columns, with ranged reads, [D-025](../000-smithling-master-plan/decisions.md#d-025).) An M1 data folder has no metastore: it is created with `flushed_seq = 0`, the WAL replays
 in full, and the first flush moves it to files (M2-FR-20).
 
 ## 5. Data structures and formats
@@ -349,10 +349,10 @@ Sorted by `(trace_id, dotted_order)`; row groups ~64k rows; page indexes on; blo
 | Column group | Columns |
 |---|---|
 | identity | `run_id`, `trace_id`, `parent_run_id`, `dotted_order`, `start_key`, `depth`, `is_root`, `project`, `address` |
-| kind/timing | `name`, `run_type`, `start_time`, `end_time`, `status`, `latency_ms`, `error` (full text, [D-014](../000-tracedb-master-plan/decisions.md#d-014); first designed as the first 1 KB) |
+| kind/timing | `name`, `run_type`, `start_time`, `end_time`, `status`, `latency_ms`, `error` (full text, [D-014](../000-smithling-master-plan/decisions.md#d-014); first designed as the first 1 KB) |
 | grouping | `tags` (list), `thread_id`, `model`, `input_tokens`, `output_tokens`, `total_tokens` |
 | JSON objects | `metadata`, `extra`, `dropped`, `outputs_usage` (JSON text) |
-| promoted JSON | `attrs`: one JSON text column of promoted leaves ([D-012](../000-tracedb-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
+| promoted JSON | `attrs`: one JSON text column of promoted leaves ([D-012](../000-smithling-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
 | bookkeeping | `first_seq`, `last_seq`, `event_count`, `created_at`, `updated_at`, `needs_merge`, `present` (bitmask of fields this version set), `inputs_bytes` / `outputs_bytes` / `events_bytes`, `payload_row` |
 
 **Payload file** (`seg-<ulid>.payload.parquet`): `run_id`, `inputs`, `outputs`, `events` (JSON text, zstd). Read only
@@ -366,7 +366,7 @@ for the step panel and single-run reads (`core_schema` / `payload_schema` in
 after the scan; DataFusion only gets a superset text match for `eq` on promoted strings (§4.3). A path that wasn't
 promoted (deeper, longer, an array element) is kept as an `unindexed` marker: it matches `eq/neq null`, any other
 comparison is false and adds a `not_indexed{path, runs}` warning
-([D-011](../000-tracedb-master-plan/decisions.md#d-011), [eval.rs](../../crates/model/src/filter/eval.rs)). Payload
+([D-011](../000-smithling-master-plan/decisions.md#d-011), [eval.rs](../../crates/model/src/filter/eval.rs)). Payload
 rows are not read for filters (first designed as a payload fallback).
 
 **Present bitmask.** Parquet can't tell "absent" from "null", and the merge rule needs it ("absent never overwrites").
@@ -392,7 +392,7 @@ Details of record: [contracts/filter-language.md](contracts/filter-language.md).
 - **Text form = LangSmith's `filter` grammar** (still documented in SDK 0.14.17 `Client.list_runs`): `eq`, `neq`, `gt`,
   `gte`, `lt`, `lte`, `has`, `and`, `or`, `not`, with `null` for existence (`neq(error, null)`), plus the three slots
   `filter`, `trace_filter`, `tree_filter` and `is_root`.
-- **tracedb additions** (marked as such in the contract): dotted JSON paths (`metadata.prompt_version`,
+- **smithling additions** (marked as such in the contract): dotted JSON paths (`metadata.prompt_version`,
   `outputs.status_code`), `in(field, [..])`, and relative time (`gt(start_time, "-12h")`).
 - **One AST.** Panel ⇄ AST ⇄ text. The panel is a view of the AST; printing is canonical, so panel → text → panel is
   lossless. Text the panel can't show as chips (deep nesting) is kept and shown as one "expression" chip.
@@ -460,7 +460,7 @@ in both modes. Automated checks run the demo checks and the crash test against M
    embeds `ui/dist` if present, else a one-page "UI not built — run `npm run build` in ui/" placeholder. Release
    builds always build the UI first. *Proposed as is.*
 4. **Memtable limit 128 MB, flush age 10 min.** Bigger means fewer files (no compaction until M4) but longer replays.
-   (M3: 64 MB measured as heap, 2 min, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
+   (M3: 64 MB measured as heap, 2 min, [D-028](../000-smithling-master-plan/decisions.md#d-028).)
    *Proposed as is; revisit after measuring file counts at 2M runs.*
 5. **`field:value` short form (R-2).** Not in M2's exit check; add only if LangSmith's UI docs confirm it (can't be
    checked offline here). *Proposed: leave out of M2.*
@@ -469,13 +469,13 @@ in both modes. Automated checks run the demo checks and the crash test against M
 
 | What | Test | Gate |
 |---|---|---|
-| Scenario numbers (14, 23, `prompt_version`) | `tracedb demo` checks | CI, local + cloud |
+| Scenario numbers (14, 23, `prompt_version`) | `smithling demo` checks | CI, local + cloud |
 | Same results as run-by-run checking | property test: random runs, random late updates, random flush points → `query` equals a naive filter over fully merged runs | CI |
 | Crash safety incl. flush | crash harness extended: kills during upload, flush write, between write and commit, and during trim; 10 rounds | CI |
 | Restart ≤ 10 s at 2M runs | restart test (ignored by default, run in CI release job) | CI |
 | No pause during flush | latency test: p99 upload latency during a flush ≤ 1 s, ≥ 5k events/s (M3: `sustains_20000_events_per_second_while_querying`) | CI release job |
 | Pinned versions | test-only swap during a long scan returns the same rows | CI |
-| Bloom filters help | bench: files opened per trace lookup with vs without (removed in M3 when `bench_m2.rs` became a wrapper around `tracedb bench`, `7e02feb`) | reported |
+| Bloom filters help | bench: files opened per trace lookup with vs without (removed in M3 when `bench_m2.rs` became a wrapper around `smithling bench`, `7e02feb`) | reported |
 | Filter language | parser/printer round-trip property test; error-position golden tests | CI |
 | Live views | e2e: tree-condition live view gets a root when a child errors; `Left` when a run stops matching | CI |
 | Retry of a rejected item | ingest test: conflict → rejected; identical retry → rejected again | CI |
@@ -496,5 +496,5 @@ in both modes. Automated checks run the demo checks and the crash test against M
 | Pinned readers during swaps | `Arc<Version>` (R-7) | RocksDB idea; needed before M4 compaction |
 | Compaction | **none yet** | M4 |
 | Inverted index / text search | **none yet** | M3 (scan + bloom), custom index in backlog |
-| Progressive querying | **none yet** (lists by start time stop early, [D-021](../000-tracedb-master-plan/decisions.md#d-021)) | M3 |
-| SSD cache | in-memory `Cache` (footers, blooms, hot row groups); not built in M2, DataFusion's metadata cache only ([D-013](../000-tracedb-master-plan/decisions.md#d-013)); M3: 32 MB `Cache` ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) | reason (a) |
+| Progressive querying | **none yet** (lists by start time stop early, [D-021](../000-smithling-master-plan/decisions.md#d-021)) | M3 |
+| SSD cache | in-memory `Cache` (footers, blooms, hot row groups); not built in M2, DataFusion's metadata cache only ([D-013](../000-smithling-master-plan/decisions.md#d-013)); M3: 32 MB `Cache` ([D-028](../000-smithling-master-plan/decisions.md#d-028)) | reason (a) |

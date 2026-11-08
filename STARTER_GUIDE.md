@@ -1,6 +1,6 @@
-# tracedb starter guide
+# smithling starter guide
 
-New here? This guide explains tracedb from zero: the problem it solves, how the work was broken down, and how each
+New here? This guide explains smithling from zero: the problem it solves, how the work was broken down, and how each
 milestone turned a blank repo into a usable trace store, one step at a time. No storage background needed.
 
 - **10 minutes**: read sections 1–3.
@@ -46,7 +46,7 @@ Agent traces have four properties that, together, break ordinary logs and tracin
 People fall back to `print` and grep, or send everything to a hosted service. Hosted tracing (LangSmith) handles all
 of this well, but prompts, and sometimes customer data or secrets, leave the laptop.
 
-**tracedb's goal**: answer the same questions LangSmith answers, in **one local program**, with all data in **one
+**smithling's goal**: answer the same questions LangSmith answers, in **one local program**, with all data in **one
 folder**, and with **no change to the agent** beyond one environment variable.
 
 ### The bar: seven questions a trace store must answer fast
@@ -68,7 +68,7 @@ LangSmith:
 
 ## 2. The approach: SmithDB, rebuilt in the open, in stages
 
-tracedb is a rebuild of SmithDB's *design* from public sources (the SmithDB post, and the open-source LangSmith SDK
+smithling is a rebuild of SmithDB's *design* from public sources (the SmithDB post, and the open-source LangSmith SDK
 for the wire format). Not its code. The ground rules ([constitution](.specify/memory/constitution.md)):
 
 1. **SmithDB is the reference.** Every component maps to a SmithDB counterpart. Every difference is written down
@@ -111,7 +111,7 @@ flowchart TB
 | **M5** Disaggregated trace database | run ingest, read workers and compaction as separate services over shared storage | spec drafted |
 | **M6** Zero instrumentation + agents | import Claude Code sessions; agent tools over MCP | planned |
 
-Live status always lives in the [roadmap](specs/000-tracedb-master-plan/roadmap.md).
+Live status always lives in the [roadmap](specs/000-smithling-master-plan/roadmap.md).
 
 ---
 
@@ -152,7 +152,7 @@ on Postgres (cloud mode) with the same binary.
 | **run** | one step of an agent (LLM call, tool call, sub-agent) |
 | **trace** | the tree of runs for one task |
 | **event** | one upload about a run: a start (`post`) or an update (`patch`) |
-| **WAL** | write-ahead log: every event is appended and fsynced here *before* tracedb says "OK" |
+| **WAL** | write-ahead log: every event is appended and fsynced here *before* smithling says "OK" |
 | **memtable** | the in-memory table of recent runs; queries read it directly |
 | **flush** | writing a full memtable out as immutable files |
 | **segment** | one flush's files for one project: a *core* Parquet file (small fields), a *payload* Parquet file (inputs/outputs), and (M3) a text index |
@@ -165,13 +165,13 @@ on Postgres (cloud mode) with the same binary.
 
 ```mermaid
 flowchart TB
-    BIN["tracedb (binary): parses the command"]
-    T["tracedb-tools: seed, query, demo, bench"]
-    S["tracedb-server: HTTP API, LangSmith mapping, UI"]
-    Q["tracedb-query: scan, merge, filter, search, aggregate"]
-    I["tracedb-ingest: writer, WAL, memtables, flusher"]
-    ST["tracedb-storage: Parquet, text index, catalog, object store"]
-    M["tracedb-model: runs, merge rule, filter language"]
+    BIN["smithling (binary): parses the command"]
+    T["smithling-tools: seed, query, demo, bench"]
+    S["smithling-server: HTTP API, LangSmith mapping, UI"]
+    Q["smithling-query: scan, merge, filter, search, aggregate"]
+    I["smithling-ingest: writer, WAL, memtables, flusher"]
+    ST["smithling-storage: Parquet, text index, catalog, object store"]
+    M["smithling-model: runs, merge rule, filter language"]
     BIN --> T --> S --> Q --> I --> ST --> M
 ```
 
@@ -183,7 +183,7 @@ flowchart TB
 ## 4. Step 1 (M1): see an agent trace live
 
 **Problem**: "I can't see what my agent is doing right now." **Goals**: the whole path works end to end; each step
-shows in the browser within 1 s; nothing tracedb confirmed is ever lost, even after `kill -9`.
+shows in the browser within 1 s; nothing smithling confirmed is ever lost, even after `kill -9`.
 
 ### What M1 built
 
@@ -221,7 +221,7 @@ flowchart TB
   commits one request at a time, a busy one commits many together.
 - **Crash-safe by construction**: a client hears "OK" only after its data is on disk. On restart, replaying the WAL
   rebuilds memory; a half-written record at the end fails its checksum and is dropped (it was never confirmed).
-- **Backpressure**: when tracedb can't keep up it answers `429` with `Retry-After`; the SDK retries.
+- **Backpressure**: when smithling can't keep up it answers `429` with `Retry-After`; the SDK retries.
 
 Code: [`crates/ingest/src/writer.rs`](crates/ingest/src/writer.rs).
 
@@ -338,9 +338,9 @@ flowchart TB
     A --> B --> C --> D --> E --> F
 ```
 
-- **Two levels of skipping**: tracedb drops whole files using the catalog's ranges (no I/O); inside each file,
+- **Two levels of skipping**: smithling drops whole files using the catalog's ranges (no I/O); inside each file,
   DataFusion uses Parquet's footer statistics, page index and bloom filters to skip row groups and pages.
-- **The sieve and the judge**: DataFusion may keep extra rows but never drops a match; tracedb's own evaluator makes
+- **The sieve and the judge**: DataFusion may keep extra rows but never drops a match; smithling's own evaluator makes
   the final call on the merged run. So results can't depend on where data happens to live.
 - **Only ~10% of runs need merging** (the late finishers, marked `needs_merge`); the rest are read as-is.
 - **Stop early**: lists read the newest slice of time first and stop as soon as a page is full.
@@ -359,7 +359,7 @@ At 2M runs (5.13 GB of raw JSON, 37 files):
 | Open a trace, p50 | ≤ 200 ms | 6.1 ms | 6.1 ms |
 
 The fixes were design changes, logged as decisions: windowed scans that stop early
-([D-021](specs/000-tracedb-master-plan/decisions.md#d-021)), and saving 33-byte dedup keys in the catalog instead of
+([D-021](specs/000-smithling-master-plan/decisions.md#d-021)), and saving 33-byte dedup keys in the catalog instead of
 keeping old WAL files (D-022).
 
 **What M2 left for later**: text search, aggregates and charts, comparison (M3); compaction (M4).
@@ -428,7 +428,7 @@ data file is skipped and named instead of breaking every query.
 
 ### Results
 
-`tracedb demo --seed 7` passes all 10 checks: `"429 Too Many Requests"` finds 31 runs, all `fetch_url`;
+`smithling demo --seed 7` passes all 10 checks: `"429 Too Many Requests"` finds 31 runs, all `fetch_url`;
 `fetch_url` has 14.0% errors and p95 31 s in batch a vs 2.0% and 9 s in batch b; batch a costs $4.12. The current
 LangSmith SDK works on its default settings (multipart + zstd); feedback is stored, filtered and averaged; disk stays
 under 50% of raw JSON including the index.
@@ -475,7 +475,7 @@ numbers (a flush already holds minutes of data, not seconds).
 ### M6: zero instrumentation + agents ("agents debugging agents")
 
 - **Claude Code importer**: import local session history and use every triage feature on it, with no instrumentation.
-- **Agent tools + `tracedb mcp`**: outline, error path, payload slices, failure clusters, diffs and annotations,
+- **Agent tools + `smithling mcp`**: outline, error path, payload slices, failure clusters, diffs and annotations,
   sized for an AI agent's context, so an agent can answer "why did batch a fail?" and cite the runs.
 
 ### Backlog (agreed, not scheduled)
@@ -495,15 +495,15 @@ numbers (a flush already holds minutes of data, not seconds).
 ```bash
 (cd ui && npm ci && npm run build)          # the UI, once
 cargo build --release
-./target/release/tracedb serve               # http://localhost:7070, data in ./.tracedb
+./target/release/smithling serve               # http://localhost:7070, data in ./.smithling
 ```
 
 In another terminal:
 
 ```bash
-./target/release/tracedb seed --traces 100 --no-delay        # realistic research-agent traces
-./target/release/tracedb query --search '429 Too Many Requests'
-./target/release/tracedb demo --seed 7                        # the whole triage story, as pass/fail checks
+./target/release/smithling seed --traces 100 --no-delay        # realistic research-agent traces
+./target/release/smithling query --search '429 Too Many Requests'
+./target/release/smithling demo --seed 7                        # the whole triage story, as pass/fail checks
 ```
 
 Or point a real agent at it: `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070 LANGSMITH_API_KEY=local`.
@@ -522,11 +522,11 @@ Things worth watching while you play:
 
 | You want to… | Read |
 |---|---|
-| use tracedb | [README.md](README.md) |
-| understand why it matters, in more depth | [primer](specs/000-tracedb-master-plan/primer.md) |
-| see status, decisions, what's next | [roadmap](specs/000-tracedb-master-plan/roadmap.md), [decision log](specs/000-tracedb-master-plan/decisions.md) |
+| use smithling | [README.md](README.md) |
+| understand why it matters, in more depth | [primer](specs/000-smithling-master-plan/primer.md) |
+| see status, decisions, what's next | [roadmap](specs/000-smithling-master-plan/roadmap.md), [decision log](specs/000-smithling-master-plan/decisions.md) |
 | read the code, milestone by milestone | starter guides for [M1](specs/001-m1-see-agent-trace-live/starter-guide.md), [M2](specs/002-m2-durable-storage-query-builder/starter-guide.md), [M3](specs/003-m3-search-aggregates-speed/starter-guide.md) (in that order: each builds on the last) |
-| see how tracedb maps to SmithDB | [design notes §2](specs/000-tracedb-master-plan/design-notes.md) |
+| see how smithling maps to SmithDB | [design notes §2](specs/000-smithling-master-plan/design-notes.md) |
 | learn why columnar storage is fast, with a runnable example | [SECRET_OF_COLUMNAR_DB.md](SECRET_OF_COLUMNAR_DB.md) |
 | compare the storage engine with RocksDB | [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) |
 | change something | the milestone's `spec.md` → `design.md` → `tasks.md`, and the tests named in its starter guide |

@@ -1,4 +1,4 @@
-//! The `tracedb` server: HTTP routes over the ingest and query services, plus the embedded UI.
+//! The `smithling` server: HTTP routes over the ingest and query services, plus the embedded UI.
 
 pub mod langsmith_map;
 pub mod routes;
@@ -12,18 +12,18 @@ use std::sync::Arc;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use tracedb_ingest::{Health, Ingest, IngestConfig, Limits, OpenStats};
-use tracedb_model::cost::Prices;
-use tracedb_query::Query;
+use smithling_ingest::{Health, Ingest, IngestConfig, Limits, OpenStats};
+use smithling_model::cost::Prices;
+use smithling_query::Query;
 
 /// `512MB`, `2GB` → bytes (for `--memtable`).
 pub fn parse_size(s: &str) -> Result<u64, String> {
-    tracedb_ingest::budget::parse_bytes(s).ok_or_else(|| format!("invalid size {s:?}; use e.g. 512MB or 2GB"))
+    smithling_ingest::budget::parse_bytes(s).ok_or_else(|| format!("invalid size {s:?}; use e.g. 512MB or 2GB"))
 }
 
 /// Where data goes, for the startup log: passwords in URLs and every `AWS_*` value hidden.
 pub fn storage_summary(cfg: &ServeConfig, env: impl IntoIterator<Item = (String, String)>) -> String {
-    let show = |v: &Option<String>| v.as_deref().map_or("default".to_string(), tracedb_storage::redact);
+    let show = |v: &Option<String>| v.as_deref().map_or("default".to_string(), smithling_storage::redact);
     let mut aws: Vec<String> = env
         .into_iter()
         .filter(|(k, _)| k.starts_with("AWS_"))
@@ -47,7 +47,7 @@ pub struct AppState {
     pub ui_dir: Option<PathBuf>,
     pub prices: Arc<Prices>,
     /// When `GET /api/aggregate/stream` sends an estimate first, and how it samples.
-    pub agg_stream: tracedb_query::aggregate::StreamOpts,
+    pub agg_stream: smithling_query::aggregate::StreamOpts,
 }
 
 impl AppState {
@@ -134,7 +134,10 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     icfg.metastore = cfg.metastore.clone();
     icfg.limits = cfg.limits;
     // Tests only: roll WAL files small so a flush has whole files to trim.
-    if let Some(b) = std::env::var("TRACEDB_TEST_WAL_ROLL").ok().and_then(|v| v.parse().ok()) {
+    if let Some(b) = std::env::var("SMITHLING_TEST_WAL_ROLL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
         icfg.wal_roll_bytes = b;
     }
     let (ingest, stats) = Ingest::open(icfg)?;
@@ -167,7 +170,7 @@ pub async fn serve(
     state.query.warm_aggregates();
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
-        "tracedb listening on http://{}   data: {}",
+        "smithling listening on http://{}   data: {}",
         listener.local_addr()?,
         data_dir.display()
     );

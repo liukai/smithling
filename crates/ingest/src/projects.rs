@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use tracedb_model::{RunId, RunState};
+use smithling_model::{RunId, RunState};
 
 /// 7/8 of 2^19: a full generation's table has 2^19 buckets (D-028; M2 kept two of 1M, up to 88 MB).
 pub const GENERATION: usize = 458_752;

@@ -10,12 +10,12 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use indexmap::IndexMap;
+use smithling_ingest::Change;
+use smithling_model::{RunId, TraceId};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
-use tracedb_ingest::Change;
-use tracedb_model::{RunId, TraceId};
 
 use crate::{Page, Query, QueryError, QuerySpec, RunRow};
 

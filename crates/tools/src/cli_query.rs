@@ -1,4 +1,4 @@
-//! `tracedb query`: one `POST /api/query` against a running server, printed as a table or JSON lines; with
+//! `smithling query`: one `POST /api/query` against a running server, printed as a table or JSON lines; with
 //! `--group-by` or `--metrics`, one `POST /api/aggregate` printed as an aggregate table.
 
 use std::io::Write;
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[derive(clap::Args, Debug)]
 pub struct QueryArgs {
-    #[arg(long, default_value = "http://localhost:7070", env = "TRACEDB_URL")]
+    #[arg(long, default_value = "http://localhost:7070", env = "SMITHLING_URL")]
     pub url: String,
     #[arg(long)]
     pub project: Option<String>,
@@ -59,7 +59,7 @@ fn filter_text(a: &QueryArgs) -> Option<String> {
     });
     match (&a.filter, search) {
         // A bad EXPR is sent alone, so the server's error points into it (and `a, b` can't pass inside `and`).
-        (Some(f), Some(_)) if tracedb_model::filter::parse_filter(f).is_err() => Some(f.clone()),
+        (Some(f), Some(_)) if smithling_model::filter::parse_filter(f).is_err() => Some(f.clone()),
         (Some(f), Some(s)) => Some(format!("and({f}, {s})")),
         (f, s) => s.or_else(|| f.clone()),
     }
@@ -85,8 +85,8 @@ pub async fn run(a: &QueryArgs, out: &mut impl Write, err: &mut impl Write) -> u
     };
     // Canonical names (`p95(latency)`) for the table's columns; the server reports any error.
     let given = a.metrics.as_deref().unwrap_or("count");
-    let metrics = match tracedb_model::agg::parse_stats(&list(given).join(", ")) {
-        Ok(spec) => spec.metrics.iter().map(tracedb_model::agg::Metric::text).collect(),
+    let metrics = match smithling_model::agg::parse_stats(&list(given).join(", ")) {
+        Ok(spec) => spec.metrics.iter().map(smithling_model::agg::Metric::text).collect(),
         Err(_) => list(given),
     };
     if grouped {
@@ -111,18 +111,18 @@ pub async fn run(a: &QueryArgs, out: &mut impl Write, err: &mut impl Write) -> u
     let resp = match sent {
         Ok(r) => r,
         Err(e) if e.is_connect() || e.is_timeout() => {
-            let _ = writeln!(err, "tracedb query: tracedb is not reachable at {}: {e}", a.url);
+            let _ = writeln!(err, "smithling query: smithling is not reachable at {}: {e}", a.url);
             return 2;
         }
         Err(e) => {
-            let _ = writeln!(err, "tracedb query: {e}");
+            let _ = writeln!(err, "smithling query: {e}");
             return 1;
         }
     };
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        let _ = writeln!(err, "tracedb query: {url} answered {status}: {}", text.trim());
+        let _ = writeln!(err, "smithling query: {url} answered {status}: {}", text.trim());
         return 1;
     };
     let ok = status.is_success();
@@ -165,17 +165,17 @@ fn report_error(a: &QueryArgs, e: &Value, err: &mut impl Write) -> std::io::Resu
         "tree_filter" => ("--tree-filter", &a.tree_filter),
         "filter" => ("EXPR", &a.filter),
         _ if s("code") == "bad_stats" => {
-            return writeln!(err, "tracedb query: --group-by/--metrics: {}", s("message"));
+            return writeln!(err, "smithling query: --group-by/--metrics: {}", s("message"));
         }
         _ if s("code") == "bad_time" => {
             return writeln!(
                 err,
-                "tracedb query: --time {:?}: use e.g. 12h, 30m or 7d",
+                "smithling query: --time {:?}: use e.g. 12h, 30m or 7d",
                 a.time.as_deref().unwrap_or("")
             );
         }
         _ => {
-            return writeln!(err, "tracedb query: {}: {}", s("code"), s("message"));
+            return writeln!(err, "smithling query: {}: {}", s("code"), s("message"));
         }
     };
     let mut at = (e["start"].as_u64(), e["end"].as_u64());
@@ -183,11 +183,11 @@ fn report_error(a: &QueryArgs, e: &Value, err: &mut impl Write) -> std::io::Resu
         // Sent as `and(EXPR, search(…))`, or the search alone.
         let expr = a.filter.as_ref().map_or(0, |f| f.len() as u64 + 4);
         if at.0.is_none_or(|start| start >= expr) {
-            return writeln!(err, "tracedb query: --search: {}", s("message"));
+            return writeln!(err, "smithling query: --search: {}", s("message"));
         }
         at = (None, None);
     }
-    writeln!(err, "tracedb query: {flag}: {}", s("message"))?;
+    writeln!(err, "smithling query: {flag}: {}", s("message"))?;
     if let (Some(text), Some(start), Some(end)) = (text, at.0, at.1) {
         let at = |i: u64| text.get(..i as usize).map_or(0, |p| p.chars().count());
         let (from, to) = (at(start), at(end).max(at(start) + 1));
@@ -280,7 +280,11 @@ fn agg_table(v: &Value, keys: &[String], metrics: &[String], out: &mut impl Writ
             ),
             "sum(cost)" => (
                 "cost".into(),
-                Box::new(|c: &Value| c["cost_pico"].as_i64().map_or_else(dash, tracedb_model::cost::display)),
+                Box::new(|c: &Value| {
+                    c["cost_pico"]
+                        .as_i64()
+                        .map_or_else(dash, smithling_model::cost::display)
+                }),
             ),
             p if p.ends_with("(latency)") => {
                 let k = p.trim_end_matches("(latency)").to_string();

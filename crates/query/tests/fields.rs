@@ -5,9 +5,9 @@ mod common;
 
 use common::*;
 use serde_json::{Map, Value, json};
-use tracedb_model::Op;
-use tracedb_model::filter::TimeAt;
-use tracedb_query::{Query, TimeRange};
+use smithling_model::Op;
+use smithling_model::filter::TimeAt;
+use smithling_query::{Query, TimeRange};
 
 fn all() -> TimeRange {
     TimeRange::default()
@@ -140,7 +140,7 @@ async fn values_cut_off_by_a_top_50_are_approximate() {
     assert!(v.values.len() <= 50);
     assert_eq!(
         v.values[0],
-        tracedb_query::ValueCount {
+        smithling_query::ValueCount {
             value: json!("common"),
             count: 40
         }
@@ -154,9 +154,9 @@ async fn values_cut_off_by_a_top_50_are_approximate() {
 
 /// Runs that `count: true` finds matching `filter` in project `p`.
 async fn matched(q: &Query, project: Option<&str>, filter: &str) -> u64 {
-    let spec = tracedb_query::QuerySpec {
+    let spec = smithling_query::QuerySpec {
         project: project.map(str::to_string),
-        filter: Some(tracedb_model::filter::parse_filter(filter).unwrap()),
+        filter: Some(smithling_model::filter::parse_filter(filter).unwrap()),
         limit: Some(1),
         count: true,
         ..Default::default()
@@ -236,14 +236,14 @@ async fn counts_are_runs_not_versions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn runs_updated_while_their_memtable_is_flushed() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = tracedb_ingest::IngestConfig::new(dir.path());
-    cfg.limits = tracedb_ingest::Limits {
+    let mut cfg = smithling_ingest::IngestConfig::new(dir.path());
+    cfg.limits = smithling_ingest::Limits {
         memtable_bytes: 16 * 1024,
         dedup_window_us: 0,
         ..Default::default()
     };
     cfg.test_flush_delay = Some(std::time::Duration::from_millis(800));
-    let (ingest, _) = tracedb_ingest::Ingest::open(cfg).unwrap();
+    let (ingest, _) = smithling_ingest::Ingest::open(cfg).unwrap();
     // One batch over the memtable limit: frozen whole, after it.
     let starts: Vec<_> = (1..=150)
         .map(|i| {

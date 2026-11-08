@@ -1,9 +1,9 @@
-# tracedb for RocksDB people
+# smithling for RocksDB people
 
 You know RocksDB's internals: memtables, immutable memtables, SSTs, the MANIFEST, SuperVersions, compaction, write
-stalls. tracedb is built on the same LSM ideas, but stores **columnar Parquet files** for an **analytics** workload
+stalls. smithling is built on the same LSM ideas, but stores **columnar Parquet files** for an **analytics** workload
 instead of row-oriented SSTs for a **key-value** workload. This guide walks the familiar path, part by part, and
-marks where tracedb does the same thing, a different thing, or nothing yet.
+marks where smithling does the same thing, a different thing, or nothing yet.
 
 If columnar storage itself is new to you, read [SECRET_OF_COLUMNAR_DB.md](SECRET_OF_COLUMNAR_DB.md) first (15
 minutes, with a runnable example). For the product and its milestones, see [STARTER_GUIDE.md](STARTER_GUIDE.md).
@@ -15,7 +15,7 @@ built (yet).
 
 ## 1. The one-minute version
 
-| | RocksDB | tracedb |
+| | RocksDB | smithling |
 |---|---|---|
 | Data model | opaque byte keys → byte values | typed rows: one *run* (agent step) with ~40 columns |
 | Workload | point gets, range scans, high write rate | high write rate, then filter / group / aggregate over millions of rows |
@@ -27,9 +27,9 @@ built (yet).
 | Reader snapshot | SuperVersion + sequence-number snapshot | pinned `Version` + copies of memtable rows |
 | Combining versions | newest seqno wins, or a merge operator | built-in **field-by-field merge** at read time |
 | Compaction | leveled / universal / FIFO | **not built**; proposed for M4: leveled by start time (§10) |
-| Query engine | iterators | **Apache DataFusion** scans + tracedb's own merge and filter |
+| Query engine | iterators | **Apache DataFusion** scans + smithling's own merge and filter |
 
-The short version: tracedb is an LSM whose SSTs are Parquet files, sorted by trace for locality, pruned by time
+The short version: smithling is an LSM whose SSTs are Parquet files, sorted by trace for locality, pruned by time
 through a SQL manifest, merged per run field by field, and read by an analytics engine instead of an iterator.
 Every file today is effectively L0.
 
@@ -45,7 +45,7 @@ flowchart TB
         R3 --> R4["Immutable memtables"] --> R5["Flush → L0 SST"]
         R5 --> R6["Compaction → L1 … Ln"]
     end
-    subgraph T["tracedb"]
+    subgraph T["smithling"]
         direction TB
         T1["Upload batch (HTTP)"] --> T2["WAL + fsync"] --> T3["Active memtable (hash map)"]
         T3 --> T4["One frozen memtable"] --> T5["Flush → Parquet segment"]
@@ -71,16 +71,16 @@ flowchart TB
     A --> B --> C --> D --> E --> F --> G
 ```
 
-| | RocksDB | tracedb | |
+| | RocksDB | smithling | |
 |---|---|---|---|
 | Who writes | write thread: a leader writes the group's WAL records (`JoinBatchGroup`) | one dedicated writer thread owns the WAL and memtable ([writer.rs](crates/ingest/src/writer.rs)) | same idea |
 | Durability | `WriteOptions::sync` defaults to false | every acknowledged write is fsynced; there is no "fast, unsynced" mode | **different** |
 | Group commit | followers piggyback on the leader's write/sync | requests that queue during one fsync share the next; no fixed wait | same |
 | Sequence numbers | per write, part of the internal key | per event (`event_seq`), defines merge order | same |
-| Dedup | none (the app's job) | retries dropped by `(run_id, op, body hash)` for 10 min | **different** (tracedb-specific) |
+| Dedup | none (the app's job) | retries dropped by `(run_id, op, body hash)` for 10 min | **different** (smithling-specific) |
 | WAL files | one per memtable switch, deleted when every CF is flushed past it | rolled at every freeze, deleted whole once that memtable is registered | same |
 
-Why always fsync: the client is an SDK that will retry anyway, so tracedb trades a few ms per group for a simple
+Why always fsync: the client is an SDK that will retry anyway, so smithling trades a few ms per group for a simple
 promise ("OK" means on disk), and gets the throughput back through group commit (74k events/s measured in M1).
 
 ---
@@ -98,13 +98,13 @@ flowchart TB
         RC["(k1, seq 2, PUT) → v1"]
         RA --- RB --- RC
     end
-    subgraph T["tracedb memtable (HashMap by run_id)"]
+    subgraph T["smithling memtable (HashMap by run_id)"]
         direction TB
         TA["run r42 → ONE merged state<br/>(start + end applied in place)"]
     end
 ```
 
-| | RocksDB | tracedb |
+| | RocksDB | smithling |
 |---|---|---|
 | Structure | concurrent skiplist (sorted by internal key) | `HashMap<RunId, RunState>` plus small indexes by trace and root ([store.rs](crates/ingest/src/store.rs)) |
 | An update to an existing key | inserts a new entry with a higher seqno | **merges into the existing entry** in place (the merge rule, [merge.rs](crates/model/src/merge.rs)) |
@@ -123,7 +123,7 @@ stale the WAL-only data gets.
 
 ## 5. Immutable memtable and flush
 
-| | RocksDB | tracedb | |
+| | RocksDB | smithling | |
 |---|---|---|---|
 | Count | up to `max_write_buffer_number - 1` immutables | **one** frozen memtable; a second freeze waits | **different** |
 | When full and flush can't keep up | write stall / slowdown | writer answers `429` + `Retry-After` (the SDK retries) | same idea (R-8) |
@@ -159,7 +159,7 @@ flowchart TB
         S4["Footer"]
         S1 --> S2 --> S3 --> S4
     end
-    subgraph P["tracedb core.parquet"]
+    subgraph P["smithling core.parquet"]
         direction TB
         P1["Row group (~64k rows) × N"]
         P2["… each = one column chunk per column, in pages"]
@@ -186,9 +186,9 @@ repetitive columns (`status`, `name`) to almost nothing, and can skip row groups
 
 ## 7. Keys: one key vs three roles
 
-RocksDB's key does everything: sort order, lookup key and the unit of versioning. tracedb splits those roles:
+RocksDB's key does everything: sort order, lookup key and the unit of versioning. smithling splits those roles:
 
-| Role | RocksDB | tracedb |
+| Role | RocksDB | smithling |
 |---|---|---|
 | Sort order inside a file | user key | `(trace_id, dotted_order)`: a whole trace sits together, in tree order |
 | Unit of versioning / merge | user key | `run_id` |
@@ -210,7 +210,7 @@ flowchart TB
         R3["Entries with seq > snapshot are skipped"]
         R1 --> R2 --> R3
     end
-    subgraph T["tracedb query"]
+    subgraph T["smithling query"]
         direction TB
         T1["Under the memtable lock: clone the Version Arc"]
         T2["…and copy the in-scope memtable rows (no payloads)"]
@@ -219,7 +219,7 @@ flowchart TB
     end
 ```
 
-| | RocksDB | tracedb | |
+| | RocksDB | smithling | |
 |---|---|---|---|
 | File set held by a reader | Version, ref-counted | `Arc<Version>` ([memtable.rs](crates/ingest/src/memtable.rs)) | same (R-7) |
 | Memtables held | mem + imm in the SuperVersion | frozen memtable `Arc` + **copies** of active-memtable rows | **different** |
@@ -245,18 +245,18 @@ flowchart TB
     A --> B --> C --> D --> E
 ```
 
-A **filtered list** is where tracedb departs from iterators:
+A **filtered list** is where smithling departs from iterators:
 
-| Step | RocksDB analogue | tracedb |
+| Step | RocksDB analogue | smithling |
 |---|---|---|
 | choose files | key-range check per file | catalog ranges: project, `start_key` window, trace range |
 | inside a file | index block + filter block | DataFusion: footer stats skip row groups, page index skips pages, blooms for id lookups, decode filter columns first |
 | combine sources | `MergingIterator` in key order | hash-group rows by `run_id`; **only runs that may be split** (`needs_merge`, ~10%) are merged |
-| filter | app code on each kv | **after** the merge, by tracedb's evaluator (DataFusion only pre-filters a superset) |
+| filter | app code on each kv | **after** the merge, by smithling's evaluator (DataFusion only pre-filters a superset) |
 | stop early | stop iterating | newest-first `start_key` windows (~20k rows, then ×4), stop at a full page |
 
 **Merge operator vs merge rule.** RocksDB's merge operator stores operands and folds them at read and compaction
-time. tracedb's rule is built in and field-wise: sort a run's versions by sequence, then for each field the newest
+time. smithling's rule is built in and field-wise: sort a run's versions by sequence, then for each field the newest
 version that *set* it wins (a `present` bitmask records which fields each version set); identity fields keep the first
 value; status and latency are recomputed. Conceptually it's a full-merge operator for one fixed schema.
 
@@ -270,10 +270,10 @@ the pre-filter, and the exact filter runs on merged runs.
 
 ### Today: everything is L0
 
-tracedb has no compaction. Every flush adds files that overlap in time with earlier ones, exactly like RocksDB's
+smithling has no compaction. Every flush adds files that overlap in time with earlier ones, exactly like RocksDB's
 L0, and nothing ever merges them. The costs are the ones a RocksDB person would predict:
 
-| Symptom | RocksDB analogue | Effect in tracedb |
+| Symptom | RocksDB analogue | Effect in smithling |
 |---|---|---|
 | file count only grows | L0 file count growing with compaction disabled | every in-scope file's footer is read; more catalog entries to prune |
 | a run whose start and end were flushed apart stays split | versions of a key spread over many L0 files | every read of it fetches and merges both versions |
@@ -316,7 +316,7 @@ flowchart TB
     A --> B --> C --> D --> E --> F
 ```
 
-| Step | RocksDB analogue | tracedb detail |
+| Step | RocksDB analogue | smithling detail |
 |---|---|---|
 | pick inputs | L0 → L1: all L0 files + overlapping L1 files | the oldest T0 files as a **contiguous sequence range** (see rule 1 below) + T1 files overlapping their `start_key` span |
 | merge | `CompactionIterator` dropping shadowed versions | `merge_versions` per run; output is **one row per run** with `first_seq..last_seq` covering its inputs |
@@ -373,7 +373,7 @@ remote compaction; SmithDB runs compaction as its own service).
 
 ### Deletes and retention (backlog B1)
 
-| | RocksDB | tracedb idea |
+| | RocksDB | smithling idea |
 |---|---|---|
 | delete one thing | point tombstone, shadows older versions until compaction drops both | **delete vector**: per file, a bitmap of deleted row numbers in the catalog; applied as a row filter at scan time |
 | delete by condition | `DeleteRange` (key ranges only) | `DELETE /runs?filter=…`: run the filter once, record the matching rows per file; works for any condition, not just key ranges |
@@ -384,32 +384,32 @@ Delete vectors (the Iceberg / Delta Lake approach) suit columnar files better th
 cheaply shadow one key, and deletes here come by filter ("this trace contained an API key"), not by key.
 
 The tricky case is a **late update after a delete**: RocksDB happily resurrects a key that is `Put` again after a
-`Delete`, and so would tracedb's merge, producing a partial run. One option is to keep deleted run ids for the dedup
+`Delete`, and so would smithling's merge, producing a partial run. One option is to keep deleted run ids for the dedup
 window and drop late events for them; the M4/B1 spec has to decide.
 
 ### Snapshots by sequence number
 
-RocksDB snapshots pin a seqno so old versions survive compaction. tracedb doesn't need them for queries (the pin
+RocksDB snapshots pin a seqno so old versions survive compaction. smithling doesn't need them for queries (the pin
 gives each query a consistent view). Where they'd help is **long exports or paging** across compaction: the simplest
 design is to pin the `Version` (the file set) for the export's lifetime, rather than seqno snapshots, since compaction
 deletes files only when no `Version` holds them.
 
 ### More than one immutable memtable
 
-RocksDB allows several (`max_write_buffer_number`). tracedb allows one and answers `429` when the next one fills
+RocksDB allows several (`max_write_buffer_number`). smithling allows one and answers `429` when the next one fills
 during a flush. Allowing N would absorb longer bursts at the cost of N × 64 MB of memory and longer restarts; with
 an SDK that retries, pushing back has been the better trade so far.
 
 ### Checkpoints and backups
 
-RocksDB's `Checkpoint` hard-links the live SSTs and copies the MANIFEST. tracedb's files are immutable with unique
+RocksDB's `Checkpoint` hard-links the live SSTs and copies the MANIFEST. smithling's files are immutable with unique
 names too, so a checkpoint would be: in one catalog read, list the active files and `flushed_seq`; hard-link (or, on
 S3, reference) those files; copy the catalog rows and the WAL tail after `flushed_seq`. Not planned; listed as "not
 adopted" in the roadmap.
 
 ### Compaction I/O limits
 
-RocksDB has a rate limiter. tracedb would start simpler: one compaction job at a time, on its own thread, paused
+RocksDB has a rate limiter. smithling would start simpler: one compaction job at a time, on its own thread, paused
 while ingest is under write slowdown, and preferring idle periods. A real limiter waits until measurements show
 compaction hurting ingest or query latency.
 
@@ -417,7 +417,7 @@ compaction hurting ingest or query latency.
 
 ## 12. Smaller parts
 
-| Part | RocksDB | tracedb | |
+| Part | RocksDB | smithling | |
 |---|---|---|---|
 | Block cache | LRU / HyperClock for data, index, filter blocks | 32 MB memory cache for footers, page indexes, text-index pages, payload ranges ([cache.rs](crates/storage/src/cache.rs)) | same idea |
 | Column families | separate memtables + SSTs, shared WAL | projects: **shared** memtable and WAL, separate files per project | **different** |
@@ -425,15 +425,15 @@ compaction hurting ingest or query latency.
 | DB lock | `LOCK` file | `<data>/LOCK`, held for the process's life | same |
 | Bloom filters | per SST (or per block) | Parquet blooms on `run_id`, `trace_id` per file (R-9) | same idea |
 | Object storage | via env / remote compaction | data files on a folder or S3 (`object_store`), catalog in Postgres, WAL stays local | **different** |
-| Text search | — | per-file inverted index (dictionary + postings), no positions | tracedb-specific |
+| Text search | — | per-file inverted index (dictionary + postings), no positions | smithling-specific |
 
 ---
 
-## 13. What tracedb borrowed from RocksDB, on purpose
+## 13. What smithling borrowed from RocksDB, on purpose
 
-From the roadmap's backlog of LSM ideas ([roadmap](specs/000-tracedb-master-plan/roadmap.md)), all built in M2:
+From the roadmap's backlog of LSM ideas ([roadmap](specs/000-smithling-master-plan/roadmap.md)), all built in M2:
 
-| # | RocksDB idea | tracedb |
+| # | RocksDB idea | smithling |
 |---|---|---|
 | R-7 | pinned versions for readers | `Arc<Version>`; files deleted only when unpinned |
 | R-8 | write slowdown | `429` + `Retry-After` when the frozen memtable is still flushing and the new one is full, or the unflushed WAL is over its cap |

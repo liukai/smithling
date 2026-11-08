@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use serde_json::json;
-use tracedb_model::agg::{AggSpec, Bucket, Compare, GroupKey, Metric, Pct, SumOf, View, parse_stats, print_stats};
-use tracedb_model::filter::parse_filter;
+use smithling_model::agg::{AggSpec, Bucket, Compare, GroupKey, Metric, Pct, SumOf, View, parse_stats, print_stats};
+use smithling_model::filter::parse_filter;
 
 fn spec(group_by: Vec<GroupKey>, metrics: Vec<Metric>, top: u32) -> AggSpec {
     AggSpec {

@@ -18,7 +18,7 @@ free disk and ~15 min. Everything else is a terminal command. Each step names th
 ## 🟠 1. The scenario checks (one command) — unit 13
 
 ```bash
-./target/release/tracedb demo --seed 7
+./target/release/smithling demo --seed 7
 ```
 Expect the M2 rows, plus:
 - `31 text hits, all fetch_url ✓`;
@@ -32,8 +32,8 @@ Exit code 0. Change a planted number in a scratch build: the check fails naming 
 ## 🟢 2. Triage in the browser (SC-01, SC-02, SC-09) — units 10–11 · *needs a browser*
 
 ```bash
-./target/release/tracedb serve --data /tmp/m3 &   # default settings; the demo reads the memtable limit from /healthz
-./target/release/tracedb demo --url http://localhost:7070 --seed 7
+./target/release/smithling serve --data /tmp/m3 &   # default settings; the demo reads the memtable limit from /healthz
+./target/release/smithling demo --url http://localhost:7070 --seed 7
 ```
 Open http://localhost:7070 and time yourself (SC-09: under 5 minutes, by clicking):
 1. Search box → `429 Too Many Requests` → **31** rows, all `fetch_url`, the phrase highlighted in each excerpt; the
@@ -58,25 +58,25 @@ LANGSMITH_ENDPOINT=http://localhost:7070 LANGSMITH_API_KEY=local LANGSMITH_TRACI
   python examples/research_agent.py              # no upload-format override (requirements.txt pins the SDK)
 ```
 - The example agent's trace (9 runs, project `default`) appears within 1 s. The server doesn't log accepted requests;
-  rejections log at debug (`RUST_LOG=tracedb=debug`). The contract test below proves multipart + zstd.
+  rejections log at debug (`RUST_LOG=smithling=debug`). The contract test below proves multipart + zstd.
 - Send feedback: `python -c 'from langsmith import Client; Client(api_url="http://localhost:7070", api_key="local").create_feedback(run_id="<root id from the UI>", key="helpful", score=1)'`
-  → `200`. `tracedb query 'gt(feedback.helpful, 0.5)'` lists that root.
+  → `200`. `smithling query 'gt(feedback.helpful, 0.5)'` lists that root.
 - Feedback for an unknown run id → `200`; `curl -s 'localhost:7070/api/feedback?orphaned=true' | jq .count` → 1.
 
 ```bash
-cargo test -p tracedb --test contract          # 0.8.18 batch fixtures + 0.14.17 multipart (zstd on/off) + feedback fixtures
-cargo test -p tracedb --test multipart         # round trip: same items as JSON batch → identical runs; attachment part rejected by name
+cargo test -p smithling --test contract          # 0.8.18 batch fixtures + 0.14.17 multipart (zstd on/off) + feedback fixtures
+cargo test -p smithling --test multipart         # round trip: same items as JSON batch → identical runs; attachment part rejected by name
 ```
 
-The SDK's read API (`list_runs`) is not part of M3; find run ids in the UI or with `tracedb query --json`.
+The SDK's read API (`list_runs`) is not part of M3; find run ids in the UI or with `smithling query --json`.
 
 ## 🟢 4. The speed table (SC-03 – SC-06, SC-10) — unit 12
 
-*Moved to the backlog* ([roadmap](../000-tracedb-master-plan/roadmap.md) D3-1): the full run needs a quiet machine.
+*Moved to the backlog* ([roadmap](../000-smithling-master-plan/roadmap.md) D3-1): the full run needs a quiet machine.
 
 ```bash
-./target/release/tracedb bench --smoke              # 200k runs, ~2 min: the PR gate
-./target/release/tracedb bench --runs 2000000 --json /tmp/bench.json --check   # full; every checked row PASS; exit 0
+./target/release/smithling bench --smoke              # 200k runs, ~2 min: the PR gate
+./target/release/smithling bench --runs 2000000 --json /tmp/bench.json --check   # full; every checked row PASS; exit 0
 ```
 Expect:
 - every row PASS: trace and run ≤ 50 ms; list ≤ 100 ms; text ≤ 500 ms (three rows: rare phrase, common word,
@@ -87,7 +87,7 @@ Expect:
 - idle memory is reported, not checked: the line ends `WAIVED (M4)` (≤ 200 MB waived until M4, D-028) and shows
   the bench process's RSS, an upper bound, since the server runs inside it.
 
-To see the gate fail: `TRACEDB_BENCH_SLEEP_MS=200 tracedb bench --smoke --check` (test-only hook) → exit 1 naming the
+To see the gate fail: `SMITHLING_BENCH_SLEEP_MS=200 smithling bench --smoke --check` (test-only hook) → exit 1 naming the
 query, target and measured value.
 
 ## 🟢 5. Search and aggregates from the terminal — units 4, 6, 7
@@ -106,38 +106,38 @@ curl -s localhost:7070/api/aggregate -H 'content-type: application/json' \
 
 q=$(jq -rn '{filter: "has(tags, \"batch=2026-11-05-a\")", group_by: ["name"], metrics: ["count"]} | @uri')
 curl -sN "localhost:7070/api/aggregate/stream?q=$q"     # small data: only `result`; at 2M runs: `estimate` first
-tracedb query --group-by name --metrics 'error_rate,p95(latency)' --compare 'has(tags, "batch=2026-11-06-b")' \
+smithling query --group-by name --metrics 'error_rate,p95(latency)' --compare 'has(tags, "batch=2026-11-06-b")' \
   'has(tags, "batch=2026-11-05-a")'
 ```
 
 ## 🟠 6. Correctness against naive checks — units 1, 4, 6
 
 ```bash
-cargo test -p tracedb-query --test search            # index lookup == naive phrase check over merged runs; M2 files (no sidecar) agree
-cargo test -p tracedb-query --test aggregate         # aggregate == naive over merged runs, incl. (none), other, tags, compare, buckets
-cargo test -p tracedb-model --test text              # Unicode tokenizer cases; phrase across leaves doesn't match
-cargo test -p tracedb-ingest --test writer           # second start for a flushed run joins the multi-version set
-cargo test --release -p tracedb --test crash -- --ignored   # 10/10 incl. the after_fts_put kill point
+cargo test -p smithling-query --test search            # index lookup == naive phrase check over merged runs; M2 files (no sidecar) agree
+cargo test -p smithling-query --test aggregate         # aggregate == naive over merged runs, incl. (none), other, tags, compare, buckets
+cargo test -p smithling-model --test text              # Unicode tokenizer cases; phrase across leaves doesn't match
+cargo test -p smithling-ingest --test writer           # second start for a flushed run joins the multi-version set
+cargo test --release -p smithling --test crash -- --ignored   # 10/10 incl. the after_fts_put kill point
 ```
 
 ## 🟠 7. Same numbers on cloud-style storage (SC-07) — unit 13 · *needs Docker*
 
 As M2's [quickstart step 7](../002-m2-durable-storage-query-builder/quickstart.md#7-same-numbers-on-cloud-style-storage-sc-08),
-then `tracedb demo --seed 7 --storage s3://tracedb/test --metastore postgres://…`. Expect the same check rows as
+then `smithling demo --seed 7 --storage s3://smithling/test --metastore postgres://…`. Expect the same check rows as
 step 1 (sidecars in the bucket, `feedback` table in Postgres).
 
 ## 🟠 8. M2 rough edges (Story 7) — unit 1 (and 10 for the UI)
 
 ```bash
-tracedb serve --data /tmp/m3e --memtable 4MB & sleep 1; tracedb seed --traces 300 --no-delay
+smithling serve --data /tmp/m3e --memtable 4MB & sleep 1; smithling seed --traces 300 --no-delay
 rm "$(ls /tmp/m3e/data/*/*/*.core.parquet | head -1)"                         # delete a data file while serving
 curl -s localhost:7070/api/query -H 'content-type: application/json' -d '{"count": true}' | jq '.warnings, .stats.matched'
 # a skipped_files warning naming it; a count from the other files (not a 500)
 curl -s localhost:7070/healthz | jq '.ok, .damaged_segments'                   # false, [{id, reason: "missing", …}]
-tracedb seed --traces 300 --no-delay; tracedb seed --traces 300 --no-delay     # no identity_conflict rejections
+smithling seed --traces 300 --no-delay; smithling seed --traces 300 --no-delay     # no identity_conflict rejections
 curl -s localhost:7070/api/query -H 'content-type: application/json' \
   -d '{"filter": "gt(start_time, \"-0s\")", "count": true}' | jq .stats.matched   # 0: nothing starts in the future
-cargo test -p tracedb-ingest --test flush            # lost commit reply → retry registers once; row counts exact
+cargo test -p smithling-ingest --test flush            # lost commit reply → retry registers once; row counts exact
 ```
 *Needs a browser*: scroll the live Samples view down while `seed` runs → an "N new" pill; make a run stop matching
 a live Table view → its row shows the new values.
@@ -145,11 +145,11 @@ a live Table view → its row shows the new values.
 ## Last verified
 
 2026-11-07 (T126), macOS, release build of `003-m3-search-aggregates-speed` at `80b7c73` plus this run's doc fixes;
-`npm run build` + `cargo build --release -p tracedb`. Small data (the seed-7 scenario), not 2M runs.
+`npm run build` + `cargo build --release -p smithling`. Small data (the seed-7 scenario), not 2M runs.
 
 | Step | Result | Numbers seen |
 |---|---|---|
-| 1. `demo --seed 7` | passed | all 10 checks ✓, exit 0; 408 traces, 10 flushes, ~3 s; 31 text hits (9 ms); 14.0% / 31 s; $4.12 (12 no price); 14.0% → 2.0%, 31 s → 9 s; feedback 2 runs. Fail path (exit 1, expected vs actual): `cargo test -p tracedb --test demo` 6/6 |
+| 1. `demo --seed 7` | passed | all 10 checks ✓, exit 0; 408 traces, 10 flushes, ~3 s; 31 text hits (9 ms); 14.0% / 31 s; $4.12 (12 no price); 14.0% → 2.0%, 31 s → 9 s; feedback 2 runs. Fail path (exit 1, expected vs actual): `cargo test -p smithling --test demo` 6/6 |
 | 2. Triage (SC-01, SC-02, SC-09) | passed after a fix, through the API/CLI; UI not checked in a browser (D3-4) | Default `serve` (64MB) failed "checks across memtable and files" (D3-8); fixed 2026-11-07: `demo --url` sizes its load from `memtable_limit_bytes` in `/healthz`, 10/10 against a default `serve` (~5 s, release); the `--memtable 4MB` workaround is gone. API: search 31, all `fetch_url`, excerpt `HTTPError: 429 Too Many Requests` (11–32); `fetch_url` 300 runs, 42 errors, 0.14, p95 31000 ms, total 4.12e12 pico, 12 no price; 42 errored samples; series 41 × 5-min buckets, no single spike (doc fixed); dist bin 29.0–31.6 s = 33; compare 0.14/31000 vs 0.02/9000, series + `compare.side_b`; `feedback.correctness` in fields, 2 runs; `/` serves the built UI. SC-09: all six questions as API calls in 0.22 s — a script timing, not a real user timing |
 | 3. SDK defaults (SC-08) | passed after a doc fix | `/info` → `{"m":true,"z":true}`; `research_agent.py` (langsmith 0.14.17, no override) → 9 runs in `default`; feedback via SDK → id returned, `query 'gt(feedback.helpful, 0.5)'` → 1 run (the root); unknown run id → `orphaned` count 1. Fixes: prerequisites install `examples/requirements.txt` (needs langgraph); the server logs no accepted requests, so the "log shows multipart + zstd" line is replaced. `--test contract` 1/1, `--test multipart` 12/12 |
 | 4. Speed table | moved to backlog (D3-1) | not run (not even `--smoke`) |

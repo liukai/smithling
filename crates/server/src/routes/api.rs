@@ -6,11 +6,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use tracedb_ingest::Include;
-use tracedb_model::agg::{AggSpec, Compare, GroupKey, Metric, parse_stats};
-use tracedb_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
-use tracedb_model::{RunId, TraceId};
-use tracedb_query::{OrderBy, QueryError, QuerySpec, TimeRange};
+use smithling_ingest::Include;
+use smithling_model::agg::{AggSpec, Compare, GroupKey, Metric, parse_stats};
+use smithling_model::filter::{CmpOp, Expr, Field, Path as FPath, TimeAt, Value, parse_filter};
+use smithling_model::{RunId, TraceId};
+use smithling_query::{OrderBy, QueryError, QuerySpec, TimeRange};
 
 use crate::AppState;
 use crate::routes::errors::error;
@@ -308,7 +308,7 @@ pub async fn run(State(st): State<AppState>, Path(id): Path<String>, Q(q): Q<Run
         }
         Ok(None) => not_found(
             "no such run",
-            st.query.skipped(&tracedb_query::Scope {
+            st.query.skipped(&smithling_query::Scope {
                 run_id: Some(id),
                 ..Default::default()
             }),
@@ -434,7 +434,7 @@ impl AggBody {
             None => serde_json::from_value::<AggSpec>(raw.into()).map_err(|e| bad("bad_stats", e.to_string()))?,
         };
         if let Compare::Filter(f) = &spec.compare {
-            filter_slot("compare.filter", &Some(tracedb_model::filter::print(f)))?;
+            filter_slot("compare.filter", &Some(smithling_model::filter::print(f)))?;
         }
         if spec
             .metrics
@@ -447,7 +447,7 @@ impl AggBody {
         }
         for k in &spec.group_by {
             if let GroupKey::Metadata(m) = k
-                && !tracedb_model::attrs::promotable("metadata", m)
+                && !smithling_model::attrs::promotable("metadata", m)
             {
                 return Err(bad(
                     "bad_stats",
@@ -481,17 +481,17 @@ pub(crate) fn agg_request(body: &AggBody) -> Result<(QuerySpec, AggSpec), BadReq
 }
 
 /// Damaged files skipped, taken out of the warnings (they're written as `skipped_files`).
-pub(crate) fn take_skipped(res: &mut tracedb_query::AggResult) -> Vec<String> {
+pub(crate) fn take_skipped(res: &mut smithling_query::AggResult) -> Vec<String> {
     let skipped: Vec<String> = res
         .warnings
         .iter()
         .find_map(|w| match w {
-            tracedb_query::QueryWarning::SkippedFiles { ids } => Some(ids.clone()),
+            smithling_query::QueryWarning::SkippedFiles { ids } => Some(ids.clone()),
             _ => None,
         })
         .unwrap_or_default();
     res.warnings
-        .retain(|w| !matches!(w, tracedb_query::QueryWarning::SkippedFiles { .. }));
+        .retain(|w| !matches!(w, smithling_query::QueryWarning::SkippedFiles { .. }));
     skipped
 }
 

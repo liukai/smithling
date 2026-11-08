@@ -25,7 +25,7 @@ fn text(n: u64, words: usize) -> String {
 #[ignore]
 async fn sustains_20000_events_per_second_while_querying() {
     let dir = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tracedb"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_smithling"))
         .args(["serve", "--data", dir.path().to_str().unwrap(), "--port", "0"])
         // Small enough that the 60 s run flushes many times.
         .args(["--memtable", "16MB"])

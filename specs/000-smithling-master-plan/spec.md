@@ -1,10 +1,10 @@
-# Master Spec: tracedb — a local trace store and viewer for AI agents
+# Master Spec: smithling — a local trace store and viewer for AI agents
 
-> **MASTER PLAN.** This folder (000) is the tracedb master: requirements of record, architecture and roadmap. It has
+> **MASTER PLAN.** This folder (000) is the smithling master: requirements of record, architecture and roadmap. It has
 > no code tasks. Each phase is its own spec folder (`specs/001-…`, `specs/002-…`) that delivers requirement IDs from
 > here. Phase details live in the phase folder; this folder links to it. Progress: [roadmap.md](roadmap.md).
 
-**Feature Branch**: `000-tracedb-master-plan`
+**Feature Branch**: `000-smithling-master-plan`
 
 **Created**: 2026-11-05
 
@@ -17,7 +17,7 @@
 - [design-notes.md](design-notes.md): the draft design (storage layout, engine, milestones).
 - [roadmap.md](roadmap.md): master plan and progress (plan of record).
 
-**In one paragraph**: tracedb is one local program that captures traces from an unchanged AI agent and lets a developer browse, search, filter and aggregate them in a browser. All data stays in one folder on their laptop. The driving scenario is triaging an overnight 200-task eval batch: what failed, what failed quietly, is it a pattern, how bad is it, and did the fix work.
+**In one paragraph**: smithling is one local program that captures traces from an unchanged AI agent and lets a developer browse, search, filter and aggregate them in a browser. All data stays in one folder on their laptop. The driving scenario is triaging an overnight 200-task eval batch: what failed, what failed quietly, is it a pattern, how bad is it, and did the fix work.
 
 ---
 
@@ -25,28 +25,28 @@
 
 **Priorities**: P1 = needed for the core demo (scenario steps 1–9). P2 = the rest of the scenario. Later items are out of scope (see Assumptions).
 
-**UI first**: the browser UI is how people use tracedb, not a layer added once the storage foundation is done. Every
+**UI first**: the browser UI is how people use smithling, not a layer added once the storage foundation is done. Every
 story ships with its browser view in the same slice, and every Independent Test below is run in the browser. The very
 first slice (Story 1 + Story 2) is a working runs list and trace view, even if the data behind it is small and in memory.
 The CLI and API are equivalents for scripting; no capability is available only through them.
 
 ### User Story 1 - Capture traces from an unchanged agent and see them live (Priority: P1)
 
-A developer starts tracedb, points their existing agent at it with one environment variable, and watches runs show up
+A developer starts smithling, points their existing agent at it with one environment variable, and watches runs show up
 in the browser as they happen. Runs that take a long time show as running and update when they finish.
 
 **Why this priority**: Nothing else works without data. "No code changes" is what makes people try it at all.
 
-**Independent Test**: Start tracedb on an empty data folder, run an unmodified LangChain/LangGraph example agent with
+**Independent Test**: Start smithling on an empty data folder, run an unmodified LangChain/LangGraph example agent with
 the endpoint variable set, and confirm its trace appears in the UI within 1 second of each step completing.
 
 **Acceptance Scenarios**:
 
-1. **Given** tracedb is running and an agent built on the LangSmith SDK has `LANGSMITH_ENDPOINT` pointed at it, **When** the agent runs a task, **Then** the full trace appears without any change to the agent's code.
+1. **Given** smithling is running and an agent built on the LangSmith SDK has `LANGSMITH_ENDPOINT` pointed at it, **When** the agent runs a task, **Then** the full trace appears without any change to the agent's code.
 2. **Given** a run whose start arrived 40 minutes ago, **When** its end arrives, **Then** the run's status, end time and outputs update in the runs list, the trace view and query results.
 3. **Given** a run that has received several updates, **When** it is viewed, **Then** it shows a single merged state where later updates override earlier ones.
 4. **Given** the runs list is open, **When** new runs are ingested, **Then** they appear in the list (live tail) without a manual refresh.
-5. **Given** tracedb has acknowledged events, **When** the process is killed abruptly and restarted, **Then** every acknowledged event is still present.
+5. **Given** smithling has acknowledged events, **When** the process is killed abruptly and restarted, **Then** every acknowledged event is still present.
 
 ---
 
@@ -198,13 +198,13 @@ trace, tool calls as tool runs, sub-agents as nested runs, and sessions as threa
 
 ### User Story 11 - An AI agent triages traces for me (Priority: P2)
 
-A coding agent (e.g. Claude Code) answers "why did batch a fail?" by querying tracedb itself, reading traces in layers
+A coding agent (e.g. Claude Code) answers "why did batch a fail?" by querying smithling itself, reading traces in layers
 that fit its context, and reporting findings with links the developer can click to check its work.
 
 **Why this priority**: The end goal is agents debugging agents. It needs the P1 stories first, and its value is
 cutting the morning triage from minutes of clicking to one question.
 
-**Independent Test**: Give an agent only tracedb's agent tools and the question "why did batch 2026-11-05-a fail?". It
+**Independent Test**: Give an agent only smithling's agent tools and the question "why did batch 2026-11-05-a fail?". It
 must name `fetch_url` 429s as the main cause, cite the 31 matching runs, and include UI links that open them.
 
 **Acceptance Scenarios**:
@@ -220,7 +220,7 @@ must name `fetch_url` 429s as the main cause, cite the 31 matching runs, and inc
 
 ### User Story 12 - Find what stands out (Priority: P2)
 
-The developer selects the slow or failing part of a chart, and tracedb ranks which fields and values differ most between
+The developer selects the slow or failing part of a chart, and smithling ranks which fields and values differ most between
 the selection and everything else (Honeycomb calls this BubbleUp).
 
 **Why this priority**: it answers "is this a pattern?" without the developer having to guess which field to group by.
@@ -246,7 +246,7 @@ and `prompt_version = v7` must rank in the top three differences.
 - **Malformed or unknown fields**: invalid events are rejected with a clear error and don't affect the rest of the batch. Unknown fields are kept in metadata, not dropped.
 - **Disk full**: ingest refuses new events with a clear error rather than acknowledging and losing them.
 - **Crash during cleanup**: an abrupt stop during background reorganization leaves data consistent; no run is lost or shown twice.
-- **Empty store**: every view shows a helpful empty state that explains how to point an agent at tracedb.
+- **Empty store**: every view shows a helpful empty state that explains how to point an agent at smithling.
 
 ## Requirements *(mandatory)*
 
@@ -347,7 +347,7 @@ Brackets give each requirement's source: **[Post]** = named in the SmithDB post;
 - **Feedback**: filtering and averaging feedback that arrives with runs is in scope (P1 stories). Attaching it after the fact is P2.
 - **Text search** at laptop scale (a few GB) may use a simple approach first. The response-time target, not the technique, is the requirement.
 - **Single user, single machine**: no login, no access control, bound to localhost only.
-- **LangSmith wire format** is public: the SDKs are open source and define it. tracedb targets pinned SDK versions (Python 0.14.17, the current release, and 0.8.18) and adds new versions through recorded-traffic tests (details in design-notes.md §4). Runs sent to an agent address instead of a project (SDK 0.14+) are accepted; their project is `<agent id>/<environment>`. Compatibility covers ingest only, not the rest of the LangSmith API (datasets, prompts, evaluators).
+- **LangSmith wire format** is public: the SDKs are open source and define it. smithling targets pinned SDK versions (Python 0.14.17, the current release, and 0.8.18) and adds new versions through recorded-traffic tests (details in design-notes.md §4). Runs sent to an agent address instead of a project (SDK 0.14+) are accepted; their project is `<agent id>/<environment>`. Compatibility covers ingest only, not the rest of the LangSmith API (datasets, prompts, evaluators).
 - **Out of scope for v0** (besides the Backlog below): OpenTelemetry ingest, run rules, run-by-run experiment comparison, raw SQL access, multi-tenant auth, replication and high availability, eval runners, prompt playground, multi-machine scale-out. Raw SQL and OpenTelemetry ingest are the likely first follow-ups.
 - **Reference hardware** for performance targets is a recent developer laptop (8+ cores, 16+ GB RAM, SSD).
 

@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tracedb_ingest::Limits;
-use tracedb_server::{ServeConfig, parse_size, serve};
+use smithling_ingest::Limits;
+use smithling_server::{ServeConfig, parse_size, serve};
 
 /// Returns freed memory to the OS (the system allocator kept ~1 GB after a load); tuned in `.cargo/config.toml`.
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[derive(Parser)]
-#[command(name = "tracedb", version, about = "Local trace store and viewer for AI agents")]
+#[command(name = "smithling", version, about = "Local trace store and viewer for AI agents")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -19,19 +19,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run tracedb: accept agent traces and serve the browser UI.
+    /// Run smithling: accept agent traces and serve the browser UI.
     Serve {
-        #[arg(long, default_value = "./.tracedb")]
+        #[arg(long, default_value = "./.smithling")]
         data: PathBuf,
         #[arg(long, default_value_t = 7070)]
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         bind: IpAddr,
         /// Where data files go: a folder or `s3://bucket/prefix` (S3 settings from `AWS_*`). Default: <data>/data.
-        #[arg(long, env = "TRACEDB_STORAGE")]
+        #[arg(long, env = "SMITHLING_STORAGE")]
         storage: Option<String>,
         /// The catalog: `sqlite://path` or `postgres://…` (password from the URL or `PGPASSWORD`, never logged).
-        #[arg(long, env = "TRACEDB_METASTORE")]
+        #[arg(long, env = "SMITHLING_METASTORE")]
         metastore: Option<String>,
         /// Freeze and flush the in-memory batch when its heap reaches this size (M2: 128MB, counted as JSON).
         #[arg(long, default_value = "64MB", value_parser = parse_size)]
@@ -43,7 +43,7 @@ enum Cmd {
         #[arg(long, default_value = "10m", value_parser = parse_duration_us)]
         dedup_window: i64,
         /// …remembering at most this many recent uploads (16 bytes each, plus the table).
-        #[arg(long, default_value_t = tracedb_ingest::dedup::DEFAULT_CAP)]
+        #[arg(long, default_value_t = smithling_ingest::dedup::DEFAULT_CAP)]
         dedup_keys: usize,
         /// Memory for file footers, index pages and payload pages read back (counted in idle memory).
         #[arg(long, default_value = "32MB", value_parser = parse_size)]
@@ -55,14 +55,14 @@ enum Cmd {
         #[arg(long, hide = true)]
         max_runs: Option<String>,
         /// Serve UI files from this folder instead of the built-in copy (for UI development).
-        #[arg(long, env = "TRACEDB_UI_DIR")]
+        #[arg(long, env = "SMITHLING_UI_DIR")]
         ui_dir: Option<PathBuf>,
         /// Model prices (USD per 1M tokens) replacing the built-in entries by name. Default: <data>/prices.toml if present.
         #[arg(long)]
         prices: Option<PathBuf>,
     },
     #[cfg(feature = "tools")]
-    /// Generate realistic research-agent traces and send them to a running tracedb.
+    /// Generate realistic research-agent traces and send them to a running smithling.
     Seed {
         #[arg(long, default_value_t = 100)]
         traces: usize,
@@ -75,14 +75,14 @@ enum Cmd {
         no_delay: bool,
     },
     #[cfg(feature = "tools")]
-    /// Run a query against a running tracedb and print a table (or JSON lines).
-    Query(tracedb_tools::cli_query::QueryArgs),
+    /// Run a query against a running smithling and print a table (or JSON lines).
+    Query(smithling_tools::cli_query::QueryArgs),
     #[cfg(feature = "tools")]
     /// Load the overnight-eval scenario and run the M2 and M3 checks (`--checks` picks); prints a pass/fail table.
-    Demo(tracedb_tools::demo::DemoArgs),
+    Demo(smithling_tools::demo::DemoArgs),
     #[cfg(feature = "tools")]
     /// Load the reference volume, time each query type and print P50/P99 against the targets.
-    Bench(tracedb_tools::bench::BenchArgs),
+    Bench(smithling_tools::bench::BenchArgs),
 }
 
 /// `10m`, `30s`, `2h` → microseconds.
@@ -116,7 +116,7 @@ fn main() -> ExitCode {
     match rt {
         Ok(rt) => rt.block_on(run()),
         Err(e) => {
-            eprintln!("tracedb: could not start: {e}");
+            eprintln!("smithling: could not start: {e}");
             ExitCode::FAILURE
         }
     }
@@ -159,7 +159,7 @@ async fn run() -> ExitCode {
             prices,
         } => {
             if max_memory.is_some() || max_runs.is_some() {
-                eprintln!("tracedb: --max-memory and --max-runs no longer apply: data moves to disk (M2)");
+                eprintln!("smithling: --max-memory and --max-runs no longer apply: data moves to disk (M2)");
             }
             let cfg = ServeConfig {
                 data_dir: data,
@@ -183,25 +183,25 @@ async fn run() -> ExitCode {
             match serve(cfg, shutdown).await {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("tracedb: {}", tracedb_storage::redact(&format!("{e:#}")));
+                    eprintln!("smithling: {}", smithling_storage::redact(&format!("{e:#}")));
                     ExitCode::FAILURE
                 }
             }
         }
         #[cfg(feature = "tools")]
         Cmd::Demo(args) => {
-            let code = tracedb_tools::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            let code = smithling_tools::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
         #[cfg(feature = "tools")]
         Cmd::Bench(args) => {
-            let code = tracedb_tools::bench::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            let code = smithling_tools::bench::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
         #[cfg(feature = "tools")]
         Cmd::Query(args) => {
             let code =
-                tracedb_tools::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+                smithling_tools::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
         #[cfg(feature = "tools")]
@@ -211,7 +211,7 @@ async fn run() -> ExitCode {
             url,
             no_delay,
         } => {
-            let generated = tracedb_tools::seed::generate_before(seed, traces, tracedb_model::Ts::now().0);
+            let generated = smithling_tools::seed::generate_before(seed, traces, smithling_model::Ts::now().0);
             let steps: usize = generated.iter().map(|t| t.steps.len()).sum();
             let late = generated
                 .iter()
@@ -223,17 +223,17 @@ async fn run() -> ExitCode {
                     "{late} steps finish late; their updates follow over the next 2 minutes (use --no-delay to skip the wait)"
                 );
             }
-            match tracedb_tools::seed::send(url.trim_end_matches('/'), &generated, no_delay).await {
+            match smithling_tools::seed::send(url.trim_end_matches('/'), &generated, no_delay).await {
                 Ok((posts, patches)) => {
                     println!("sent {traces} traces ({steps} steps): {posts} starts, {patches} late updates");
                     ExitCode::SUCCESS
                 }
-                Err(e @ tracedb_tools::seed::SeedError::Unreachable(..)) => {
-                    eprintln!("tracedb seed: {e}");
+                Err(e @ smithling_tools::seed::SeedError::Unreachable(..)) => {
+                    eprintln!("smithling seed: {e}");
                     ExitCode::from(2)
                 }
                 Err(e) => {
-                    eprintln!("tracedb seed: {e}");
+                    eprintln!("smithling seed: {e}");
                     ExitCode::FAILURE
                 }
             }

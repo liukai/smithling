@@ -1,4 +1,4 @@
-//! `tracedb bench` as a gate (M3 T104, contracts/cli.md): `--check` exits 1 naming the query, target and value;
+//! `smithling bench` as a gate (M3 T104, contracts/cli.md): `--check` exits 1 naming the query, target and value;
 //! `--json` writes the table; a setup error exits 2. Small `--runs` and the hidden `--samples`, `--idle-secs`
 //! and `--flush-age-secs` / `--dedup-window-secs` keep it quick.
 
@@ -6,10 +6,10 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use tracedb_tools::bench;
+use smithling_tools::bench;
 
 fn bench(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_smithling"));
     cmd.args([
         "bench",
         "--runs",
@@ -116,7 +116,7 @@ fn check_fails_on_a_slipped_target_naming_query_target_and_value() {
     let o = bench(
         dir.path(),
         &["--check", "--json", json.to_str().unwrap()],
-        &[("TRACEDB_BENCH_SLEEP_MS", "200")],
+        &[("SMITHLING_BENCH_SLEEP_MS", "200")],
     );
     let all = text(&o);
     assert_eq!(o.status.code(), Some(1), "{all}");
@@ -160,7 +160,7 @@ fn setup_error_exits_2() {
     std::fs::write(dir.path().join("data/other"), "x").unwrap();
     let o = bench(dir.path(), &["--check"], &[]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
-    assert!(text(&o).contains("tracedb bench:"), "{}", text(&o));
+    assert!(text(&o).contains("smithling bench:"), "{}", text(&o));
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn reference_workload_decodes_the_shipped_file() {
 }
 
 /// Writes `tests/fixtures/bench-reference.parquet` from the bench generator; run by hand with `--ignored` when
-/// the fixture changes, then measure `REFERENCE_MS` on the reference laptop (`tracedb bench --calibrate-only`).
+/// the fixture changes, then measure `REFERENCE_MS` on the reference laptop (`smithling bench --calibrate-only`).
 #[test]
 #[ignore]
 fn write_reference_fixture() {

@@ -1,7 +1,7 @@
 # Design: M1 — See agent trace live
 
 **Status**: Draft for review (before implementation) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
-**Master design**: [design-notes.md](../000-tracedb-master-plan/design-notes.md)
+**Master design**: [design-notes.md](../000-smithling-master-plan/design-notes.md)
 
 ## 1. What this design has to achieve
 
@@ -18,7 +18,7 @@ keeping the **service boundaries** that M2+ build on (roadmap decisions, constit
 ## 2. Big picture
 
 ```
-                         tracedb (one process)
+                         smithling (one process)
  ┌───────────┐   HTTP   ┌──────────────────────────────────────────────────────────────┐
  │ LangSmith │ ───────▶ │  HTTP layer                                                  │
  │ SDK agent │          │   LangSmith compat · native events · query API · tail · UI   │
@@ -28,14 +28,14 @@ keeping the **service boundaries** that M2+ build on (roadmap decisions, constit
  └───────────┘          ┌───────────────┐       ┌───────────────┐      ┌──────────────┐
                         │ Ingest service│       │ Query service │      │ Tail hub     │
  ┌───────────┐          │  validate     │       │  trace tree   │      │  fan-out of  │
- │ tracedb   │ ─HTTP──▶ │  dedup        │       │  single run   │      │  run changes │
+ │ smithling   │ ─HTTP──▶ │  dedup        │       │  single run   │      │  run changes │
  │ seed      │          │  number (seq) │       │  root list    │      └──────▲───────┘
  └───────────┘          │  ┌─────────┐  │       └───────┬───────┘             │
                         │  │  WAL    │  │ apply         │ read snapshot       │ publish
                         │  └─────────┘  │──────▶ ┌──────▼───────┐ ────────────┘
                         └───────────────┘        │  Run store   │  (in memory = memtable)
                                                  └──────────────┘
-                       ./.tracedb/wal/*.wal  (the only thing on disk in M1)
+                       ./.smithling/wal/*.wal  (the only thing on disk in M1)
 ```
 
 **The one idea to hold on to:** a single **writer** owns the WAL and the run store. Every upload goes through it, in
@@ -47,16 +47,16 @@ order. It writes to the WAL, fsyncs, applies to the store, publishes the change,
 | # | Component | Responsibility | Interface (shape) | SmithDB counterpart | Changes in later phases |
 |---|---|---|---|---|---|
 | 1 | **`model`** (crate) | Types and rules, no I/O: `RunEvent`, `Run`, the merge rule, `dotted_order` parsing, derived `status`/`latency`, validation | pure functions: `merge(&mut Run, &RunEvent)`, `validate(&RunEvent)`, `derive(&Run)` | run schema | unchanged; reused by every service |
-| 2 | **HTTP layer** (in the `tracedb` binary) | Translate wire formats to `RunEvent`s and back; routes; body limits; serve the UI | routes in [contracts/http-api.md](contracts/http-api.md) | API servers | M3 adds multipart; M2 adds `/api/query` |
+| 2 | **HTTP layer** (in the `smithling` binary) | Translate wire formats to `RunEvent`s and back; routes; body limits; serve the UI | routes in [contracts/http-api.md](contracts/http-api.md) | API servers | M3 adds multipart; M2 adds `/api/query` |
 | 3 | **Ingest service** (crate) | Validate, dedup, assign `event_seq`, write the WAL with group commit, apply to the store, publish, confirm | `Ingest::accept(Vec<RunEvent>) -> AcceptResult` (async; resolves after fsync) | ingestion service | M2: flushes the store to disk segments, then trims the WAL |
 | 4 | **WAL** (inside ingest) | Append-only log of accepted events; replay on start | `append(batch) -> Offset`, `sync()`, `replay() -> iter<RunEvent>` | WAL on ingestion node | M2: trimmed after each flush |
 | 5 | **Run store** (inside ingest, read by query) | Current merged state of every run in memory, plus indexes for the three M1 reads | `apply(&RunEvent) -> Change`; read-only `Snapshot` | memtable | M2: becomes the "fresh data" side of every query (`fresh_scan`) |
 | 6 | **Query service** (crate) | Answer reads from a store snapshot: trace tree, one run, root list with cursor | `trace(id)`, `run(id, include)`, `roots(project, status, cursor, limit)` | query service | M2: same API over DataFusion (segments ∪ store) |
 | 7 | **Tail hub** | Fan out run changes to open browsers; coalesce bursts | `subscribe(filter) -> Stream<RunHeader>` | live tail | M2: filter by any query |
 | 8 | **UI** (`ui/`, embedded) | Runs list (live, paged), trace view (tree + waterfall), step panel, empty state, URL state | consumes the HTTP API | LangSmith UI | M2: query builder, field browser |
-| 9 | **CLI** (`tracedb` binary) | `serve`, `seed` | [contracts/cli.md](contracts/cli.md) | — | grows per phase |
+| 9 | **CLI** (`smithling` binary) | `serve`, `seed` | [contracts/cli.md](contracts/cli.md) | — | grows per phase |
 
-Crates in M1: `model`, `ingest`, `query`, `tracedb` (binary), plus `ui/`. The `storage` and `compact` crates arrive with
+Crates in M1: `model`, `ingest`, `query`, `smithling` (binary), plus `ui/`. The `storage` and `compact` crates arrive with
 M2 and M4, when there is something to put in them (keep it simple).
 
 **Boundary rules** (these keep the services separable later):
@@ -98,7 +98,7 @@ numbers, and when a non-goal is lifted. A "cannot" here is a promise, not an ove
 #### 4. WAL
 - **Can**: append records with checksums; fsync in groups; roll files at 64 MB; replay in order; truncate a torn tail.
 - **Cannot**: be trimmed or compacted (it grows for the whole life of the data folder); be read by anything except
-  replay; be copied safely while tracedb runs; survive disk corruption in the middle of a file (replay stops at the
+  replay; be copied safely while smithling runs; survive disk corruption in the middle of a file (replay stops at the
   first bad record and reports it).
 - **Limits**: disk use ≈ the raw upload size (every update is kept, including superseded ones). Restart time grows
   with WAL size (open question §11.4).
@@ -218,7 +218,7 @@ M2 removes both by flushing to segments and trimming the WAL.
 
 ## 5. Data structures and formats
 
-**WAL record** (in `./.tracedb/wal/<seq-start>.wal`, rolled every 64 MB):
+**WAL record** (in `./.smithling/wal/<seq-start>.wal`, rolled every 64 MB):
 ```
 [u32 length][u32 crc32][u64 event_seq][JSON RunEvent bytes]
 ```
@@ -266,14 +266,14 @@ Readers take a short read lock, copy out headers, and release it; only the write
 | `inputs`, `outputs`, `events`, `error`, `tags`, times, `run_type`, `name`, ids, `dotted_order` | same meaning |
 | `serialized`, attachments | dropped in M1, with sizes logged |
 
-`GET /info` answers with `version: ""` (no compatibility claim; the SDK then skips its version warnings), `tracedb_version`,
+`GET /info` answers with `version: ""` (no compatibility claim; the SDK then skips its version warnings), `smithling_version`,
 and `batch_ingest_config.use_multipart_endpoint = false`, so the SDK sends JSON batches
 (master research R2). This is pinned by contract tests built from recorded SDK traffic.
 
 ## 7. UI design (M1 screens)
 
 ```
-┌ tracedb ─ project: research-agent ▾ ─ status: all ▾ ───────────────── ● live ┐
+┌ smithling ─ project: research-agent ▾ ─ status: all ▾ ───────────────── ● live ┐
 │ status  name           start      latency  tokens   tags                       │
 │ ● run   research_task  02:51:10   12m…     18,200   batch=a                    │
 │ ✕ err   research_task  02:14:07   41m 3s   48,210   batch=a                    │
@@ -315,7 +315,7 @@ and `batch_ingest_config.use_multipart_endpoint = false`, so the SDK sends JSON 
 |---|---|---|
 | Merge rule | unit + property tests in `model` (any order of events → same result as sorted by seq) | M1-FR-03 |
 | WAL replay | property test: random batches, random truncation point → replay equals the confirmed prefix | M1-FR-04 |
-| **Crash test** | test harness spawns `tracedb serve`, uploads continuously while logging confirmed ids, `kill -9` at random times, restarts, checks every confirmed id is present; 10 rounds | SC-04 |
+| **Crash test** | test harness spawns `smithling serve`, uploads continuously while logging confirmed ids, `kill -9` at random times, restarts, checks every confirmed id is present; 10 rounds | SC-04 |
 | **SDK contract** | fixtures recorded once per pinned Python SDK (0.14.17 and 0.8.18) against a recording endpoint; a Rust test replays them and compares resulting runs to golden JSON | SC-06 |
 | **No outbound** | CI runs the demo under a syscall trace (`strace -f -e connect`) and fails on any non-loopback address | SC-05 |
 | Live latency | integration test: upload, then time until the event shows on the tail stream (p99 < 1 s) | SC-02 |

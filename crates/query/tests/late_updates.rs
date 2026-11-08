@@ -6,10 +6,10 @@ mod common;
 use std::collections::{BTreeSet, HashMap};
 
 use common::*;
-use tracedb_ingest::{Ingest, IngestConfig, Limits};
-use tracedb_model::filter::parse_filter;
-use tracedb_model::{Op, RunFields, RunId};
-use tracedb_query::{Query, QuerySpec};
+use smithling_ingest::{Ingest, IngestConfig, Limits};
+use smithling_model::filter::parse_filter;
+use smithling_model::{Op, RunFields, RunId};
+use smithling_query::{Query, QuerySpec};
 
 const MEMTABLE: u64 = 256 * 1024;
 /// Every 5th ends late: more late runs than one `IN (…)` list holds.
@@ -59,7 +59,7 @@ fn spec(project: &str, filter: &str, is_root: Option<bool>) -> QuerySpec {
 }
 
 /// Every page's run ids, and the first page.
-async fn ids(q: &Query, s: &QuerySpec) -> (BTreeSet<RunId>, tracedb_query::Page) {
+async fn ids(q: &Query, s: &QuerySpec) -> (BTreeSet<RunId>, smithling_query::Page) {
     let first = q.query(s).await.unwrap();
     let mut out: BTreeSet<RunId> = first.runs.iter().map(|r| r.header.run_id).collect();
     let mut cursor = first.next_cursor.clone();
@@ -84,7 +84,7 @@ fn every(runs: &[RunFields], keep: impl Fn(usize) -> bool) -> BTreeSet<RunId> {
         .collect()
 }
 
-async fn check(q: &Query, errors: &HashMap<&str, BTreeSet<RunId>>, pass: &str) -> tracedb_query::Page {
+async fn check(q: &Query, errors: &HashMap<&str, BTreeSet<RunId>>, pass: &str) -> smithling_query::Page {
     let (got, page) = ids(q, &spec("small", r#"eq(status, "error")"#, Some(true))).await;
     assert_eq!(got, errors["small"], "{pass}: small failing roots");
     let (got, big) = ids(q, &spec("big", r#"eq(status, "error")"#, None)).await;

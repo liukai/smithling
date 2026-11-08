@@ -1,4 +1,4 @@
-"""A small LangGraph research agent for trying tracedb. It needs no API keys and makes no network
+"""A small LangGraph research agent for trying smithling. It needs no API keys and makes no network
 calls except its traces (a fake LLM; one tool fails with a 429 on purpose).
 
     pip install -r examples/requirements.txt
@@ -53,7 +53,7 @@ def search(s: State) -> State:
 
 
 def summarize(s: State) -> State:
-    time.sleep(1.5)  # a slow step: its start shows in tracedb as running before it finishes
+    time.sleep(1.5)  # a slow step: its start shows in smithling as running before it finishes
     return {"notes": s["notes"] + [llm.invoke("summarize: " + " ".join(s["notes"])).content]}
 
 
