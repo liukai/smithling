@@ -489,7 +489,7 @@ flowchart TB
 
 ### The queries
 
-Filters from the README and the SmithDB post, sent to `POST /api/query` with `"count": true` (read everything, report
+Filters from the usage guide and the SmithDB post, sent to `POST /api/query` with `"count": true` (read everything, report
 the exact total) unless noted. Stats are the server's own:
 
 | # | Question | Filter | matched | files scanned | rows read (of 51,362) | rows merged | ms |

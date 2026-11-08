@@ -37,6 +37,8 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- README rewritten as a front door: what you get and a five-minute tour (serve, `smithling demo --url`, the
+  Scenarios page), a learning path through the guides, and the plan. The full reference moved to [USAGE.md](USAGE.md).
 - Guides for newcomers: [STARTER_GUIDE.md](STARTER_GUIDE.md) (problem, architecture, milestones),
   [SECRET_OF_COLUMNAR_DB.md](SECRET_OF_COLUMNAR_DB.md) (columnar storage, with runnable examples
   `columnar_tour` and `columnar_json`), [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) (the storage engine,

@@ -7,7 +7,8 @@ milestone turned a blank repo into a usable trace store, one step at a time. No 
 - **An hour**: read it all, then try section 8 on your laptop.
 - **Ready for code**: each milestone has a detailed, line-linked guide; links are in section 9.
 
-[README.md](README.md) is the reference for commands and flags; this guide is the story behind them.
+[README.md](README.md) has a five-minute tour and [USAGE.md](USAGE.md) every command and flag; this guide is the story
+behind them.
 
 ---
 
@@ -522,7 +523,7 @@ Things worth watching while you play:
 
 | You want to… | Read |
 |---|---|
-| use smithling | [README.md](README.md) |
+| use smithling | [README.md](README.md) (a five-minute tour), [USAGE.md](USAGE.md) (every view, command and flag) |
 | understand why it matters, in more depth | [primer](specs/000-smithling-master-plan/primer.md) |
 | see status, decisions, what's next | [roadmap](specs/000-smithling-master-plan/roadmap.md), [decision log](specs/000-smithling-master-plan/decisions.md) |
 | read the code, milestone by milestone | starter guides for [M1](specs/001-m1-see-agent-trace-live/starter-guide.md), [M2](specs/002-m2-durable-storage-query-builder/starter-guide.md), [M3](specs/003-m3-search-aggregates-speed/starter-guide.md) (in that order: each builds on the last) |
