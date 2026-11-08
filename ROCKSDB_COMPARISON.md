@@ -35,7 +35,7 @@ Every file today is effectively L0.
 
 ---
 
-## 2. The shape, side by side
+## 2. The shape, side by sidtrace_id, dotted_ordere
 
 ```mermaid
 flowchart TB

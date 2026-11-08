@@ -410,6 +410,9 @@ This is the case that matters most for traces: **the fields people filter on are
 keys, tool outputs). A row store needs an index per column it might ever be asked about; a columnar file has
 per-page statistics on every column for free and, at worst, reads just the columns the filter names.
 
+One caveat: the tour stores `prompt_version` and `status_code` as their own typed columns. tracedb keeps such
+values inside one JSON text column; section 8 measures what that costs.
+
 ### Is it fair? Not entirely, and here's what an index costs
 
 The first version of this tour compared Parquet with a row file that had **no index at all**, read start to finish.
@@ -526,7 +529,131 @@ These numbers come from a deliberately tiny memtable; real flushes are 64 MB, so
 
 ---
 
-## 8. How tracedb uses all this
+## 8. Inside tracedb: from one file to many, plus memory
+
+Section 5 walked one query through one file. tracedb has many files and an in-memory table at the same time, and
+runs that arrive in pieces. Here is how the same ideas stretch to that, in five short answers.
+
+### What a segment is
+
+A **segment** is what one flush writes for one project: four immutable files (`core.parquet` with the small fields,
+`payload.parquet` with inputs/outputs/events, and a text index in `fts.dict.parquet` + `fts.post`) and **one catalog
+row** with the segment's project, time range, trace-id range and row counts. A segment exists only once its catalog
+row commits; queries skip whole segments by those ranges. Appendix A draws one.
+
+### Union, then merge, then filter
+
+```mermaid
+flowchart TB
+    M["Memtable rows in scope (project / time / trace only)"]
+    F["ONE scan over all surviving files: pre-filter = filter OR needs_merge"]
+    V["Second scan by run_id: other versions of possibly-split runs"]
+    U["Union; drop duplicate copies (run_id, first_seq)"]
+    G["Merge each run's versions"]
+    X["Exact filter, then trace conditions, then the page"]
+    M --> U
+    F --> U
+    V --> U
+    U --> G --> X
+```
+
+Filtering each source separately and unioning the results would be wrong: a run's start (in a file) says
+`running`, its end (in memory) has the error, and neither piece alone matches `status = error`. So the only filter
+applied before the merge is a **superset**: rows of runs that live in one place are pre-filtered normally (about 90%
+of them), rows that may have another version always pass. The real filter runs once, on merged runs.
+
+Scaling the single-file walk to many files adds one level of skipping on top (the catalog's per-file ranges drop
+whole segments without I/O) and the merge at the bottom; inside each surviving file, section 5's walk is unchanged,
+and DataFusion handles files and row groups in parallel.
+
+### The memtable is organized differently, on purpose
+
+| | Files | Memtable |
+|---|---|---|
+| Layout | columns (Parquet) | rows: `HashMap<run_id, RunState>`, one **merged** state per run |
+| Indexes | min/max per row group and page, blooms on `run_id` / `trace_id`, text index | hash maps by run id and by trace id, a sorted set of roots per project, cached attributes per run |
+| How a query reads it | DataFusion scan with pruning and pushdown | direct lookup for one run or trace; otherwise a walk over the in-scope runs, copied without payloads and sorted by start time |
+| Why | big, cold, append-only: skip as much as possible | small (≤ 64 MB), hot, updated in place: nothing worth skipping |
+
+### Where Arrow is (and isn't)
+
+Arrow, the in-memory columnar format, is used **only on the file path**:
+
+| Step | What happens |
+|---|---|
+| flush | memtable rows → Arrow arrays → Parquet (`encode_core` in [segment.rs](crates/storage/src/segment.rs)) |
+| scan | Parquet pages → Arrow batches, with pruning and pre-filtering on the columns (DataFusion) |
+| after the scan | Arrow batches → rows (`decode_core`), so file rows and memtable rows meet as the same Rust type |
+| aggregates, clean side | totals computed straight from the Arrow columns for single-version runs, no rows built |
+| memtable | no Arrow at all |
+
+The trade-off: the columnar speed is in the **scan** (skipping, few columns, pre-filtering); merging and the exact
+filter work on **rows**, one run at a time. That keeps one evaluator for memory and files alike, and stays cheap
+because the pre-filter leaves few rows (991 of 51,362 in the live query 3).
+
+### What a merge is: per run, field by field
+
+A merge combines **one run's** versions; a trace is never merged, its merged runs are collected afterwards (for the
+trace view and for tree conditions). One run, `fetch_url`, in three pieces:
+
+| Field | v1: start (file A) | v2: update (file B) | v3: end (memtable) | **Merged** |
+|---|---|---|---|---|
+| name, start_time, inputs | set | — | — | v1's |
+| tags | `[batch=a]` | `[batch=a, retrying]` | — | v2's (**replaced**, never appended) |
+| events | — | `[retry 1]` | `[retry 1, retry 2]` | v3's |
+| end_time, error, outputs | — | — | set | v3's |
+| trace_id, parent, dotted_order | set | same | same | v1's (identity: first wins; a different value → `identity_conflict` warning) |
+| status, latency | — | — | — | **recomputed**: `error`, 31 s |
+
+Phases: collect every version → drop duplicate copies → order by sequence number (writer order, not client clocks) →
+fold oldest to newest, where a field a version didn't send never overwrites one that's set (`null` counts as not
+sent) → recompute status and latency → only then filter. No single piece matches `status = error and latency > 30`:
+v1 says `running`, v3 has no start time. Code: [merge.rs](crates/model/src/merge.rs).
+
+### Looking inside JSON: promotion, not the text index
+
+When a run is written, every small scalar leaf of `metadata`, `inputs` and `outputs` is copied out as a path →
+value pair ("promoted"):
+
+```text
+outputs  = {"status_code": 429, "body": "<40 KB of HTML>"}
+metadata = {"prompt_version": "v7"}
+attrs    = {"metadata.prompt_version": "v7", "outputs.status_code": 429}    ← body is too long to promote
+```
+
+| Rule | Limit |
+|---|---|
+| strings | ≤ 256 bytes; longer ones are recorded as "not indexed" |
+| depth | `metadata` 4 levels, `inputs` / `outputs` 3 |
+| leaves | 64 each for `inputs` and `outputs`; arrays are not promoted |
+
+The pairs go into **one JSON text column**, `attrs`, in the core file. A query filters in two steps: `eq` on a string
+is pushed into the scan as a text match on `attrs` (`"metadata.prompt_version":"v7"`, a superset), and tracedb's
+evaluator then checks the typed value exactly. A path that was never promoted doesn't match, and the response says
+so (`not_indexed`). The full-text index is separate: it indexes words of inputs, outputs and errors for `search(…)`.
+
+What one JSON column costs, measured
+([`columnar_json.rs`](crates/tools/examples/columnar_json.rs), 1M rows, same filter):
+
+```text
+On disk:
+  prompt_version      130.9 KB
+  status_code          79.7 KB
+  attrs              5750.6 KB
+
+prompt_version = v7 and status_code = 429:
+  typed columns                    18639 matches     14 ms  read 210.6 K
+  inside JSON text (substring)     18639 matches     16 ms  read 5.75 M
+```
+
+Still fast (it's still one column, and scanning text in memory is cheap), but **27× more bytes**, poorer
+compression, and no statistics to skip with. At millions of runs or on S3 the bytes are what matter. Typed columns
+for the most-used paths ("shredding") are in the backlog (I-1), as are two promotion gaps: `metadata` has no leaf
+budget, and every key past a budget still adds a "not indexed" entry (I-6).
+
+---
+
+## 9. How tracedb uses all this
 
 | Idea | In tracedb |
 |---|---|
