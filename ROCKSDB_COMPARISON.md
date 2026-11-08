@@ -26,7 +26,7 @@ built (yet).
 | File list | MANIFEST (log of VersionEdits) | **SQL catalog** (SQLite / Postgres), one transaction per flush |
 | Reader snapshot | SuperVersion + sequence-number snapshot | pinned `Version` + copies of memtable rows |
 | Combining versions | newest seqno wins, or a merge operator | built-in **field-by-field merge** at read time |
-| Compaction | leveled / universal / FIFO | **missing** (planned for M4: time-tiered) |
+| Compaction | leveled / universal / FIFO | **not built**; proposed for M4: leveled by start time (§10) |
 | Query engine | iterators | **Apache DataFusion** scans + tracedb's own merge and filter |
 
 The short version: tracedb is an LSM whose SSTs are Parquet files, sorted by trace for locality, pruned by time
@@ -49,7 +49,7 @@ flowchart TB
         direction TB
         T1["Upload batch (HTTP)"] --> T2["WAL + fsync"] --> T3["Active memtable (hash map)"]
         T3 --> T4["One frozen memtable"] --> T5["Flush → Parquet segment"]
-        T5 --> T6["Compaction (M4, not built)"]
+        T5 -.-> T6["Compaction (M4, not built): see §10"]
     end
 ```
 
@@ -266,24 +266,156 @@ the pre-filter, and the exact filter runs on merged runs.
 
 ---
 
-## 10. Compaction: the missing piece
+## 10. Compaction: not built yet, and how we would build it
 
-| | RocksDB | tracedb today | tracedb plan (M4) |
-|---|---|---|---|
-| Strategy | leveled (L1+ non-overlapping), universal, FIFO | none: every file is effectively **L0** (overlapping ranges) | **time-tiered**: T0 flushes → T1 ~15-min files → T2 daily ~256 MB files |
-| Version folding | yes (keeps what snapshots need) | no: a split run stays split | write one merged row per run, clear `needs_merge` |
-| Deletes | tombstones, range deletes | none (backlog B1: delete vectors + TTL) | apply delete vectors and TTL while rewriting |
-| Swap | VersionEdit in the MANIFEST | — | one catalog transaction: new files `active`, old `tombstoned`; delete when no `Version` pins them |
+### Today: everything is L0
 
-Consequences of "all L0" today: file count only grows, every in-scope file's footer is read, and split runs pay the
-merge on every read (and hold memory, which is why idle memory is above target until M4). The plan sorts by *time*
-rather than key because queries are time-scoped and old data stops changing; that's closer to Cassandra's
-time-window compaction than to leveled compaction. RocksDB-style FIFO/TTL compaction was considered and not adopted:
-late updates mean an old run can have a version in a new file, so dropping files purely by age would be wrong.
+tracedb has no compaction. Every flush adds files that overlap in time with earlier ones, exactly like RocksDB's
+L0, and nothing ever merges them. The costs are the ones a RocksDB person would predict:
+
+| Symptom | RocksDB analogue | Effect in tracedb |
+|---|---|---|
+| file count only grows | L0 file count growing with compaction disabled | every in-scope file's footer is read; more catalog entries to prune |
+| a run whose start and end were flushed apart stays split | versions of a key spread over many L0 files | every read of it fetches and merges both versions |
+| memory held for split runs | — | the multi-version set and kept merged rows grow; the main reason idle memory is above target (D-028) |
+| deletes and retention can't free space | tombstones that never get compacted away | backlog B1 is blocked on compaction |
+
+### The idea: leveled compaction, where the "key" is time
+
+The master design sketches **time-tiered** compaction (T0 flushes → T1 ~15-minute files → T2 daily ~256 MB files).
+Seen from RocksDB, the cleanest reading of that sketch is **leveled compaction on `start_key`**, the run's own start
+time:
+
+```mermaid
+flowchart TB
+    T0["T0 = L0: flush files, overlapping in start_key"]
+    T1["T1 = L1: non-overlapping start_key windows (~15 min)"]
+    T2["T2 = L2: non-overlapping day files (~256 MB)"]
+    SW["Swap in one catalog transaction"]
+    DEL["Delete old files once no query pins them"]
+    T0 -->|"merge versions, partition by window"| T1
+    T1 -->|"when a day has settled"| T2
+    T2 --> SW --> DEL
+```
+
+Why `start_key` is the right key: **every version of a run carries the same `start_key`** (it comes from the run's
+`dotted_order`, which a late update also sends). So if a compaction job takes *every* file that overlaps a
+`start_key` window, it is guaranteed to see *every* stored version of every run in that window. RocksDB gets the same
+guarantee from user keys: all versions of a key fall in the same key range.
+
+### One compaction job, step by step
+
+```mermaid
+flowchart TB
+    A["Pick: the oldest T0 files (a contiguous seq range)<br/>+ T1 files overlapping their start_key range"]
+    B["Read the core rows (DataFusion scan)"]
+    C["Group by run_id, merge each run's versions (the merge rule)"]
+    D["Partition by start_key window; sort each by (trace_id, dotted_order)"]
+    E["Write new core + payload + text index per window"]
+    F["Catalog txn: new files active, inputs tombstoned"]
+    A --> B --> C --> D --> E --> F
+```
+
+| Step | RocksDB analogue | tracedb detail |
+|---|---|---|
+| pick inputs | L0 → L1: all L0 files + overlapping L1 files | the oldest T0 files as a **contiguous sequence range** (see rule 1 below) + T1 files overlapping their `start_key` span |
+| merge | `CompactionIterator` dropping shadowed versions | `merge_versions` per run; output is **one row per run** with `first_seq..last_seq` covering its inputs |
+| output | SSTs cut at `target_file_size_base` | one file per (project, window), cut by row count; payload rows rewritten in the same order; text index and field stats rebuilt |
+| install | VersionEdit to the MANIFEST | one catalog transaction (same shape as a flush); new `Version` swapped in |
+| cleanup | obsolete files deleted when no Version refs them | files marked `tombstoned`, deleted when no pinned `Version` holds them (R-7, already built and tested) |
+
+### The rules it has to follow
+
+1. **Contiguous by sequence, oldest first.** The merge rule requires a run's versions to cover disjoint sequence
+   ranges (`merge_versions` asserts it). If a job merged flushes 1 and 3 but skipped flush 2, the merged row's range
+   would straddle flush 2's version of the same run. RocksDB has the same constraint for L0: files overlap, so L0
+   compaction takes the oldest files in order.
+2. **Never include the memtables.** Compaction only rewrites files. A late update that arrives during a job lands
+   in the memtable with a higher sequence number and merges on top of the compacted row at read time.
+3. **Clear `needs_merge` only when it's true.** A compacted row is single-version only if no other version exists:
+   not in the memtables, not in a T0 file outside the job. Runs that still have a version elsewhere stay in the
+   multi-version set; the rest can leave it, which is where the memory comes back.
+4. **Crash-safe like flush.** Write files, then one catalog transaction; a crash before it leaves orphans (deleted
+   on start) and the old files still active.
+
+### Late updates to old windows: the write-amplification trade
+
+A late end for a run from yesterday arrives today. It lands in a T0 file; the next job that covers yesterday's
+window must rewrite yesterday's T1 (or T2) file to fold it in. That's RocksDB's write amplification, with a
+twist: the "hot" keys here are *recent* windows, so the policy should be
+
+- **recent windows**: compact lazily (they still change; avoid rewriting them every few minutes);
+- **settled windows** (no new versions for, say, a few hours): fold into T2 once and leave them;
+- **a rare late update to a settled day**: leave it in T0 until enough accumulate, or rewrite only the affected
+  file. Reads stay correct either way, because the run is in the multi-version set.
+
+### What would trigger a job
+
+| Trigger | RocksDB analogue | Why |
+|---|---|---|
+| T0 file count over a limit | `level0_file_num_compaction_trigger` | bounds read amplification |
+| share of `needs_merge` rows over a limit | — | bounds merge work and memory |
+| a window has settled | — | promote T1 → T2 once |
+| periodic check while idle | periodic compaction, TTL | retention and deletes must free space even on a quiet server |
+| T0 count far over the limit | `level0_slowdown_writes_trigger` | feed into the existing `429` write slowdown |
+
+### What it buys
+
+Fewer, bigger, non-overlapping files (footer reads and pruning get cheaper as data grows); split runs become single
+rows (no merge on read, memory back, which closes the idle-memory waiver); and a place to apply deletes and
+retention. Open questions for the M4 spec: window sizes against real flush sizes (a flush already holds minutes of
+data), the exact "settled" rule, CPU/I/O budget next to ingest, and how compaction runs in cloud mode (RocksDB has
+remote compaction; SmithDB runs compaction as its own service).
 
 ---
 
-## 11. Smaller parts
+## 11. The other missing pieces, and how we would build them
+
+### Deletes and retention (backlog B1)
+
+| | RocksDB | tracedb idea |
+|---|---|---|
+| delete one thing | point tombstone, shadows older versions until compaction drops both | **delete vector**: per file, a bitmap of deleted row numbers in the catalog; applied as a row filter at scan time |
+| delete by condition | `DeleteRange` (key ranges only) | `DELETE /runs?filter=…`: run the filter once, record the matching rows per file; works for any condition, not just key ranges |
+| time to live | compaction filter, FIFO / periodic compaction with TTL | per-project `ttl_days`; queries hide expired runs at once; whole T1/T2 windows past the cutoff are **dropped as files** (cheap, because compacted windows don't overlap) |
+| space comes back | when compaction rewrites the tombstoned range | when compaction rewrites a file without its deleted rows |
+
+Delete vectors (the Iceberg / Delta Lake approach) suit columnar files better than tombstones: a columnar file can't
+cheaply shadow one key, and deletes here come by filter ("this trace contained an API key"), not by key.
+
+The tricky case is a **late update after a delete**: RocksDB happily resurrects a key that is `Put` again after a
+`Delete`, and so would tracedb's merge, producing a partial run. One option is to keep deleted run ids for the dedup
+window and drop late events for them; the M4/B1 spec has to decide.
+
+### Snapshots by sequence number
+
+RocksDB snapshots pin a seqno so old versions survive compaction. tracedb doesn't need them for queries (the pin
+gives each query a consistent view). Where they'd help is **long exports or paging** across compaction: the simplest
+design is to pin the `Version` (the file set) for the export's lifetime, rather than seqno snapshots, since compaction
+deletes files only when no `Version` holds them.
+
+### More than one immutable memtable
+
+RocksDB allows several (`max_write_buffer_number`). tracedb allows one and answers `429` when the next one fills
+during a flush. Allowing N would absorb longer bursts at the cost of N × 64 MB of memory and longer restarts; with
+an SDK that retries, pushing back has been the better trade so far.
+
+### Checkpoints and backups
+
+RocksDB's `Checkpoint` hard-links the live SSTs and copies the MANIFEST. tracedb's files are immutable with unique
+names too, so a checkpoint would be: in one catalog read, list the active files and `flushed_seq`; hard-link (or, on
+S3, reference) those files; copy the catalog rows and the WAL tail after `flushed_seq`. Not planned; listed as "not
+adopted" in the roadmap.
+
+### Compaction I/O limits
+
+RocksDB has a rate limiter. tracedb would start simpler: one compaction job at a time, on its own thread, paused
+while ingest is under write slowdown, and preferring idle periods. A real limiter waits until measurements show
+compaction hurting ingest or query latency.
+
+---
+
+## 12. Smaller parts
 
 | Part | RocksDB | tracedb | |
 |---|---|---|---|
@@ -297,7 +429,7 @@ late updates mean an old run can have a version in a new file, so dropping files
 
 ---
 
-## 12. What tracedb borrowed from RocksDB, on purpose
+## 13. What tracedb borrowed from RocksDB, on purpose
 
 From the roadmap's backlog of LSM ideas ([roadmap](specs/000-tracedb-master-plan/roadmap.md)), all built in M2:
 
@@ -313,7 +445,7 @@ compaction.
 
 ---
 
-## 13. Reading the code with RocksDB in mind
+## 14. Reading the code with RocksDB in mind
 
 | RocksDB concept | Start here |
 |---|---|
