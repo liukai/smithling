@@ -42,6 +42,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-07: **Commit each unit as soon as it passes its checks**, without waiting for other units that are still running (split shared files by hunk; verify the staged copy on its own).
 - 2026-11-07 (waived gate): **M3 idle memory (SC-05, ≤ 200 MB) is waived**: M3 ships at ~234–246 MB idle at 0.5M runs (~0.6 GB projected at 2M); the memory is merged copies of late-updated runs and per-file state, which **M4 compaction** removes (research M3-R12, D-028). Disk (≤ 50%) is met.
 - 2026-11-07: **Text search is benchmarked as three rows** (rare phrase, common word, search + filter), each held to median ≤ 500 ms and p99 ≤ 5× its own median, as M2 measured them.
+- 2026-11-07: **The full 2M-run quiet bench (T109) moves to the backlog** (D3-1): not practical on this machine; the bench code, its three search rows and the waived idle row ship in M3, and the nightly CI job runs the full bench once a remote exists.
 - 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
 - 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
@@ -256,6 +257,20 @@ First reconciliation round applied to the docs on 2026-11-05 (source read from `
 | R-10 | **Two memtables**: one mutable, one frozen while it flushes; writes go to the new mutable one | Ingest never pauses during a flush | Test: ingest latency stays flat while a flush runs |
 
 Not adopted: compaction I/O rate limit, payload-file GC (BlobDB-style), checkpoints, merge operator, FIFO/TTL compaction.
+
+### Not done in M3 (deferred 2026-11-07)
+
+Work M3 planned but didn't finish or couldn't verify here. Each item says what would close it.
+
+| # | Item | Why not done | Done when |
+|---|---|---|---|
+| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job; table recorded in M3 research |
+| D3-2 | **Idle memory ≤ 200 MB** (SC-05, T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
+| D3-3 | **Cloud CI job's first real run** (T122), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
+| D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
+| D3-5 | **No-outbound check under strace** | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
+| D3-6 | Chart metric and chosen group kept in the URL | Not in the URL contract | A shared link reopens the same chart metric and group |
+| D3-7 | Aggregate over a search stops early / cancels | The whole search runs before any estimate; closing the stream doesn't stop it | Estimate within 1 s with a search filter; cancel frees the scan |
 
 ## History
 
