@@ -1,6 +1,6 @@
 # Implementation Plan: M3 — Search, aggregates and speed
 
-**Branch**: `003-m3-search-aggregates-speed` (cut from the 002 tip) | **Date**: 2026-11-06 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md) | **Appendix A**: [starter guide (pre-code)](starter-guide.md)
+**Branch**: `003-m3-search-aggregates-speed` (cut from the 002 tip) | **Date**: 2026-11-06 | **Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-tracedb-master-plan/roadmap.md) STATE) | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md) | **Appendix A**: [starter guide](starter-guide.md)
 
 **Input**: Feature specification from `specs/003-m3-search-aggregates-speed/spec.md`. Master: [000 plan](../000-tracedb-master-plan/plan.md). Builds on: [M2 plan](../002-m2-durable-storage-query-builder/plan.md) (built, passed locally; browser and cloud checks open).
 
@@ -110,7 +110,7 @@ sqlx 0.9, ulid, …) plus, all already locked or in the offline registry (resear
 | `zstd` | 0.13.4 | multipart bodies |
 | `httparse` | 1.10.1 | multipart part headers |
 | `moka` | 0.12.16 | bounded `Cache` |
-| `tikv-jemallocator` | 0.7.0 | returns freed memory, if approved |
+| `tikv-jemallocator` | 0.7.0 | returns freed memory (approved, built: D-028) |
 
 The UI adds no runtime library; charts are hand-drawn SVG (M3-R14).
 
@@ -175,10 +175,11 @@ deliberately staged):
 | ⚪ | One process for ingest, query and compaction | (a) | cloud split |
 | 🟢 | Attachment parts rejected per part, not stored (settled 2026-11-06) | (c) | a user needs attachments (backlog) |
 
-Recorded decisions this plan changes (need decision-log entries when approved): the roadmap's "custom search index
+Recorded decisions this plan changes (logged as [D-025](../000-tracedb-master-plan/decisions.md#d-025)–[D-029](../000-tracedb-master-plan/decisions.md#d-029)): the roadmap's "custom search index
 is backlog; scan + bloom in v0" (→ M3-R1), [D-013](../000-tracedb-master-plan/decisions.md#d-013) "no `Cache`
 trait" (→ M3-R12), [D-016](../000-tracedb-master-plan/decisions.md#d-016) "second start not marked" (→ unit 1), and
-design-notes §4 "feedback as a multipart part by default" (→ M3-R10).
+design-notes §4 "feedback as a multipart part by default" (→ M3-R10). D-029 (lists and single runs) was added
+while building unit 12.
 
 ## Project Structure
 
@@ -187,9 +188,9 @@ design-notes §4 "feedback as a multipart part by default" (→ M3-R10).
 ```text
 specs/003-m3-search-aggregates-speed/
 ├── spec.md            # what and why
-├── design.md          # how each piece works over the M2 code (review before implementation)
+├── design.md          # how each piece works over the M2 code
 ├── plan.md            # this file
-├── starter-guide.md   # Appendix A: pre-code walkthrough (rewritten for the built code in unit 14)
+├── starter-guide.md   # Appendix A: guide to reading the built M3 code (unit 14)
 ├── research.md        # Phase 0 decisions (M3-R1…R15)
 ├── data-model.md      # sidecar, catalog changes, feedback, prices, AST, aggregate request/response
 ├── quickstart.md      # how to prove M3 works
@@ -267,7 +268,7 @@ read by query through a read-only trait, as `Fresh` is.
 | 9 | 🟢 | **Feedback**: `POST`/`PATCH /feedback`, feedback table, in-memory index, orphans, `feedback.<key>` filter, `avg(feedback.<key>)` metric | As an agent developer, I can send `create_feedback` and filter and average by it; early feedback attaches when the run arrives |
 | 10 | 🟠 | **UI a**: search box and chip, excerpts; Stats tab (group by, metrics, table) with click-through; "N new" pill; left-row refresh | As an agent developer, I can find the 31 and the 14% / 31 s by clicking |
 | 11 | 🟠 | **UI b**: Time series, Distribution, Compare overlay, progressive display, URL state for all of it | As an agent developer, I can see the 02:30 spike, click it, compare a vs b, and share the link |
-| 12 | 🟠 | **Speed + footprint** (first task: heap-profile spike): run lookup fix, bounded `Cache`, memory defaults and allocator (if approved), `tracedb bench` + calibration + CI gate | As a maintainer, I can run `tracedb bench` and see every row PASS; CI fails on a slipped target |
+| 12 | 🟠 | **Speed + footprint** (first task: heap-profile spike): run lookup fix, bounded `Cache`, memory defaults and allocator (approved, built: D-028), `tracedb bench` + calibration + CI gate | As a maintainer, I can run `tracedb bench` and see every row PASS; CI fails on a slipped target |
 | 13 | 🟠 | **Demo + CI**: demo checks for steps 4–9 and 13 with timings; cloud job's first real run; quickstart verified | As a test user, I can run `tracedb demo` and see all M3 checks pass on local and cloud-style storage |
 | 14 | 🟠 | **Code starter guide**: rewrite [starter-guide.md](starter-guide.md) from pre-code to a guide for reading the built M3 code, as M2's: reading order, every scene mapped to real functions with links and line numbers, colour-coded new / revised / unchanged, rough edges found while writing it | As a new reader, I can follow one run through the M3 code (text index, search, aggregates, progressive answers, multipart, feedback) with line-level links |
 
@@ -311,15 +312,15 @@ No constitution violations. Four choices add moving parts and are justified in r
 | 🟢 | Own streaming multipart parser | SDK defaults (M3-R9) | `multer` isn't in the offline registry; buffering whole bodies breaks streamed parts |
 | 🟢 | Exact percentiles from kept values | demo asserts p95 = 31 s exactly (M3-R5) | t-digest can miss the planted value; it stays as the memory-cap fallback |
 
-## Appendix A: starter guide (pre-code)
+## Appendix A: starter guide
 
-The walkthrough lives in [starter-guide.md](starter-guide.md). Today it is pre-code: planned names and
-pseudo-flows. The last unit (14) rewrites it in place into the guide for reading the built M3 code, with real
-links and line numbers, as M2's. It covers:
+The walkthrough lives in [starter-guide.md](starter-guide.md). It started pre-code (planned names and
+pseudo-flows); unit 14 rewrote it in place into the guide for reading the built M3 code, with real links and line
+numbers, as M2's (e7c000b). It covers:
 
-1. **Goals → functionality → planned home**, colour-coded.
+1. **Goals → functionality → where it lives**, colour-coded.
 2. **The system, one path at a time**: upload (multipart), flush (+ index), search, aggregate (+ progressive).
-3. **Reading order** once the code exists, with the critical files marked.
+3. **Reading order**, with the critical files marked.
 4. **One run, from a multipart upload to batch a vs b**: a sequence diagram and scenes for the `fetch_url` step:
    - multipart upload;
    - the flush with its index;

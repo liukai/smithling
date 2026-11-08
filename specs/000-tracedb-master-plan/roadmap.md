@@ -8,7 +8,7 @@
 **Goal / Done when**: `tracedb demo` passes every scenario check and the speed targets (spec.md SC-001–SC-010) on a laptop
 with ~2M runs, and an unmodified LangGraph agent traces into it.
 
-**Scope**: spec.md Stories 1–7 and 9–12. Not in scope: backlog B1 (delete/retention), Vortex, the custom search index, OTLP, the cloud split.
+**Scope**: spec.md Stories 1–7 and 9–12. Not in scope: backlog B1 (delete/retention), Vortex, OTLP, the cloud split. (The custom search index left this list when M3 built it, D-026.)
 
 **Stakes**: low (local, reversible). Nothing ships outside this machine.
 
@@ -20,50 +20,55 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-05: UI first; every phase ships its browser view (spec.md FR-025).
 - 2026-11-05: Delete and retention are backlog (spec.md B1).
 - 2026-11-05: **Keep the design simple.** Pick the plainest option that meets the spec; anything heavier goes to the backlog.
-- 2026-11-05: **Vortex and the custom search index are backlog.** v0 uses Parquet and scan + per-segment bloom search, each behind an interface.
+- 2026-11-05: **Vortex and the custom search index are backlog.** v0 uses Parquet and scan + per-segment bloom search, each behind an interface. *(Search part superseded by [D-026](decisions.md#d-026): M3 built a per-segment text index behind the `TextIndex` trait; Vortex stays backlog.)*
 - 2026-11-05: **Ingestion, query and compaction are separate services** with explicit interfaces, in one process (design-notes §2.1).
-- 2026-11-05: **Hot-data cache stays in memory locally**, behind a `Cache` interface.
+- 2026-11-05: **Hot-data cache stays in memory locally**, behind a `Cache` interface. *(Today `Cache` is a concrete struct in storage, not a trait: [D-013](decisions.md#d-013), [D-028](decisions.md#d-028).)*
 - 2026-11-05: **UI querying is Scuba/Honeycomb-style** (spec.md FR-029–032).
 - 2026-11-05: **Each phase is its own spec**. `000-tracedb-master-plan` is the master (requirements, architecture, roadmap), with no code tasks. Phase specs are numbered from 001.
 - 2026-11-05: **Phase details live in the phase folder.** Any new change to M1 goes into `specs/001-m1-see-agent-trace-live/`; this roadmap only links to it and tracks status.
 - 2026-11-05: **LangSmith JSON ingest is in M1** (`/info`, `/runs/batch`, `POST/PATCH /runs`), so the M1 demo uses a real agent. Multipart stays in M3.
 - 2026-11-05: **Merge rule**: the latest value wins for every field; nothing appends (research R1, because the SDK re-sends full values).
 - 2026-11-05: **Constitution v1.1.0**: SmithDB is the target reached in stages; "deliberately staged" is an allowed reason (Principle II (c)). No Simplicity principle; simplicity stays a standing preference.
-- 2026-11-05: **M1 reconciliation with SDK 0.14** (tasks T066–T069): `address` in the model; overload codes `429`+`Retry-After` (queue full), `507` (memory budget, whole request), `503`+`Retry-After` (storage); `POST /feedback` → `501`; `/info.version` empty.
+- 2026-11-05: **M1 reconciliation with SDK 0.14** (tasks T066–T069): `address` in the model; overload codes `429`+`Retry-After` (queue full), `507` (memory budget, whole request), `503`+`Retry-After` (storage); `POST /feedback` → `501`; `/info.version` empty. *(`507` superseded by [D-006](decisions.md#d-006): removed in M2; `501` superseded by [D-027](decisions.md#d-027): feedback is stored in M3.)*
 - 2026-11-05 (standing approval): **proceed through M1 implementation**, committing each PR locally once its checks pass; no pushes. Report per PR.
-- 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted.
+- 2026-11-05: **RocksDB ideas in the backlog**: pinned reader versions, write slowdown, key bloom filters, two memtables (Backlog R-7–R-10). Rate limit, blob GC, checkpoints, merge operator, FIFO compaction not adopted. *(R-7–R-10 were built in M2.)*
 - 2026-11-06: **Milestones numbered from 1**: M0–M4 renamed M1–M5 everywhere (docs, code comments, messages, phase folder `001-m1-…`, branch). Commit messages before this keep the old labels.
 - 2026-11-06: **Every phase ends with a code starter guide** (`starter-guide.md` in the phase folder): reading order, one run traced through the code with line-level links. Planning includes a pre-code version (Appendix A of the plan) with pseudo-flows.
 - 2026-11-06: **Diagrams read top to bottom**: prefer vertical (`flowchart TB`) charts with short labels and few nodes per chart; no wide horizontal chains.
 - 2026-11-06: **Mark the delta in every phase spec and starter guide**: 🟢 New (green fill), 🟠 Improved / revised (orange), ⚪ Existing (grey) on end-state lines, lifecycle rows, stories, requirements, success criteria and every diagram node, plus a "Delta at a glance" section near the top of the spec.
-- 2026-11-06 (M3 scope): **multipart + zstd** accepted and advertised in `/info` (SDK defaults work unchanged); **attachment parts rejected per part** with a named reason (stored later); **text index without word positions** (staged SmithDB difference, revisit if text-search p99 misses); **M2 = built, passed locally** (browser and cloud checks open), M3 branches from the 002 tip.
+- 2026-11-06 (M3 scope): **multipart + zstd** accepted and advertised in `/info` (SDK defaults work unchanged; [D-030](decisions.md#d-030)); **attachment parts rejected per part** with a named reason (stored later; [D-031](decisions.md#d-031)); **text index without word positions** (staged SmithDB difference, revisit if text-search p99 misses); **M2 = built, passed locally** (browser and cloud checks open), M3 branches from the 002 tip.
 - 2026-11-06 (M3 plan): **memory defaults may change** to meet 200 MB idle (64 MB memtable measured as heap, 2 min flush age, 16 B dedup fingerprints with a cap, 32 MB cache, jemalloc; all configurable; heap-profile spike first); **feedback check added to `tracedb demo`**; **CI bench**: 200k smoke on PRs, full 2M on main + nightly; plan.md defaults accepted (four changed decisions to be logged, `feedback.<key>` = mean score, batch a now−30 h / b now−6 h, stats line `by <key> | <metrics>`, background index of M2 files, report rather than loosen a missed 1 s grouped target).
 - 2026-11-06 (standing approval): **implement all of M3** (specs/003 tasks), on branch `003-m3-search-aggregates-speed` cut from the 002 tip after the last M2 commit; M3 spec/plan/tasks committed as the branch's first commit; one local commit per plan unit, same per-unit quality bar as M2, no pushes; the last unit rewrites `specs/003-…/starter-guide.md` for the built code, colour-coded.
-- 2026-11-07: **Commit each unit as soon as it passes its checks**, without waiting for other units that are still running (split shared files by hunk; verify the staged copy on its own).
-- 2026-11-07 (waived gate): **M3 idle memory (SC-05, ≤ 200 MB) is waived**: M3 ships at ~234–246 MB idle at 0.5M runs (~0.6 GB projected at 2M); the memory is merged copies of late-updated runs and per-file state, which **M4 compaction** removes (research M3-R12, D-028). Disk (≤ 50%) is met.
-- 2026-11-07: **Text search is benchmarked as three rows** (rare phrase, common word, search + filter), each held to median ≤ 500 ms and p99 ≤ 5× its own median, as M2 measured them.
-- 2026-11-07: **The full 2M-run quiet bench (T109) moves to the backlog** (D3-1): not practical on this machine; the bench code, its three search rows and the waived idle row ship in M3, and the nightly CI job runs the full bench once a remote exists.
-- 2026-11-07 (priority): **A working end-to-end version comes first; performance is not a concern for now.** Speed targets, the 2M bench and memory (D3-1, D3-2, the parked branch `wip/m3-bench-three-rows`) are deferred, not dropped. **Re-evaluate before M4 starts** (or once the end-to-end version is in use): resume or re-scope D3-1/D3-2 then.
 - 2026-11-06 (standing approval): **implement all of M2** (tasks T001–T083), one local commit per plan unit, no pushes; the last step rewrites `specs/002-…/starter-guide.md` for the built code.
 - 2026-11-06: **Per-unit quality bar** (solo project): tests first and failing, then green; property tests for risky logic; `fmt` + `clippy -D warnings` + full `cargo test` + UI `npm test`; a fresh-eyes reviewer pass on the unit's diff, serious findings fixed before commit; docs/tasks updated in the same commit; honest report. Slow suites + quickstart steps at the four M2 checkpoints. Milestone branch, one commit per unit; real PRs once there's a remote.
 - 2026-11-06: **Commit identity**: the personal email set in this repo's git config; no `Co-Authored-By: Claude` / "Generated with Claude Code" lines. History rewritten to match (backup tags `backup/pre-rewrite/*`).
 - 2026-11-06: **Keep 000 in step with reality**: after every phase checkpoint, update the roadmap (STATE, NEXT, progress), the [decision log](decisions.md) for any change of direction, and the master plan/design notes where the design moved. The decision log records every change of an earlier decision.
 - 2026-11-06: **After M2 is built, spec M3 the same way as 002** (spec → plan → tasks via speckit, Appendix A starter guide); M3 docs stay uncommitted until the user approves them.
+- 2026-11-07: **Commit each unit as soon as it passes its checks**, without waiting for other units that are still running (split shared files by hunk; verify the staged copy on its own).
+- 2026-11-07 (waived gate): **M3 idle memory (QR-006 (M3 SC-05), ≤ 200 MB) is waived**: M3 ships at ~234–246 MB idle at 0.5M runs (~0.6 GB projected at 2M); the memory is merged copies of late-updated runs and per-file state, which **M4 compaction** removes (research M3-R12, D-028). Disk (≤ 50%) is met.
+- 2026-11-07: **Text search is benchmarked as three rows** (rare phrase, common word, search + filter), each held to median ≤ 500 ms and p99 ≤ 5× its own median, as M2 measured them ([D-032](decisions.md#d-032)).
+- 2026-11-07: **The full 2M-run quiet bench (T109) moves to the backlog** (D3-1): not practical on this machine; the bench code, its three search rows and the waived idle row ship in M3, and the nightly CI job runs the full bench once a remote exists ([D-032](decisions.md#d-032)).
+- 2026-11-07 (priority): **A working end-to-end version comes first; performance is not a concern for now.** Speed targets, the 2M bench and memory (D3-1, D3-2, the parked branch `wip/m3-bench-three-rows`, *superseded by `ea6af31`, which merged the three-row bench*) are deferred, not dropped. **Re-evaluate before M4 starts** (or once the end-to-end version is in use): resume or re-scope D3-1/D3-2 then ([D-033](decisions.md#d-033)).
+- 2026-11-08: **The `tracedb` crate is split** into `tracedb-server` (production surface), `tracedb-tools` (seed, demo, bench, CLI query) and the `tracedb` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `tracedb_server::testkit` ([D-034](decisions.md#d-034)).
 
-**STATE as of 2026-11-07** (verified at `22ca7c8` by `cargo test --workspace` 301 passed, `npm test` 245, clippy `-D warnings`, crash harness, `tracedb demo --seed 7` 10/10, and the M3 quickstart run end to end):
-M2 is **built, passed locally**. M3 is **built, passed locally** on branch `003-m3-search-aggregates-speed` (14 plan
-units committed; 125/128 tasks): text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates,
-time series, distribution and batch comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive
-estimates; SDK multipart + zstd on defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI;
-`tracedb demo` checks M2 + M3; `tracedb bench` built. **Deferred by decision** (end-to-end first, performance later):
-the full 2M bench (D3-1) and idle memory ≤ 200 MB (D3-2). **Not verified here**: cloud CI (D3-3), the UI in a real
-browser (D3-4), no-outbound under strace (D3-5).
+**STATE as of 2026-11-08** (verified on branch `refactor/split-tracedb-crates` at `4acfcdf` by `cargo test --workspace`
+303 passed / 0 failed / 7 ignored, clippy `-D warnings`, `cargo fmt --check` and `tracedb demo --seed 7` 10/10; `npm test` and the
+crash harness were last run at `22ca7c8` on 2026-11-07 and not re-run):
+M2 is **built, passed locally**. M3 is **built, passed locally** and on `master` (`ac69c4e`; 14 plan units; 125/128 tasks):
+text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates, time series, distribution and batch
+comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive estimates; SDK multipart + zstd on
+defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI; `tracedb demo` checks M2 + M3 (also with
+`--url`, D3-8 closed); `tracedb bench` built with three text-search rows. The crate split ([D-034](decisions.md#d-034))
+is on `refactor/split-tracedb-crates` (`028bd38`, `4acfcdf`), **not yet merged to `master`**. **Deferred by decision**
+(end-to-end first, performance later, [D-033](decisions.md#d-033)): the full 2M bench (D3-1) and idle memory ≤ 200 MB
+(D3-2). **Not verified here**: cloud CI (D3-3), the UI in a real browser (D3-4), no-outbound under strace (D3-5).
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) User looks at the UI in a browser (D3-4); push to a
-remote so CI (incl. cloud and the nightly bench) runs. 2) **Before M4: re-evaluate the deferred performance work**
-(D3-1, D3-2, the three-row bench is merged; only the 2M run itself remains), then plan M4.
+**NEXT**: 1) Merge `refactor/split-tracedb-crates` into `master`. The CI workflow now triggers on `master` as well as
+`main` (`.github/workflows/ci.yml`, `branches: [main, master]`). 2) Push to a remote so CI (incl. cloud and the nightly
+bench) runs; the user looks at the UI in a browser (D3-4). 3) **Before M4: re-evaluate the deferred performance work**
+(D3-1, D3-2; only the 2M run itself remains), then plan M4.
 
 ## Progress
 
@@ -71,7 +76,7 @@ remote so CI (incl. cloud and the nightly bench) runs. 2) **Before M4: re-evalua
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
-| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 125/128 | demo 10/10 + quickstart (see STATE) |
+| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 125/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
 
@@ -163,7 +168,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 |---|---|
 | LangSmith multipart + feedback parts | Direct: current SDK defaults work unchanged |
 | Payload split + late materialization; progressive query; cache | Direct: speed targets for tree, run and filter |
-| Text search (bloom + scan) behind `TextIndex` | Direct: the 31 hits |
+| Text search behind `TextIndex` (planned as bloom + scan; built as a per-segment text index, D-026) | Direct: the 31 hits |
 | Aggregations; Time series + Distribution views; comparison overlay | Direct: 14% / 31 s / $4.12, and batch a vs b |
 | `tracedb bench` | Durable: the speed claims are measured, not asserted |
 
@@ -182,14 +187,14 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 - As an agent developer, I can select an unusual part of a chart and see which fields and values set it apart, ranked.
   - *Example*: the error spike → `fetch_url` and `prompt_version = v7` at the top.
 - As an agent developer, I can rely on runs that finish late showing correctly, no matter when their last update arrives or whether background compaction has run.
-- As an agent developer, I can add a score and comment to any finished run, then filter and average by it.
+- As an agent developer, I can add a score and comment to any finished run from the UI, then filter and average by it (filtering and averaging, and SDK feedback, shipped in M3).
 - As a **maintainer**, I can trust these keep working: CI covers threads, export, compaction correctness and the ranking example.
 
 **Work needed → how it gets us there**:
 | Work | Contribution |
 |---|---|
 | Compaction tiers + atomic swap | Direct: late-end correctness after compaction. Indirect: keeps M3 speeds as data grows |
-| Threads view; export; feedback write | Direct: steps 10, 11 and feedback filters |
+| Threads view; export; feedback write from the UI | Direct: steps 10, 11 and feedback from the browser |
 | Find-what-stands-out | Direct: Story 12 |
 
 **Delivers**: FR-016, FR-017, FR-020, FR-032.
@@ -218,18 +223,18 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 | Requirement | Phase | Done |
 |---|---|---|
-| FR-001 | M1 (JSON), M3 (multipart) | JSON path verified (contract fixtures) |
+| FR-001 | M1 (JSON), M3 (multipart) | JSON path, multipart + zstd verified (contract fixtures) |
 | FR-002–007 | M1 | built, verified locally |
-| FR-008–010, 012, 013 | M2 | |
-| FR-011, 014, 015 | M3 | |
+| FR-008–010, 012, 013 | M2 | built, verified locally |
+| FR-011, 014, 015 | M3 | built, verified locally |
 | FR-016, 017, 020 | M4 | |
 | FR-021, 028 | M5 | |
-| FR-022–027 | M1 → M3 (grows each phase) | |
-| FR-029–031 | M2 (builder, Samples, Table) → M3 (charts, compare) | |
+| FR-022–027 | M1 → M3 (grows each phase) | built through M3, verified locally; browser check open (D3-4) |
+| FR-029–031 | M2 (builder, Samples, Table) → M3 (charts, compare) | built, verified locally |
 | FR-032 | M4 | |
 | QR-001–003 | M1 | QR-003 verified (crash 10/10); QR-001/002 CI-only |
-| QR-004–006, 008 | M3 | |
-| QR-007 | M2 | |
+| QR-004–006, 008 | M3 | deferred (D3-1, D3-2); QR-006 disk met |
+| QR-007 | M2 | built, verified locally; cloud CI not run (D3-3) |
 
 Mark ✅ only after the phase's exit check passes.
 
@@ -250,12 +255,12 @@ First reconciliation round applied to the docs on 2026-11-05 (source read from `
 
 ### LSM ideas borrowed from RocksDB / LevelDB (chosen 2026-11-05)
 
-| # | Item | Why | Done when |
-|---|---|---|---|
-| R-7 | **Pinned versions for readers**: each query holds a reference to the segment set it started on; a compacted-away segment is deleted only when no reader holds it (replaces the grace-period GC in design-notes §7) | A long query never loses a file mid-scan | Test: a scan runs across a compaction swap and returns the same rows |
-| R-8 | **Write slowdown**: when memtable size, unflushed WAL or T0 file count passes a limit, ingest returns `429` + `Retry-After` (the SDK retries) | Memory stays bounded during bursts | Test: a burst past the limit gets 429s, no event lost, memory under the cap |
-| R-9 | **Bloom filter on keys**: Parquet bloom filters on `trace_id` and `run_id` in core files | Trace-tree and single-run lookups skip most segments | Bench: segments opened per lookup drops vs. without |
-| R-10 | **Two memtables**: one mutable, one frozen while it flushes; writes go to the new mutable one | Ingest never pauses during a flush | Test: ingest latency stays flat while a flush runs |
+| # | Item | Why | Done when | Status |
+|---|---|---|---|---|
+| R-7 | **Pinned versions for readers**: each query holds a reference to the segment set it started on; a compacted-away segment is deleted only when no reader holds it (replaces the grace-period GC in design-notes §7) | A long query never loses a file mid-scan | Test: a scan runs across a compaction swap and returns the same rows | built (M2) |
+| R-8 | **Write slowdown**: when memtable size, unflushed WAL or T0 file count passes a limit, ingest returns `429` + `Retry-After` (the SDK retries) | Memory stays bounded during bursts | Test: a burst past the limit gets 429s, no event lost, memory under the cap | built (M2) |
+| R-9 | **Bloom filter on keys**: Parquet bloom filters on `trace_id` and `run_id` in core files | Trace-tree and single-run lookups skip most segments | Bench: segments opened per lookup drops vs. without | built (M2) |
+| R-10 | **Two memtables**: one mutable, one frozen while it flushes; writes go to the new mutable one | Ingest never pauses during a flush | Test: ingest latency stays flat while a flush runs | built (M2) |
 
 Not adopted: compaction I/O rate limit, payload-file GC (BlobDB-style), checkpoints, merge operator, FIFO/TTL compaction.
 
@@ -266,7 +271,7 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 | # | Item | Why not done | Done when |
 |---|---|---|---|
 | D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Bench code done (three text-search rows; idle row reported "waived (M4)", merged in `ea6af31`); `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
-| D3-2 | **Idle memory ≤ 200 MB** (SC-05, T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
+| D3-2 | **Idle memory ≤ 200 MB** (QR-006 (M3 SC-05), T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
 | D3-3 | **Cloud CI job's first real run** (T122), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
 | D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
 | D3-5 | **No-outbound check under strace** | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
@@ -278,3 +283,6 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 
 - 2026-11-05: product spec, primer, design notes, constitution v1.0.0, plan + Phase 1 artifacts written; the original SPEC.md and REQUIREMENTS.md were folded in and deleted.
 - 2026-11-05: M1 implemented (PR1–PR7). Found by recording real SDK traffic: `/info` must send every `batch_ingest_config` key (the SDK reads them without defaults), and an invalid `LANGSMITH_AGENT_ENVIRONMENT` makes the SDK skip tracing silently.
+- 2026-11-06: M2 built and passed locally (83/83 tasks; `c7595c6`).
+- 2026-11-07: M3 built and passed locally (125/128 tasks; `001d878`); three-row text-search bench, idle row waived, and `demo --url` fix (D3-8) merged to `master` at `ac69c4e`.
+- 2026-11-08: `crates/tracedb` split into `crates/server`, `crates/tools` and the binary (`028bd38`, D-034); newcomer starter guide and README layout (`4acfcdf`). On branch `refactor/split-tracedb-crates`, not yet on `master`.

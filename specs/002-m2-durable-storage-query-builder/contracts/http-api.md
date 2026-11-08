@@ -58,9 +58,9 @@ Errors:
 
 | Status | Body | When |
 |---|---|---|
-| `400` | `{error: {code: "bad_filter", message, slot: "filter"\|"trace_filter"\|"tree_filter", start, end, expected}}` | parse or type error; `start`/`end` are byte offsets in that slot's text |
+| `400` | `{error: {code: "bad_filter", message, slot: "filter"\|"trace_filter"\|"tree_filter", start, end}}` | parse or type error; `start`/`end` are byte offsets in that slot's text; `message` says what was expected |
 | `400` | `{error: {code: "bad_cursor"}}` | cursor is malformed or belongs to another query |
-| `400` | `{error: {code: "unsupported", message: "search() is supported from M3"}}` | features of later phases |
+| `400` | `{error: {code: "unsupported", message: "search() is supported from M3", slot, start, end}}` | features of later phases (M2; removed in M3, where `search()` and feedback fields parse; see the [M3 contract](../../003-m3-search-aggregates-speed/contracts/http-api.md)) |
 
 ### Lookups (unchanged shapes, now over memtables ∪ files)
 
@@ -93,7 +93,8 @@ and `?trace=`, alone or narrowing `q`.
 ### Health
 
 `GET /healthz` → `{ok, wal_ok, flush_ok, memtable_bytes, frozen: bool, unflushed_wal_bytes, segments, last_flush_at,
-corrupt_segments: [id]}`.
+corrupt_segments: [id]}`. M3 adds `memtable_limit_bytes`, `damaged_segments` (`corrupt_segments` stays as an alias),
+`unindexed_segments`, `orphan_feedback`, `cache_bytes` and `dedup_keys`; see the [M3 contract](../../003-m3-search-aggregates-speed/contracts/http-api.md).
 
 ## UI routes
 

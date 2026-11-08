@@ -1,6 +1,6 @@
 # Implementation Plan: M2 — Durable storage + query builder
 
-**Branch**: `002-m2-durable-storage-query-builder` | **Date**: 2026-11-06 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md) | **Appendix A**: [starter guide (pre-code)](starter-guide.md)
+**Branch**: `002-m2-durable-storage-query-builder` | **Date**: 2026-11-06 | **Spec**: [spec.md](spec.md) | **Design**: [design.md](design.md) | **Appendix A**: [starter guide](starter-guide.md) | **Status**: Built (M2 closed at `c7595c6`)
 
 **Input**: Feature specification from `specs/002-m2-durable-storage-query-builder/spec.md`. Master: [000 plan](../000-tracedb-master-plan/plan.md). Builds on: [M1 plan](../001-m1-see-agent-trace-live/plan.md).
 
@@ -10,7 +10,8 @@ M2 puts SmithDB's storage half under M1's write path. The writer stays as it is;
 flusher writes it as immutable Parquet files (small filter columns and large payloads apart) to an `ObjectStore`,
 registers them in a SQLite/Postgres metastore, and only then trims the WAL. Queries pin a file set, prune by project,
 time and key bloom filters, union the fresh memtables, merge the few multi-version runs, and evaluate LangSmith-style
-filters, including conditions on a run's root and on any run in its trace, through DataFusion. The UI gets a
+filters, including conditions on a run's root and on any run in its trace, through DataFusion (as built, DataFusion
+prunes and pre-filters; merge, filter and trace conditions run in our code, [D-017](../000-tracedb-master-plan/decisions.md#d-017)). The UI gets a
 Scuba-style query panel that is the same AST as the filter text, a field browser fed by flush-time stats, Samples and
 Table views, and live views for any query. `tracedb demo` asserts the scenario numbers on local and cloud-style storage.
 Design: [design.md](design.md). How it all flows, as pseudo-code: [Appendix A](starter-guide.md).
@@ -59,7 +60,7 @@ refer to [quickstart.md](quickstart.md).
 | SC-04 | As an agent developer, tracedb stays light | `/healthz`; `du -sh .tracedb` | memory under limit; disk ≤ raw JSON | bench report |
 | SC-05 | As an agent developer, nothing confirmed is lost | crash harness | 10/10 rounds, incl. flush kills | CI |
 | SC-06 | As an agent developer, restarts are quick | restart test | ≤ 10 s at 2M runs | release CI |
-| SC-07 | As an agent developer, uploads don't stall during flushes | throughput test | ≥ 5k events/s; p99 ≤ 1 s | release CI |
+| SC-07 | As an agent developer, uploads don't stall during flushes | throughput test | ≥ 5k events/s; p99 ≤ 1 s (M3 raised the test to 20k events/s while querying) | release CI |
 | SC-08 / QR-007 | As a maintainer, cloud gives the same answers | cloud CI job | identical demo table | CI |
 | SC-09 | As an agent developer, results are exactly right | merge-on-read property test | 100% agreement | CI |
 | SC-10 | As an M1 user, nothing I had got worse | M1 test suite | all green | CI |
@@ -101,7 +102,7 @@ No NEEDS CLARIFICATION remain. Five design questions with proposals are in desig
 | Principle | M2 check | Pre | Post |
 |---|---|---|---|
 | I. Rust, one binary | still one binary; SQLite in-process; UI embedded in release builds (dev builds may serve a placeholder or `--ui-dir`) | PASS | PASS |
-| II. SmithDB is the reference | immutable segments, metastore, merge-on-read, fresh data from memtables, late materialization, pruning (design §10). Differences: Parquet (b), SQLite (a), one process (a), memory cache (a), no compaction/progressive/text index yet (c, staged to M3/M4 in the roadmap). All behind `SegmentFormat`, `Metastore`, `Cache`, service traits | PASS | PASS |
+| II. SmithDB is the reference | immutable segments, metastore, merge-on-read, fresh data from memtables, late materialization, pruning (design §10). Differences: Parquet (b), SQLite (a), one process (a), memory cache (a; not built in M2, [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3, [D-028](../000-tracedb-master-plan/decisions.md#d-028)), no compaction/progressive/text index yet (c, staged to M3/M4 in the roadmap). All behind `SegmentFormat`, `Metastore`, `Cache`, service traits | PASS | PASS |
 | III. Local and private | local mode makes no outbound connections; data under `--data` (WAL, files, metastore); the cloud job talks only to its own containers | PASS | PASS |
 | IV. UI first | query panel, field browser, Samples/Table, live views ship with the API; CLI `query`/`demo` are equivalents | PASS | PASS |
 | V. Cloud-portable storage | all file and catalog access via `ObjectStore` + `Metastore`; write-once objects; same tests on MinIO + Postgres | PASS | PASS |
@@ -116,18 +117,20 @@ Architecture constraint "query execution builds on DataFusion and Arrow": met fr
 ```text
 specs/002-m2-durable-storage-query-builder/
 ├── spec.md            # what and why
-├── design.md          # high-level design + components (review before implementation)
+├── design.md          # high-level design + components (reviewed before implementation; notes where the code differs)
 ├── plan.md            # this file
-├── starter-guide.md   # Appendix A: goals → functionality, pseudo-flows, diagrams (pre-code)
+├── starter-guide.md   # Appendix A: reading the built M2 code (line links as of 6e77f12)
 ├── parquet-datafusion-primer.md  # how Parquet + DataFusion work inside, with real EXPLAIN output
 ├── research.md        # Phase 0 decisions (M2-R1…R14)
 ├── data-model.md      # file rows, metastore tables, query AST, lifecycle states
 ├── quickstart.md      # how to prove M2 works
 ├── contracts/         # http-api.md, filter-language.md, cli.md
-└── tasks.md           # /speckit-tasks (next)
+└── tasks.md           # task list (all done)
 ```
 
 ### Source Code (repository root)
+
+Planned layout (as reviewed):
 
 ```text
 crates/
@@ -140,12 +143,26 @@ crates/
 │                   #   merge.rs (merge_versions UDAF), fields.rs, tail.rs (moved from routes)
 └── tracedb/        # routes: api.rs (+ /api/query, /api/fields), tail.rs (SSE framing only), ui.rs (--ui-dir);
                     # demo.rs + scenario.rs (overnight-eval generator); main.rs (storage flags, demo, query)
-ui/src/
-├── query/          # Panel, Chip, TextEditor (errors), ast.ts, print/parse mirror, url.ts
-├── fields/         # FieldBrowser, ValueList
-└── views/          # Samples (from RunsList), Table
-ci/cloud.yml        # MinIO + Postgres for the cloud job
 ```
+
+As built (M2 at `c7595c6`; paths as after the crate split, which moved `crates/tracedb` into three crates):
+
+```text
+crates/
+├── model/          # + filter/{ast,parse,print,eval}.rs; merge_versions in merge.rs; promote in attrs.rs
+├── storage/        # NEW: object.rs, metastore.rs (DDL inline, no migrations folder), segment.rs (Parquet, blooms,
+│                   #      field StatsBuilder); no cache.rs (D-013), no version.rs (D-015)
+├── ingest/         # + memtable.rs (Mem, Version), flush.rs, recover.rs, projects.rs (D-024), dedup.rs;
+│                   #   multi-version set in lib.rs (Ingest::multi_version); writer.rs, wal.rs
+├── query/          # + scan.rs (pin, read_core, versions_of, merge_group), pushdown.rs, window.rs (D-021),
+│                   #   cursor.rs, fields.rs, tail.rs; select / trace / run in lib.rs (D-017: no plan/provider/UDAF)
+├── server/         # tracedb-server: lib.rs, routes/{api,ingest,tail,ui,errors}.rs, langsmith_map.rs, build.rs
+├── tools/          # tracedb-tools: seed.rs, scenario.rs, demo.rs, cli_query.rs (M3 adds bench.rs)
+└── tracedb/        # the binary: main.rs; tests that start it (crash, restart, throughput, demo, …)
+```
+
+M3 adds `storage/src/{cache,fts}.rs`, `ingest/src/{flushed,feedback,backfill}.rs`, `query/src/{search.rs,aggregate/}`;
+see the [M3 plan](../003-m3-search-aggregates-speed/plan.md).
 
 **Structure Decision**: one new crate, `storage`, holding every trait that touches files or SQL, so `ingest` and
 `query` never see Parquet, paths or SQL. The filter language lives in `model` (pure, shared by query, CLI and tests).
@@ -169,6 +186,8 @@ them in step.
 | 11 | `tracedb demo` + scenario generator; cloud CI job; M2 bench; quickstart verified | As a test user, I can run `tracedb demo`; as a maintainer, CI runs it on both storages |
 | 12 | **Code starter guide**: rewrite [starter-guide.md](starter-guide.md) from pre-code to a guide for reading the built M2 code, as M1's: reading order, every scene mapped to real functions with links and line numbers, vertical diagrams, rough edges found while writing it | As a new reader, I can follow one run through the M2 code (flush, recovery, merge-on-read, planner, live views, panel ⇄ text) with line-level links |
 
+As built, PR 3 has no `Cache` ([D-013](../000-tracedb-master-plan/decisions.md#d-013)), PR 7 no provider or UDAF and PR 8 no semi-joins ([D-017](../000-tracedb-master-plan/decisions.md#d-017)).
+
 PRs 1–2 and 3–4 can proceed in parallel; 5 needs 3–4; 7 needs 1 and 5; 10 needs 7–8 (it can start against a stub API). 12 is last: it reads the merged code, so M2 isn't done until it lands.
 
 ## Complexity Tracking
@@ -178,13 +197,13 @@ No violations. Two choices add moving parts and are justified in research:
 | Choice | Why needed | Simpler alternative rejected because |
 |---|---|---|
 | Single-version fast path (`needs_merge` + multi-version set) | merge-on-read at 2M runs within SC-03 | always merging every row in range costs a group-by over all runs per query (M2-R3) |
-| Promoted typed attribute maps | JSON-path filters without reading payloads | a JSON text column means reading and parsing large strings for every filter (M2-R6) |
+| Promoted typed attribute maps | JSON-path filters without reading payloads | a JSON text column means reading and parsing large strings for every filter (M2-R6). Superseded: a JSON text column `attrs` of promoted leaves shipped ([D-012](../000-tracedb-master-plan/decisions.md#d-012)) |
 
-## Appendix A: starter guide (pre-code)
+## Appendix A: starter guide
 
-The user-requested walkthrough lives in [starter-guide.md](starter-guide.md). Today it is pre-code (planned names,
-pseudo-flows); the last PR (12) rewrites it in place into the guide for reading the built M2 code, with real links and
-line numbers, as M1's. It covers:
+The user-requested walkthrough lives in [starter-guide.md](starter-guide.md). It was pre-code (planned names,
+pseudo-flows) until the last PR (12) rewrote it in place into the guide for reading the built M2 code, with real links
+and line numbers as of `6e77f12`, as M1's. The plan for it covered:
 
 1. **Goals → functionality → planned home**: every end-state line mapped to the mechanism and module that delivers it.
 2. **The system in one picture** and the crate dependency graph.

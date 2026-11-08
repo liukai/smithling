@@ -43,18 +43,23 @@ erDiagram
 | `start_time`, `end_time` | timestamp µs, null | |
 | `status` | enum `running`/`ok`/`error` | derived for this version; recomputed after a merge |
 | `latency_ms` | u64, null | derived |
-| `error` | string, null | first 1 KB; full text in payload `extra` |
+| `error` | string, null | full text ([D-014](../000-tracedb-master-plan/decisions.md#d-014)) |
 | `tags` | list<string>, null | |
 | `thread_id`, `model` | string, null | derived |
 | `input_tokens`, `output_tokens`, `total_tokens` | u64, null | derived |
-| `attrs_str` | map<string, string> | promoted scalar strings (§4) |
-| `attrs_num` | map<string, f64> | promoted numbers |
-| `attrs_bool` | map<string, bool> | promoted booleans |
+| `metadata`, `extra` | JSON text, null | the full objects (promoted leaves are copies) |
+| `dropped` | JSON text, null | sizes of fields received but not stored |
+| `outputs_usage` | JSON text, null | `outputs.usage_metadata`, kept for the token counts |
+| `attrs` | JSON text | promoted scalar leaves by dotted path (§4); one column, evaluated by our filter code ([D-012](../000-tracedb-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
 | `present` | u32 bitmask | which fields this version set (needed where empty ≠ absent: `tags`, `metadata`) |
 | `first_seq`, `last_seq` | u64 | merge order |
 | `event_count` | u32 | |
+| `created_at`, `updated_at` | timestamp µs | |
 | `needs_merge` | bool | this version was started by an update, or an older version exists (design §4.3) |
+| `inputs_bytes`, `outputs_bytes`, `events_bytes` | u64 | sizes of the payload fields |
 | `payload_row` | u32 | row in the paired payload file |
+
+Source of record: `core_schema` in [segment.rs](../../crates/storage/src/segment.rs).
 
 **Sort**: `(trace_id, dotted_order)` → a trace's rows are adjacent and in tree order; with UUIDv7 ids, files are also
 roughly in time order. **Row groups**: ~64k rows. **Page index**: on. **Compression**: zstd.
@@ -66,29 +71,30 @@ roughly in time order. **Row groups**: ~64k rows. **Page index**: on. **Compress
 | `run_id` | fixed binary 16 | check against the core row |
 | `inputs`, `outputs` | JSON text, null | ≤ 20 MB each (M1 limit) |
 | `events` | JSON text, null | latest full list |
-| `metadata`, `extra` | JSON text, null | the full objects (promoted leaves are copies) |
-| `dropped` | JSON text, null | sizes of fields received but not stored |
 
-Read only by `run(id, include=…)`, the step panel, and filters on paths that weren't promoted.
+That is the whole payload row (`payload_schema` in [segment.rs](../../crates/storage/src/segment.rs)). Read only by
+`run(id, include=…)` and the step panel; filters never read it (paths that weren't promoted report `not_indexed`, §9).
 
 ## 4. Promoted paths
 
-| Source | Depth | Limits | Example path → map |
+| Source | Depth | Limits | Example path (type) |
 |---|---|---|---|
-| `metadata` | ≤ 4 | strings ≤ 256 B | `metadata.prompt_version` → `attrs_str` |
-| `inputs` | ≤ 3 | ≤ 64 leaves per field, strings ≤ 256 B | `inputs.query` (if short) → `attrs_str` |
-| `outputs` | ≤ 3 | same | `outputs.status_code` → `attrs_num` |
+| `metadata` | ≤ 4 | strings ≤ 256 B | `metadata.prompt_version` (string) |
+| `inputs` | ≤ 3 | ≤ 64 leaves per field, strings ≤ 256 B | `inputs.query` (string, if short) |
+| `outputs` | ≤ 3 | same | `outputs.status_code` (number) |
 | arrays | — | not promoted; `has(tags, …)` uses the `tags` column | |
 
-A path seen with two types (number in one run, string in another) is promoted into both maps; the field catalog lists
-both types with their counts.
+All promoted leaves go into the one `attrs` JSON column, each with its own JSON type. A value past the limits is kept as
+an `unindexed` marker: it matches `eq/neq null`, and any other comparison is false with a `not_indexed` warning
+([D-011](../000-tracedb-master-plan/decisions.md#d-011)). A path seen with two types (number in one run, string in another) keeps each run's type; the field catalog
+lists both types with their counts.
 
 ## 5. Metastore tables (same SQL on SQLite and Postgres)
 
 ```sql
 CREATE TABLE state (
   id              INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version  INTEGER NOT NULL,          -- 1 in M2
+  schema_version  INTEGER NOT NULL,          -- 1 in M2; 2 since M3 (segments.fts_path / fts_bytes, feedback table)
   flushed_seq     BIGINT  NOT NULL           -- every event with seq ≤ this is in a registered segment
 );
 
@@ -98,7 +104,7 @@ CREATE TABLE segments (
   core_path       TEXT NOT NULL,
   payload_path    TEXT NOT NULL,
   min_start_key   BIGINT NOT NULL,  max_start_key BIGINT NOT NULL,
-  min_trace_id    BLOB   NOT NULL,  max_trace_id  BLOB   NOT NULL,   -- BYTEA on Postgres
+  min_trace_id    TEXT   NOT NULL,  max_trace_id  TEXT   NOT NULL,   -- UUID text
   min_seq         BIGINT NOT NULL,  max_seq       BIGINT NOT NULL,
   row_count       BIGINT NOT NULL,
   needs_merge_rows BIGINT NOT NULL,
@@ -110,7 +116,7 @@ CREATE TABLE segments (
 CREATE INDEX segments_scope ON segments (project, max_start_key);
 
 CREATE TABLE field_stats (
-  segment_id      TEXT NOT NULL REFERENCES segments(id),
+  segment_id      TEXT NOT NULL,             -- a segments.id (no foreign key)
   path            TEXT NOT NULL,             -- e.g. 'metadata.prompt_version', 'status', 'tags'
   type            TEXT NOT NULL,             -- 'string' | 'number' | 'bool' | 'list'
   count           BIGINT NOT NULL,           -- rows that have it
@@ -129,7 +135,8 @@ CREATE TABLE dedup_keys (                    -- D-022; added in place to older M
 A flush is one transaction: insert its `segments`, `field_stats` and `dedup_keys` rows, update `state.flushed_seq`,
 and delete `dedup_keys` rows older than the dedup window (except the newest). A packed key is `run_id` (16 B) + `op`
 (1 B, WAL byte values) + `body_hash` (u64 LE) + `received_at` µs (i64 LE): the keys of every event the flush took
-from the WAL, so start rebuilds the dedup window with no flushed WAL files kept.
+from the WAL, so start rebuilds the dedup window with no flushed WAL files kept. The DDL lives inline in
+[metastore.rs](../../crates/storage/src/metastore.rs) (`CREATE … IF NOT EXISTS`, no migrations folder).
 
 ## 6. Object layout
 
@@ -148,13 +155,13 @@ The day is the flush day (UTC). Names are unique and never reused, so nothing is
 
 | Structure | Owner | Contents | Size at 2M runs |
 |---|---|---|---|
-| Active memtable | writer | M1 run store (states, by_trace, roots), limit 128 MB | ≤ 128 MB + indexes |
-| Frozen memtable | flusher, readers | `Arc` of the previous active, immutable | ≤ 128 MB, at most one |
+| Active memtable | writer | M1 run store (states, by_trace, roots), limit 128 MB (M2; M3: 64 MB measured as heap, [D-028](../000-tracedb-master-plan/decisions.md#d-028)) | ≤ 128 MB + indexes |
+| Frozen memtable | flusher, readers | `Arc` of the previous active, immutable | ≤ 128 MB (M2), at most one |
 | `Version` | query (pinned) | segment list + frozen `Arc` | small |
 | Multi-version set | ingest (writes), query (reads) | `HashSet<RunId>` | ~3 MB (10% late) |
 | Recent projects (D-024) | writer, flusher (writes); flusher, query pin (reads) | run → project for the last 1–2M runs | ≤ ~50 MB |
-| Dedup set | writer | `(run_id, op, body_hash)` for the last 10 min | ~2M keys at 5k events/s |
-| `Cache` | storage | Parquet footers, bloom filters, hot row groups (LRU) | default 256 MB |
+| Dedup set | writer | `(run_id, op, body_hash)` for the last 10 min | ~2M keys at 5k events/s (M3: 16 B fingerprints, at most 1M, [D-028](../000-tracedb-master-plan/decisions.md#d-028)) |
+| `Cache` | storage | Parquet footers, bloom filters, hot row groups (LRU) | default 256 MB; not built in M2 ([D-013](../000-tracedb-master-plan/decisions.md#d-013)); M3: 32 MB ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) |
 
 ## 8. Lifecycle states
 
@@ -163,11 +170,14 @@ The day is the flush day (UTC). Names are unique and never reused, so nothing is
 ```mermaid
 stateDiagram-v2
     [*] --> active
-    active --> frozen: ≥ 128 MB or oldest event ≥ 10 min or shutdown
+    active --> frozen: ≥ 128 MB or oldest event ≥ 10 min or unflushed WAL ≥ ½ limit
     frozen --> flushed: files written + registered (one transaction)
     flushed --> [*]: dropped when no pinned Version holds it
     frozen --> frozen: flush failed → retry with backoff
 ```
+
+No freeze at shutdown: unflushed events stay in the WAL and are replayed at start. Limits are M2's (M3: 64 MB, 2 min,
+[D-028](../000-tracedb-master-plan/decisions.md#d-028)).
 
 **Segment** (M2 uses only the first two states; M4 adds the rest)
 
@@ -208,10 +218,13 @@ Path = built-in field (status, name, run_type, latency, start_time, tags, total_
 **Cursor**: base64 of `{order_value, run_id, query_hash}`. `query_hash` covers everything except `cursor`, `view` and
 `live`, so changing columns keeps your place but changing the filter starts over (as M1).
 
-**Page**: `{runs: [RunHeader + requested columns], next_cursor?, warnings: [Warning], stats: {files_scanned, files_pruned, rows_merged, ms}}`.
+**Page**: `{runs: [RunHeader + requested columns], next_cursor?, warnings: [Warning], stats}`, with `stats` =
+`{files_total, files_scanned, rows_read, rows_merged, files_version_lookup, merge_rows, matched, complete, ms}`
+(`PageStats` in [query/src/lib.rs](../../crates/query/src/lib.rs); M3 adds text-search counts).
 
-**Warning** kinds: `mixed_types{path, counts}`, `not_indexed{path}` (payload scan), `identity_conflict{run_id}`,
-`catalog_incomplete{project}`.
+**Warning** kinds: `mixed_types{path, counts}`, `not_indexed{path, runs}` (comparisons on unpromoted values; no
+payload scan), `identity_conflict{run_id}` (`QueryWarning`; M3 adds `skipped_files`). An incomplete field catalog is
+reported by `complete: false` (§10), not by a warning.
 
 ## 10. Field catalog entry
 
@@ -240,7 +253,7 @@ The `fetch_url` step (run `7c1e…a4`, trace `0b9f…11`). Its start was flushed
 segment seg-01JC…  (core row)
   run_id 7c1e…a4  name fetch_url  run_type tool  start 02:14:07  end —  status running
   start_key 02:14:07  project eval-agent  needs_merge false  last_seq 1042
-  attrs_str {metadata.prompt_version: "v7"}
+  attrs {"metadata.prompt_version": "v7"}
 
 active memtable (02:31, created by a patch → partial)
   run_id 7c1e…a4  name —  start —  end 02:14:38  error "HTTPError: 429 Too Many Requests"
@@ -250,7 +263,7 @@ active memtable (02:31, created by a patch → partial)
 query  root ok AND any run in trace errored  (quiet failures)
   file row for 7c1e…a4: its id is in the multi-version set → goes to the merge, not filtered in the scan
   merge by last_seq: name fetch_url (file) · start 02:14:07 (file) · end 02:14:38 (mem) · error (mem) ·
-                     project eval-agent (file) · attrs_num {outputs.status_code: 429} (mem)
+                     project eval-agent (file) · attrs {"outputs.status_code": 429} (mem)
   derive: status error, latency 31 076 ms
   tree_filter "any run errored" now matches trace 0b9f…11 → its root (ok) is one of the 23
 ```

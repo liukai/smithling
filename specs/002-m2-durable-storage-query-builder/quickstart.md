@@ -1,6 +1,7 @@
 # Quickstart: prove M2 works
 
-Validation run for M2. Expected values come from the [spec](spec.md#success-criteria-mandatory); query syntax is in
+Validation run for M2, as of M2's close (`c7595c6`); since M3 the binary's defaults differ (noted inline). Expected
+values come from the [spec](spec.md#success-criteria-mandatory); query syntax is in
 [contracts/filter-language.md](contracts/filter-language.md); commands in [contracts/cli.md](contracts/cli.md).
 
 **Prerequisites**: a release build (`cd ui && npm ci && npm run build && cd .. && cargo build --release`). For step 7:
@@ -9,16 +10,18 @@ Docker on Linux (CI runs it).
 ## 1. The scenario checks (one command)
 
 ```bash
-./target/release/tracedb demo --seed 7
+./target/release/tracedb demo --seed 7 --checks m2
 ```
 Expect: `14 failing roots ✓`, `23 quiet failures ✓`, `prompt_version top values ✓ (v6 928 · v7 912)`, the planted
-v7 ∧ 429 count ✓, and `checks across memtable and files ✓`. Exit code 0.
+v7 ∧ 429 count ✓, and `checks across memtable and files ✓`. Exit code 0. (In M2 `--checks m2` was the default; since
+M3 the default is `m2,m3`, 10 checks.)
 
 ## 2. Triage in the browser, no typing (SC-01, SC-02)
 
 ```bash
 ./target/release/tracedb serve --data /tmp/m2 &
 ./target/release/tracedb demo --url http://localhost:7070 --seed 7 --memtable 128MB   # into this server; pass its --memtable
+# since 4ec794c: --url reads the server's memtable_limit_bytes from /healthz; --memtable is only a fallback
 ```
 Open http://localhost:7070, then, by clicking only:
 1. Time → *last 12h*; click the tag `batch=2026-11-05-a` on any row; click *root only*; click an `error` badge → **14**.
@@ -32,7 +35,7 @@ Open http://localhost:7070, then, by clicking only:
 
 ```bash
 for s in $(seq 10); do ./target/release/tracedb seed --traces 1220 --seed $s --no-delay --url http://localhost:7070; done   # ≈ 2M runs
-curl -s localhost:7070/healthz        # segments > 0, memtable_bytes ≤ 128 MB
+curl -s localhost:7070/healthz        # segments > 0, memtable_bytes ≤ the memtable limit (128 MB in M2; memtable_limit_bytes since M3)
 kill -9 %1; ./target/release/tracedb serve --data /tmp/m2 &
 time (until curl -sf localhost:7070/healthz >/dev/null; do sleep 0.1; done)   # ready ≤ 10 s
 ```
@@ -47,6 +50,7 @@ cargo test --release -p tracedb --test restart -- --ignored        # 2M runs rea
 
 ```bash
 cargo test --release -p tracedb --test throughput -- --ignored     # ≥ 5,000 events/s, p99 upload ≤ 1 s during flush
+# M3 renamed and raised it: sustains_20000_events_per_second_while_querying (crates/tracedb/tests/throughput.rs)
 cargo test -p tracedb-ingest --test slowdown                        # burst → 429s, nothing lost, memory under cap
 ```
 
@@ -93,7 +97,7 @@ no Docker, MinIO or Postgres here, so the browser and cloud steps were checked t
 | 2. `serve` + `demo --url` | **passed** with `--memtable 128MB` (8.7 s); without it the across-memory-and-files check fails (the step said so wrongly; fixed) |
 | 2. clicks 1–5 | **not runnable here** (no browser). The same queries through `tracedb query` / the API: 14 and 23 roots, `v6 928 · v7 912`, v7 ∧ 429 rows, `staus` → error pointing at it (exit 1). `ui` tests pass (132) |
 | 3. seed ≈ 2M runs | **passed** in 10 batches of 1,220 traces (1.95M runs, 425 s, 400 segments). The old one-shot `--traces 20000` (≈ 3.3M runs, not 2M) was killed by the OS: `seed` builds every trace in memory first (88 GB peak); fixed |
-| 3. `kill -9`, restart | **partly**: the sandbox couldn't `kill -9` its server, so a copy of the idle folder was opened instead: ready in 0.19 s (replay 105 ms), then 14 and 23 again. Those two queries took 14–22 s at 400 segments, far over SC-03's 500 ms; the bench's 14–53 ms was at 37 files |
+| 3. `kill -9`, restart | **partly**: the sandbox couldn't `kill -9` its server, so a copy of the idle folder was opened instead: ready in 0.19 s (replay 105 ms), then 14 and 23 again. Those two queries took 14–22 s at 400 segments, far over SC-03's 500 ms; the bench's 14–53 ms was at 37 files. Fixed by `7c5b094` ([D-024](../000-tracedb-master-plan/decisions.md#d-024)): 52 ms / 109 ms; inside the project holding the late updates they still took 4.5 s, brought down in M3 (last step [D-029](../000-tracedb-master-plan/decisions.md#d-029): failing roots 1,070 → 155 ms) |
 | 3. `crash`, `restart` tests | **passed**: 10/10 rounds; 2M runs ready in 0.43 s |
 | 4. `throughput`, `slowdown` | **passed**: 38,616 events/s, p99 114 ms; burst test ok (it is `-p tracedb-ingest`, not `-p tracedb`; fixed) |
 | 5. live views | **not runnable here** (browser); `ui` live-toggle tests pass |

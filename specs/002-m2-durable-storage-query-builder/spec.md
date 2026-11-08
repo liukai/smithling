@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-06
 
-**Status**: Draft
+**Status**: Built (M2 closed at `c7595c6`). Where the code differs: [decision log](../000-tracedb-master-plan/decisions.md) D-012–D-024 (while building M2), D-025–D-029 (M3)
 
 **Input**: User description: "M2 'Durable storage + query builder' for tracedb … scope from roadmap M2 … fold in backlog R-2 and
 R-7–R-10, plus three items from the M1 code review (tail loop into the query service, serve UI files from disk, UI built

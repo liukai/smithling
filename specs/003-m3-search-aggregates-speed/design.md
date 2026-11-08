@@ -1,7 +1,7 @@
 # Design: M3 — Search, aggregates and speed
 
-**Status**: Draft for review (before implementation) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
-**Research**: [research.md](research.md) · **Starter guide (pre-code)**: [starter-guide.md](starter-guide.md) ·
+**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-tracedb-master-plan/roadmap.md) STATE) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
+**Research**: [research.md](research.md) · **Starter guide**: [starter-guide.md](starter-guide.md) ·
 **Builds on**: [M2 design](../002-m2-durable-storage-query-builder/design.md) and the
 [M2 code guide](../002-m2-durable-storage-query-builder/starter-guide.md) · **Master design**:
 [design-notes.md](../000-tracedb-master-plan/design-notes.md)
@@ -171,7 +171,9 @@ flush(job):                                         # files and ids made once pe
 - The index is built from the same rows as the payload file, so payload row numbers line up.
 - **Cost**: tokenizing is the largest new CPU cost at flush. It runs on the flusher thread, so uploads don't wait;
   the bench load phase checks that 20k events/s holds while flushing and indexing (SC-04).
-- **Size**: ~+12% of today's files (M3-R1); `bench` reports index bytes separately in the disk row.
+- **Size**: estimated ~+12% of today's files (M3-R1); measured 0.2% of raw JSON on the bench load and 6.9% on
+  prose-like payloads ([D-026](../000-tracedb-master-plan/decisions.md#d-026)). `bench` reports index bytes
+  separately in the disk row.
 - **Crash safety** is M2's: a sidecar put before the commit is an orphan like any data file and is deleted on start.
 
 ### 4.2 🟢 Search
@@ -213,7 +215,7 @@ flowchart TB
     S["scope: project, time, files"]:::old
     T["trace / tree conditions → trace-id set"]:::revised
     C["clean: file rows, needs_merge = false,<br/>run ∉ mvset ∪ memtable"]:::new
-    D["dirty: mvset + memtable runs,<br/>collect_pinned → merge → eval"]:::revised
+    D["dirty: kept merged rows (D-023)<br/>+ memtable versions → merge → eval"]:::revised
     E["exact pushdown? accumulate :<br/>decode needed columns → eval"]:::new
     A["accumulators merged per group"]:::new
     S --> T --> C --> E --> A
@@ -233,7 +235,7 @@ aggregate(spec):
   for batch in datafusion.scan(v.files, cols, scope ∧ pushed ∧ needs_merge = false):   # clean side
     for row in batch where row.run_id ∉ dirty and (traces is none or row.trace_id ∈ traces):
       if exact or eval(spec.filter, decode(row, cols)): acc[group_keys(row)].add(row)
-  for run in collect_pinned(scope, ids = dirty) merged, eval(spec.filter), trace check:      # dirty side
+  for run in merge(kept_rows(mvset), memtable versions), eval(spec.filter), trace check:    # dirty side (D-023 rows)
     acc[group_keys(run)].add(run)
   return finish(acc, top = spec.top)                                # top N + other + (none); tags unnested
 ```
@@ -278,7 +280,7 @@ sequenceDiagram
   the same share of dirty runs.
   - Counts and sums are scaled by `rows_total / rows_read`; rates and percentiles are not.
   - Each estimated cell says `estimated`.
-  - For a plain group-by on a path the catalog has stats for, `field_stats` gives first counts at once.
+  - Not built: `field_stats` first counts for a plain group-by (T078; the sample alone meets SC-06).
 - **Skipped** when the exact answer is likely within ~300 ms (rows in scope < ~200k): only `result` is sent.
 - **Cancel**: the SSE stream owns a cancel token; closing it stops DataFusion streams and the dirty loop at the
   next batch. Every event carries the request's `query_id`, and the UI ignores events for an old id (spec edge case).
@@ -401,7 +403,8 @@ tracedb bench [--runs 2M] [--data DIR] [--json FILE] [--check]:
 
 **CI**:
 - a 200k-run smoke on every PR;
-- the full 2M run on `main` and nightly, with the table in the job summary (runner time and disk to be checked);
+- the full 2M run on pushes to `main`/`master` and nightly, with the table in the job summary (runner time and
+  disk to be checked);
 - `tests/bench_m2.rs` becomes a thin wrapper.
 
 ### 4.11 🟠 M2 follow-ups
@@ -441,7 +444,7 @@ flowchart TB
 
 Details of record: [data-model.md](data-model.md). In short:
 - 🟢 **Sidecar** per segment: `seg-<id>.fts.dict.parquet` (`term, field, df, post_off, post_len`) and
-  `seg-<id>.fts.post` (postings blob).
+  `seg-<id>.fts.post` (postings blob); backfill names its pair `seg-<id>.fts-<µs>.…` (data-model §10).
 - 🟠 **Catalog**: `segments.fts_path` (nullable), `segments.fts_bytes`; new `feedback` table; `schema_version` 2.
 - 🟠 **Core file**: new nullable `reported_cost_pico`.
 - 🟢 **`prices.toml`**: `[models."gpt-4o-mini"] input = 0.15, output = 0.60, aliases = […]` (USD per 1M tokens).
@@ -487,7 +490,8 @@ real run, with the M3 demo.
 
 | | Situation | Behaviour |
 |---|---|---|
-| 🟢 | Sidecar missing or unreadable | file searched by scan (`not_indexed`), reported in `/healthz`; backfill may rewrite it |
+| 🟢 | Sidecar missing (M2 file) | file searched by scan (`not_indexed`); counted in `/healthz` `unindexed_segments`; backfill writes one |
+| 🟢 | Sidecar unreadable | warning logged, file searched by scan (`not_indexed`); not counted in `/healthz`, not rewritten (backlog) |
 | 🟠 | Data file damaged or missing | skipped with `skipped_files` warning; `/healthz` lists it (§4.11) |
 | 🟢 | Very common word | its postings skipped for that file; verify decides |
 | 🟢 | Huge text value (1 MB) | indexed whole; excerpt is ±80 chars |
@@ -512,7 +516,7 @@ real run, with the M3 demo.
 | 🟢 | Feedback | fixtures (`create_feedback` before and after the run); orphan; idempotent retry | CI |
 | 🟠 | No double count | second start for a flushed run → multi-version; aggregate counts it once | CI |
 | 🟠 | Damaged files, flush retry | start-time and live damage; lost commit reply | CI |
-| 🟠 | Speed and footprint | `tracedb bench` with budgets | CI (smoke on PRs, 2M on main/nightly) |
+| 🟠 | Speed and footprint | `tracedb bench` with budgets | CI (smoke on PRs, 2M on pushes to main/master and nightly) |
 | ⚪ | Crash safety | crash harness + `after_fts_put` kill point | CI |
 | 🟠 | UI | search chip ⇄ text, Stats table, charts, click-through conditions, URL round trip, "N new" | CI (vitest) |
 
@@ -529,22 +533,30 @@ real run, with the M3 demo.
 
 ## 11. Open questions
 
-Each has a proposed default. Settled on 2026-11-06 and no longer open: multipart + zstd advertised; attachment parts
-rejected per part; no word positions (c); branch `003-…` from the 002 tip.
+All settled. The first four on 2026-11-06 before the plan: multipart + zstd advertised; attachment parts rejected
+per part; no word positions (c); branch `003-…` from the 002 tip. The nine below on 2026-11-06 with the plan
+([tasks.md](tasks.md), "Plan open questions"); each says what was built.
 
 1. **Memory defaults to meet 200 MB idle.** Today's 128 MB memtable (counted as JSON bytes) plus the dedup window
    doesn't fit.
-   *Proposed*: memtable limit measured as heap, 64 MB; flush age 2 min; dedup keys as 16 B fingerprints with a
+   *Settled*: memtable limit measured as heap, 64 MB; flush age 2 min; dedup keys as 16 B fingerprints with a
    cap; cache 32 MB; jemalloc (`tikv-jemallocator` 0.7.0). All are flags; the M2 defaults remain available.
+   *Built* ([D-028](../000-tracedb-master-plan/decisions.md#d-028)); idle is still over target, waived for M3 and left to M4 compaction
+   (D3-2).
 2. **Decision-log entries.** This plan changes the roadmap's "scan + bloom in v0, custom index backlog", D-013 (no
    `Cache`), D-016 (second start), and design-notes §4 (feedback by multipart by default).
-   *Proposed*: log D-024–D-027 when the plan is approved.
+   *Settled*: each logged at the start of its unit with the next free id:
+   [D-025](../000-tracedb-master-plan/decisions.md#d-025) second start,
+   [D-026](../000-tracedb-master-plan/decisions.md#d-026) text index,
+   [D-027](../000-tracedb-master-plan/decisions.md#d-027) feedback,
+   [D-028](../000-tracedb-master-plan/decisions.md#d-028) cache and memory, and
+   [D-029](../000-tracedb-master-plan/decisions.md#d-029) lists and single runs. D-024 went to an M2 fix.
 3. **Feedback filter meaning.** A run with several scores for one key.
-   *Proposed*: `feedback.<key>` = the mean of that run's scores for the key (LangSmith-style
-   `feedback_key` / `feedback_score` pairs map onto it).
+   *Settled*: `feedback.<key>` = the mean of that run's scores for the key (LangSmith-style
+   `feedback_key` / `feedback_score` pairs map onto it). Built.
 4. **Batch b figures and timing.** 2.0% / p95 9 s / $4.07; batch a ends now − 30 h, batch b now − 6 h; M2 checks
    select by batch tag instead of "last 12 h".
-   *Proposed as is.*
+   *Settled as is.* Built (the demo checks them).
 5. **Group by a metadata key.** It parses `attrs` JSON per row; the spike may show it's too slow at 2M rows.
    *Decided (T052 spike)*: read only the key's value from the `attrs` text per row (322 ms at 1.8M rows; a full
    parse is 4 s); no promoted `group_keys` column (research M3-R4).
@@ -552,10 +564,11 @@ rejected per part; no word positions (c); branch `003-…` from the 002 tip.
    *Decided (T052 spike)*: reuse D-023's merged-state cache (9 s → 17 ms for 202k runs; first fill 9 s). If grouped p50 still misses 1 s, report it in the bench and pull
    M4's compaction trigger forward rather than loosening the target.
 7. **Backfill of M2 files.**
-   *Proposed*: yes, in the background when idle (unit 6). It can be cut without breaking correctness (scan
-   fallback).
+   *Settled*: yes, in the background when idle (unit 6). It can be cut without breaking correctness (scan
+   fallback). Built.
 8. **Stats line syntax** (tracedb's own, not LangSmith's).
-   *Proposed*: `by <key>[, <key>] | <metric>, …`, as in the filter contract.
+   *Settled*: `by <key>[, <key>] | <metric>, …`, as in the filter contract. Built.
 9. **CI bench capacity.** The 2M run's time and disk on the CI runner aren't known.
-   *Proposed*: 200k smoke on PRs, 2M on `main` and nightly. If the runner can't hold 2M, run it on the reference
-   laptop before each milestone and post the table.
+   *Settled*: 200k smoke on PRs, 2M on pushes to `main`/`master` and nightly. If the runner can't hold 2M, run it
+   on the reference laptop before each milestone and post the table. Built in `ci.yml`; the full 2M run itself moved
+   to the backlog (D3-1).

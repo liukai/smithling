@@ -61,6 +61,9 @@ A view: root runs that share a thread_id, ordered by start_time.
 
 It arrives with SDK traffic (`feedback.{id}` multipart parts) or through FR-020. It's stored as its own event stream
 and joined to runs at query time.
+*Superseded by [D-027](decisions.md#d-027) (M3)*: it arrives mainly as `POST /feedback` JSON (and `PATCH /feedback/{id}`);
+multipart `feedback.{id}` parts go to the same store. It is stored in the catalog's `feedback` table keyed by `run_id`
+(not a WAL event stream), and joined to runs at read time; feedback whose run isn't found is listed as orphaned.
 
 ## Project
 name (unique), created_at. Retention is in the backlog (B1).
@@ -69,3 +72,7 @@ name (unique), created_at. Retention is in the backlog (B1).
 id (ulid), project, kind {core, payload, bloom}, path, min/max start_time, min/max trace_id, row_count, tier {T0, T1, T2},
 state {active, tombstoned}, created_at. A swap is atomic: new segments become `active` and old ones become `tombstoned`
 in one transaction.
+*As built (M3, `crates/storage/src/metastore.rs`)*: one `segments` row per flush with `core_path`, `payload_path`,
+`fts_path`/`fts_bytes`, min/max start key, min/max trace_id, `min_seq`/`max_seq`, `row_count`, `needs_merge_rows`,
+byte sizes, `tier`, `state`, `created_at`; next to it `field_stats`, `state` (`schema_version`, `flushed_seq`),
+`dedup_keys` and `feedback`. Swaps, `tombstoned` and a `projects` table come with M4 compaction and the backlog.

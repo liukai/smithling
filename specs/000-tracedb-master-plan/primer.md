@@ -82,7 +82,7 @@ Each step names the user story that delivers it. The screens are illustrative mo
 
 ```
 $ tracedb serve
-tracedb listening on http://localhost:7070   data: ./.tracedb
+tracedb listening on http://127.0.0.1:7070   data: ./.tracedb
 
 $ export LANGSMITH_ENDPOINT=http://localhost:7070
 $ python run_eval.py --batch 2026-11-05-a        # unchanged agent code
@@ -115,7 +115,7 @@ failing `fetch_url` step loads its full 40 KB input and output in a side panel.
 
 ```
  name         runs   error rate   p50      p95     tokens    cost
- fetch_url    1,840  14.0 %       1.1 s    31.0 s  —         —
+ fetch_url      300  14.0 %       1.1 s    31.0 s  —         —
  web_search   1,210   0.4 %       0.7 s     1.9 s  —         —
  summarize      402   1.2 %       2.8 min   6 min  2.1 M     $3.02
  ...                                                          batch total: $4.12
@@ -130,8 +130,8 @@ failing `fetch_url` step loads its full 40 KB input and output in a side panel.
 
 ### Afternoon: rerun and compare (Story 5)
 
-After a retry/backoff fix, `batch=2026-11-05-b` runs and the two batches' aggregates appear side by side.
-`fetch_url` error rate goes from 14% to near zero.
+After a retry/backoff fix, `batch=2026-11-06-b` runs and the two batches' aggregates appear side by side.
+`fetch_url` error rate goes from 14% to 2% (p95 31 s → 9 s).
 
 ### Variant: zero instrumentation (Story 10)
 
@@ -145,4 +145,5 @@ and what did the agent do before that?"
 ### The done-check, in one line
 
 A single demo command replays this whole scenario on generated data with planted failures, asserts the expected counts
-(14, 23, 31, 37 …), and checks the response-time targets. If every assertion passes, v0 is done.
+(14, 23, 31, 37 …); a separate bench command (`tracedb bench --check`) checks the response-time targets. If every
+assertion passes on both, v0 is done.

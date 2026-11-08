@@ -1,7 +1,9 @@
 # Design: M2 — Durable storage + query builder
 
-**Status**: Draft for review (before implementation) · **Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
-**Starter guide (pre-code)**: [starter-guide.md](starter-guide.md) · **Parquet + DataFusion primer**: [parquet-datafusion-primer.md](parquet-datafusion-primer.md) · **Builds on**: [M1 design](../001-m1-see-agent-trace-live/design.md) ·
+**Status**: Built (M2 closed at `c7595c6`); the design as reviewed before implementation, with notes where the code
+differs ([decision log](../000-tracedb-master-plan/decisions.md): D-012–D-024 in M2, D-025–D-029 in M3) ·
+**Spec**: [spec.md](spec.md) · **Plan**: [plan.md](plan.md) ·
+**Starter guide**: [starter-guide.md](starter-guide.md) · **Parquet + DataFusion primer**: [parquet-datafusion-primer.md](parquet-datafusion-primer.md) · **Builds on**: [M1 design](../001-m1-see-agent-trace-live/design.md) ·
 **Master design**: [design-notes.md](../000-tracedb-master-plan/design-notes.md)
 
 ## 1. What this design has to achieve
@@ -27,8 +29,8 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
                ┌──────▼──────────────┐      ┌──────▼──────────────────────────▼──────┐
                │ Ingest service      │      │ Query service                           │
                │  writer (one thread)│      │  filter text ⇄ AST · planner            │
-               │  WAL · dedup · seq  │      │  DataFusion: prune → scan → merge →     │
-               │  ┌───────┐ ┌──────┐ │fresh │   filter → order → page                 │
+               │  WAL · dedup · seq  │      │  DataFusion: prune → scan; ours: merge →│
+               │  ┌───────┐ ┌──────┐ │fresh │   filter → order → page  (D-017)        │
                │  │active │ │frozen│─┼─────▶│  live views: re-query changed traces    │
                │  │memtbl │ │memtbl│ │ scan │  field catalog reads                    │
                │  └───────┘ └──┬───┘ │      └──────▲───────────────────▲──────────────┘
@@ -37,7 +39,7 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
                       │ write files, then register │                    │
                ┌──────▼────────────────────────────┴────────────────────┴──────────────┐
                │ storage crate:  ObjectStore (local FS | S3)   Metastore (SQLite | PG)  │
-               │                 SegmentFormat (Parquet)       Cache (memory LRU)        │
+               │                 SegmentFormat (Parquet)       Cache (memory LRU, M3)    │
                └───────────────────────────────────────────────────────────────────────┘
    ./.tracedb/wal/*.wal (local)    ./.tracedb/data/<project>/<day>/seg-*.parquet    ./.tracedb/meta.sqlite
 ```
@@ -60,20 +62,22 @@ It keeps M1's promises (confirm after fsync, visible within 1 s) and its one-wri
 |---|---|---|---|---|---|
 | 1 | **`model`** | Types, merge rule, derive, validation; **filter AST, parser, printer** (no I/O) | `merge`, `validate`, `derive`; `parse_filter(&str) -> Result<Expr, ParseError>`, `print(&Expr)` | run schema, filter language | + filter language |
 | 2 | **HTTP layer** | Wire formats ↔ model; routes; serves UI from embedded copy or `--ui-dir` | [contracts/http-api.md](contracts/http-api.md) | API servers | + `/api/query`, `/api/fields`, query-aware `/api/tail`; tail loop moves out |
-| 3 | **Ingest service** | Writer (as M1) + memtable swap + flusher + WAL trimming + write slowdown | `accept(items)`, `fresh_scan(scope) -> RecordBatch`, `subscribe()` | ingestion service | + freeze/flush/trim; identity check before WAL |
+| 3 | **Ingest service** | Writer (as M1) + memtable swap + flusher + WAL trimming + write slowdown | `accept(items)`, `fresh_scan(scope) -> RecordBatch`, `subscribe()` (built: `Ingest::mem()`, `multi_version()`, `subscribe()`; no `fresh_scan`) | ingestion service | + freeze/flush/trim; identity check before WAL |
 | 4 | **WAL** | Append-only log; replay from `flushed_seq` | `append`, `sync`, `replay_from(seq)`, `trim(through_seq)` | WAL on ingestion node | + trim, replay-from |
 | 5 | **Memtables** | Active (mutable, writer only) and frozen (immutable `Arc`, being flushed) | `apply`, `freeze() -> Arc<Frozen>` | memtable (×2) | was the whole run store |
 | 6 | **Flusher** | Frozen memtable → core + payload Parquet per project → register → field stats → trim WAL | background thread; `flush(Arc<Frozen>)` | flush | new |
-| 7 | **`storage`** crate | `ObjectStore`, `Metastore`, `SegmentFormat`, `Cache` traits + v0 implementations | [data-model.md §5–6](data-model.md) | object storage, metastore, Vortex files, SSD cache | new |
-| 8 | **Query service** | Filter → plan over pinned files ∪ fresh memtable rows; merge-on-read; tree filters; cursor paging; trace and run lookups; field catalog reads; live views | `query(Query) -> Page`, `trace(id)`, `run(id, include)`, `fields(scope)`, `values(scope, path)`, `tail(Query) -> Stream<TailMsg>` | query service | DataFusion; owns live views |
+| 7 | **`storage`** crate | `ObjectStore`, `Metastore`, `SegmentFormat`, `Cache` traits + v0 implementations (no `Cache` in M2: [D-013](../000-tracedb-master-plan/decisions.md#d-013)) | [data-model.md §5–6](data-model.md) | object storage, metastore, Vortex files, SSD cache | new |
+| 8 | **Query service** | Filter → plan over pinned files ∪ fresh memtable rows (DataFusion prunes and pre-filters; merge, filter and tree conditions in our code, [D-017](../000-tracedb-master-plan/decisions.md#d-017)); merge-on-read; tree filters; cursor paging; trace and run lookups; field catalog reads; live views | `query(Query) -> Page`, `trace(id)`, `run(id, include)`, `fields(scope)`, `values(scope, path)`, `tail(Query) -> Stream<TailMsg>` | query service | DataFusion; owns live views |
 | 9 | **UI** | Query panel ↔ text, chips, field browser, Samples + Table views, click-to-filter, live toggle, links | consumes the HTTP API | LangSmith UI | + query builder |
 | 10 | **CLI** | `serve` (+ storage flags), `seed`, `demo`, `query` | [contracts/cli.md](contracts/cli.md) | — | + `demo`, `query` |
 
-Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`. `compact` waits for M4.
+Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`. `compact` waits for M4. (Since
+the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `tools` (seed, scenario, demo, query CLI, bench) and
+`tracedb` (the binary).)
 
 **Boundary rules** (unchanged in spirit from M1):
 - `query` depends on `model`, `storage`, and two read-only traits exported by `ingest` (`Fresh`, `Changes`); never on
-  ingest internals.
+  ingest internals. (Built without traits: `query` reads `Ingest::mem()`, `multi_version()` and `subscribe()`.)
 - `ingest` depends on `model` and `storage`; it knows nothing about HTTP, DataFusion plans or the UI.
 - Only `storage` knows file paths, Parquet, SQL or S3. Everything above sees traits.
 - The HTTP layer is the only place that knows LangSmith field names *and* the only place that knows SSE.
@@ -84,10 +88,11 @@ Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`
 - **Can**: parse the LangSmith filter grammar subset plus tracedb's dotted JSON paths into an AST, with error
   positions; print an AST back to canonical text; merge two run *versions* (not only event onto state).
 - **Cannot**: run a query (no I/O); full-text `search()` (M3, parse error says "supported from M3"); feedback fields.
+  (M3: both parse.)
 
 #### 2. HTTP layer
 - **Can**: everything M1 does; `POST /api/query`, field endpoints, `GET /api/tail?q=…`; serve UI from `--ui-dir`.
-- **Cannot**: multipart, feedback (M3). It holds no live-view logic any more: it only frames `TailMsg` as SSE.
+- **Cannot**: multipart, feedback (M3; both built in M3). It holds no live-view logic any more: it only frames `TailMsg` as SSE.
 
 #### 3. Ingest service (writer)
 - **Can**: everything M1 does; reject an identity conflict **before** writing it to the WAL, so a retry is rejected
@@ -105,7 +110,7 @@ Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`
 #### 5. Memtables
 - **Can**: hold merged run states (with payloads) for recent events, with M1's indexes (by trace, roots by project);
   freeze in O(1) by swapping a pointer.
-- **Cannot**: hold everything. Default limit: **128 MB** per memtable (configurable). At most one frozen memtable
+- **Cannot**: hold everything. Default limit: **128 MB** per memtable (configurable; M3: 64 MB measured as heap, [D-028](../000-tracedb-master-plan/decisions.md#d-028)). At most one frozen memtable
   exists; a second freeze waits for the flush, and uploads get `429` meanwhile.
 
 #### 6. Flusher
@@ -116,15 +121,16 @@ Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`
 #### 7. `storage`
 - **Can**: put/get/range-read immutable objects on local FS or S3-compatible stores; keep the segment catalog and field
   stats in SQLite or Postgres with the same SQL; write and read Parquet with page indexes and bloom filters; cache
-  footers, bloom filters and hot row groups in memory.
+  footers, bloom filters and hot row groups in memory (M2 built no cache of its own, only DataFusion's metadata cache,
+  [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3 adds a 32 MB `Cache`, [D-028](../000-tracedb-master-plan/decisions.md#d-028)).
 - **Cannot**: rename or overwrite objects (object-storage semantics, constitution V); Vortex (backlog R-4).
 
 #### 8. Query service
 - **Can**: run any M2 query over memtables ∪ files; prune files by project, time and key bloom filters; merge
   multi-version runs; evaluate run, root and any-run-in-trace conditions; page with a stable cursor; serve live
   views by re-querying changed traces.
-- **Cannot**: text search, group by, metrics, charts, comparison (M3); progressive early-stop scanning (M3); pick a
-  different plan per user hint.
+- **Cannot**: text search, group by, metrics, charts, comparison (M3); progressive early-stop scanning (M3; lists by
+  start time do stop early since [D-021](../000-tracedb-master-plan/decisions.md#d-021)); pick a different plan per user hint.
 
 #### 9. UI
 - **Can**: build queries with chips (this run / its root / any run in its trace), negate/disable/remove chips, edit as
@@ -134,7 +140,7 @@ Crates in M2: `model`, `storage` (new), `ingest`, `query`, `tracedb`, plus `ui/`
 
 #### 10. CLI
 - **Can**: `tracedb serve --storage … --metastore … --ui-dir …`; `tracedb demo` (M2 checks); `tracedb query '<filter>'`.
-- **Cannot**: `bench`, `tail`, `import` (M3, M5).
+- **Cannot**: `bench`, `tail`, `import` (M3, M5). (M3 built `bench`; `demo` runs the M2 and M3 checks by default.)
 
 ## 4. Key flows
 
@@ -189,11 +195,38 @@ Crash at each point:
 The dedup keys `(run_id, op, body_hash, received_at)` of the flushed events (33 B each, one row per flush) go in the
 same transaction, so a restart rebuilds the window without the WAL. The flush deletes key rows whose newest key is
 older than the window, but keeps the latest flush's (start uses its run ids to rebuild the multi-version set) (D-022).
+M3: start no longer reads run ids from saved keys; a bloom filter of every flushed run id, rebuilt from the files,
+replaces that ([D-025](../000-tracedb-master-plan/decisions.md#d-025)). In memory the window holds 16 B fingerprints, at most 1M ([D-028](../000-tracedb-master-plan/decisions.md#d-028)).
 
-**Triggers**: active ≥ 128 MB, or the oldest event in active is ≥ 10 min old, or shutdown. The 10-minute age limit
-bounds how much the WAL must replay on restart, without creating thousands of tiny files.
+**Triggers**: active ≥ 128 MB, or the oldest event in active is ≥ 10 min old, or unflushed WAL ≥ half its 1 GB
+limit (`maybe_freeze` in [writer.rs](../../crates/ingest/src/writer.rs)). There is no freeze at shutdown: unflushed
+events stay in the WAL and are replayed on the next start. The 10-minute age limit bounds how much the WAL must replay
+on restart, without creating thousands of tiny files. (M3 defaults: 64 MB measured as heap, 2 min, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
 
 ### 4.3 Read path: one query
+
+As built ([D-017](../000-tracedb-master-plan/decisions.md#d-017), [D-021](../000-tracedb-master-plan/decisions.md#d-021)): DataFusion only prunes and pre-filters file scans; merging, the exact filter, root /
+any-run conditions and paging run in our code (`select` in [query/src/lib.rs](../../crates/query/src/lib.rs),
+[scan.rs](../../crates/query/src/scan.rs), [window.rs](../../crates/query/src/window.rs)). The reviewed design had a
+`TableProvider` over a `fresh_scan` batch, a `merge_versions` UDAF and semi-joins; none of those were built.
+
+```
+query(Q):
+  pinned = scan::pin(ingest, scope)              # under the memtable lock: Version (file set) + memtable runs in scope  (R-7)
+  pushed = pushdown::compile(Q.filter) ∧ is_root  # superset only: may keep extra rows, never drops a match
+  for window in start_key windows, in page order  # ~20k rows first, ×4 each next (D-021); one window if count: true
+    rows   = read_core(files in scope, scope ∧ (pushed ∨ needs_merge)) ∪ memtable runs in window
+    multi  = ids marked needs_merge, created by an update, or in the multi-version set
+    rows  += versions_of(multi)                   # their other versions, from every file that may hold one (any project)
+    runs   = merge_group per run id               # M1 merge rule; single-version rows pass as is
+    runs   = runs where eval(Q.filter)            # one evaluator for file and memtable rows
+    runs   = trace_conditions(runs, Q.trace_filter, Q.tree_filter)   # per 2,000 candidates, over their whole traces
+    stop once limit + 1 runs match
+  page = order by (start_time desc, run_id) after cursor, limit; next_cursor; warnings; stats
+  return page (headers only; payloads on demand)
+```
+
+The reviewed pseudo-code, kept for reference:
 
 ```
 query(Q):
@@ -218,6 +251,9 @@ query(Q):
   carry `needs_merge = true`, and only those are grouped. In the scenario that's about 10% of runs (late finishers).
 - **What sets `needs_merge`**: a version started by an update rather than a start (the run's start is elsewhere), or
   the flusher finding the run id in an older file's bloom filter (a run started in one file and updated in the next).
+  (Built without bloom lookups, [D-016](../000-tracedb-master-plan/decisions.md#d-016): `created_by_patch() || mvset.contains(id)` in
+  [flush.rs](../../crates/ingest/src/flush.rs). M3: a second start for a run already on disk joins the set through
+  the writer's filter of flushed ids, [flushed.rs](../../crates/ingest/src/flushed.rs), [D-025](../000-tracedb-master-plan/decisions.md#d-025).)
   When the writer creates such a version in the memtable, it adds the run id to the in-memory *multi-version set*,
   and the query treats **every** row whose run id is in that set as `needs_merge`, including the older file row that
   was written as single-version.
@@ -229,10 +265,13 @@ query(Q):
   run → project map in ingest, and the memtable pin applies the same rule. Only versions whose run is unknown go
   to `""`, which every project's scope reads.
 - **Version lookup**: each candidate file (same time and trace bounds, any project) is read once. Up to 2,000 ids
-  use `run_id IN (…)`, so blooms skip most files; more ids read the file's run ids first, then only the rows it holds.
+  use `run_id IN (…)`, so blooms skip most files; more ids read the file's run ids first, then only the rows it holds
+  ([D-024](../000-tracedb-master-plan/decisions.md#d-024); before it, `IN` scans in 2,000-id chunks over every file). M3: lists take multi-version runs in scope
+  from merged file rows kept across requests, so their file rows aren't scanned ([D-029](../000-tracedb-master-plan/decisions.md#d-029)).
 - **Time pruning uses `start_key`**, the run's own start time taken from the last segment of its `dotted_order`.
   Every version has it, even a late update with no `start_time`, so time pruning never drops a late version.
-- **Tree filters** are semi-joins on `trace_id` (master research R10). `tree_filter` matches *other* runs in the trace,
+- **Tree filters** are semi-joins on `trace_id` (master research R10); built as `trace_conditions` in our code
+  ([D-017](../000-tracedb-master-plan/decisions.md#d-017)). `tree_filter` matches *other* runs in the trace,
   as the SDK documents it; M2 includes the run itself too, which matches the spec's "any run in the same trace".
 - **Stopping early** ([D-021](../000-tracedb-master-plan/decisions.md#d-021)). By start time, the steps above run
   per `start_key` window in page order (sized from file key bounds, row counts and memtable keys; about 20k rows
@@ -255,6 +294,10 @@ run(R, include): same with bloom(run_id); payload columns read only from the pay
 
 The SDK makes run and trace ids as UUIDv7 from `start_time` (SDK 0.14.17 `run_trees.py`), so per-file min/max trace id
 already narrows a lookup to a few files; the bloom filter handles the rest and older SDKs with random ids.
+
+As built in M2, `run(R)` probed every file in scope for the run id and read its payload by filtering the payload file
+on `run_id`, not by `payload_row`. M3 does one `run_id = …` scan for the versions and reads each payload from the
+file of its flush by row number ({D(29)}).
 
 ### 4.5 Live views: re-query the traces that changed
 
@@ -284,6 +327,7 @@ open:
   metastore.open(); read flushed_seq S and the segment list
   delete orphan files (in storage, not in the catalog)
   build multi-version set = run ids of rows with needs_merge = true (one column read per file, cached)
+                                                   # M3 (D-025): every file's run_id + needs_merge, plus the flushed-ids filter
   rebuild dedup from the catalog's saved keys inside the window, then from WAL records inside the window
   replay WAL records with seq > S into the active memtable
   if the WAL still holds records ≤ S (crash before a trim, or a folder from before D-022): save their keys, trim
@@ -291,7 +335,8 @@ open:
 ```
 
 At 2M runs this reads the catalog, one boolean + id column per file, and at most ~10 minutes / 1 GB of WAL: well
-inside the 10 s target (SC-06). An M1 data folder has no metastore: it is created with `flushed_seq = 0`, the WAL replays
+inside the 10 s target (SC-06). (As built in M2, only files with `needs_merge` rows were read; M3 reads every file's
+footer and `run_id` / `needs_merge` columns, with ranged reads, [D-025](../000-tracedb-master-plan/decisions.md#d-025).) An M1 data folder has no metastore: it is created with `flushed_seq = 0`, the WAL replays
 in full, and the first flush moves it to files (M2-FR-20).
 
 ## 5. Data structures and formats
@@ -304,25 +349,31 @@ Sorted by `(trace_id, dotted_order)`; row groups ~64k rows; page indexes on; blo
 | Column group | Columns |
 |---|---|
 | identity | `run_id`, `trace_id`, `parent_run_id`, `dotted_order`, `start_key`, `depth`, `is_root`, `project`, `address` |
-| kind/timing | `name`, `run_type`, `start_time`, `end_time`, `status`, `latency_ms`, `error` (first 1 KB) |
+| kind/timing | `name`, `run_type`, `start_time`, `end_time`, `status`, `latency_ms`, `error` (full text, [D-014](../000-tracedb-master-plan/decisions.md#d-014); first designed as the first 1 KB) |
 | grouping | `tags` (list), `thread_id`, `model`, `input_tokens`, `output_tokens`, `total_tokens` |
-| promoted JSON | `attrs_str: map<path, string>`, `attrs_num: map<path, f64>`, `attrs_bool: map<path, bool>` |
-| bookkeeping | `first_seq`, `last_seq`, `event_count`, `needs_merge`, `present` (bitmask of fields this version set), `payload_row` |
+| JSON objects | `metadata`, `extra`, `dropped`, `outputs_usage` (JSON text) |
+| promoted JSON | `attrs`: one JSON text column of promoted leaves ([D-012](../000-tracedb-master-plan/decisions.md#d-012); first designed as typed maps `attrs_str` / `attrs_num` / `attrs_bool`) |
+| bookkeeping | `first_seq`, `last_seq`, `event_count`, `created_at`, `updated_at`, `needs_merge`, `present` (bitmask of fields this version set), `inputs_bytes` / `outputs_bytes` / `events_bytes`, `payload_row` |
 
-**Payload file** (`seg-<ulid>.payload.parquet`): `run_id`, `inputs`, `outputs`, `events`, `extra`, `metadata` (JSON
-text, zstd). Read only for the step panel and for filters on non-promoted paths.
+**Payload file** (`seg-<ulid>.payload.parquet`): `run_id`, `inputs`, `outputs`, `events` (JSON text, zstd). Read only
+for the step panel and single-run reads (`core_schema` / `payload_schema` in
+[segment.rs](../../crates/storage/src/segment.rs)).
 
-**Promoted JSON.** The flusher copies scalar leaves into the typed `attrs_*` maps so filters never read payloads:
-all of `metadata.*` (depth ≤ 4), and `inputs.*` / `outputs.*` (depth ≤ 3, ≤ 64 leaves per field, strings ≤ 256 bytes).
-`outputs.status_code = 429` and `metadata.prompt_version = "v7"` are both promoted. A filter on a path that wasn't
-promoted (deeper, longer, an array element) still works by reading payload rows of the candidates, with a
-"slow: not indexed" warning.
+**Promoted JSON.** Scalar leaves are promoted once, when an event is applied to the memtable (`promote` in
+[attrs.rs](../../crates/model/src/attrs.rs)), and written to `attrs`, so filters never read payloads: all of
+`metadata.*` (depth ≤ 4), and `inputs.*` / `outputs.*` (depth ≤ 3, ≤ 64 leaves per field, strings ≤ 256 bytes).
+`outputs.status_code = 429` and `metadata.prompt_version = "v7"` are both promoted. Our filter code evaluates `attrs`
+after the scan; DataFusion only gets a superset text match for `eq` on promoted strings (§4.3). A path that wasn't
+promoted (deeper, longer, an array element) is kept as an `unindexed` marker: it matches `eq/neq null`, any other
+comparison is false and adds a `not_indexed{path, runs}` warning
+([D-011](../000-tracedb-master-plan/decisions.md#d-011), [eval.rs](../../crates/model/src/filter/eval.rs)). Payload
+rows are not read for filters (first designed as a payload fallback).
 
 **Present bitmask.** Parquet can't tell "absent" from "null", and the merge rule needs it ("absent never overwrites").
 Because M1 also treats null as absent, the bitmask is only needed for fields where an empty value is meaningful
 (`tags: []`, `metadata: {}`); it records which fields a version set.
 
-**Metastore** (same SQL on SQLite and Postgres): `segments`, `field_stats`, `state(flushed_seq, schema_version)`.
+**Metastore** (same SQL on SQLite and Postgres): `segments`, `field_stats`, `state(flushed_seq, schema_version)`, and `dedup_keys` (D-022). M3 adds `feedback` and `segments.fts_path` / `fts_bytes` (`schema_version` 2).
 
 **Version (in memory)**: `Arc<Version { id, segments: Vec<SegmentMeta>, frozen: Option<Arc<Frozen>> }>`. Queries pin
 one for their whole run. A segment's files may be deleted only when no pinned version references it. M2 never deletes
@@ -392,7 +443,7 @@ in both modes. Automated checks run the demo checks and the crash test against M
 | Metastore unavailable | same as above; queries keep using the last pinned version |
 | Unflushed WAL ≥ 1 GB | `429` until a flush succeeds |
 | Orphan files after a crash | deleted on start (they were never registered) |
-| Corrupt core file (checksum) | the file is skipped by queries and reported in `/healthz`; its data is not in the WAL any more, so this is real loss — flagged loudly (rare; same risk as any database file) |
+| Corrupt core file (checksum) | the file is skipped by queries and reported in `/healthz`; its data is not in the WAL any more, so this is real loss — flagged loudly (rare; same risk as any database file). As built in M2, only a missing file, or an unreadable one with `needs_merge` rows, was caught (at start); otherwise queries over it failed with `500`. M3 checks every file at start and skips damaged files while serving (`skipped_files` warning, `damaged_segments` in `/healthz`; `9a10d84`) |
 | Query over a path with mixed types | compares only matching types; response carries a warning with counts |
 | Field catalog past 10,000 paths | stats stop growing for that segment; the browser shows "incomplete" |
 
@@ -409,6 +460,7 @@ in both modes. Automated checks run the demo checks and the crash test against M
    embeds `ui/dist` if present, else a one-page "UI not built — run `npm run build` in ui/" placeholder. Release
    builds always build the UI first. *Proposed as is.*
 4. **Memtable limit 128 MB, flush age 10 min.** Bigger means fewer files (no compaction until M4) but longer replays.
+   (M3: 64 MB measured as heap, 2 min, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
    *Proposed as is; revisit after measuring file counts at 2M runs.*
 5. **`field:value` short form (R-2).** Not in M2's exit check; add only if LangSmith's UI docs confirm it (can't be
    checked offline here). *Proposed: leave out of M2.*
@@ -421,9 +473,9 @@ in both modes. Automated checks run the demo checks and the crash test against M
 | Same results as run-by-run checking | property test: random runs, random late updates, random flush points → `query` equals a naive filter over fully merged runs | CI |
 | Crash safety incl. flush | crash harness extended: kills during upload, flush write, between write and commit, and during trim; 10 rounds | CI |
 | Restart ≤ 10 s at 2M runs | restart test (ignored by default, run in CI release job) | CI |
-| No pause during flush | latency test: p99 upload latency during a flush ≤ 1 s, ≥ 5k events/s | CI release job |
+| No pause during flush | latency test: p99 upload latency during a flush ≤ 1 s, ≥ 5k events/s (M3: `sustains_20000_events_per_second_while_querying`) | CI release job |
 | Pinned versions | test-only swap during a long scan returns the same rows | CI |
-| Bloom filters help | bench: files opened per trace lookup with vs without | reported |
+| Bloom filters help | bench: files opened per trace lookup with vs without (removed in M3 when `bench_m2.rs` became a wrapper around `tracedb bench`, `7e02feb`) | reported |
 | Filter language | parser/printer round-trip property test; error-position golden tests | CI |
 | Live views | e2e: tree-condition live view gets a root when a child errors; `Left` when a run stops matching | CI |
 | Retry of a rejected item | ingest test: conflict → rejected; identical retry → rejected again | CI |
@@ -438,11 +490,11 @@ in both modes. Automated checks run the demo checks and the crash test against M
 | Immutable columnar segments on object storage | Parquet core + payload files on `object_store` | Vortex → Parquet: reason (b), behind `SegmentFormat` |
 | Postgres metastore | SQLite locally, Postgres in cloud mode | reason (a), behind `Metastore` |
 | Merge-on-read across segments | yes, with a single-version fast path | — |
-| Query fresh data on the ingestion node | `fresh_scan` of active + frozen memtables | one process: reason (a) |
+| Query fresh data on the ingestion node | `fresh_scan` of active + frozen memtables (built: memtable runs copied when the `Version` is pinned, `scan::pin`) | one process: reason (a) |
 | Late materialization of payloads | payload file read only on demand | — |
 | Pruning by metastore bounds + file statistics | project/time from metastore; row-group stats; bloom filters on ids (R-9) | — |
 | Pinned readers during swaps | `Arc<Version>` (R-7) | RocksDB idea; needed before M4 compaction |
 | Compaction | **none yet** | M4 |
 | Inverted index / text search | **none yet** | M3 (scan + bloom), custom index in backlog |
-| Progressive querying | **none yet** | M3 |
-| SSD cache | in-memory `Cache` (footers, blooms, hot row groups) | reason (a) |
+| Progressive querying | **none yet** (lists by start time stop early, [D-021](../000-tracedb-master-plan/decisions.md#d-021)) | M3 |
+| SSD cache | in-memory `Cache` (footers, blooms, hot row groups); not built in M2, DataFusion's metadata cache only ([D-013](../000-tracedb-master-plan/decisions.md#d-013)); M3: 32 MB `Cache` ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) | reason (a) |

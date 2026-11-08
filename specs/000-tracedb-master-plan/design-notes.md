@@ -42,7 +42,7 @@ Multi-tenant auth, HA/replication, evaluation runners, prompt playground, horizo
 | Deletion/upgrade vectors in metastore; rewrite at compaction | same | same |
 | Time-tiered compaction | same (small tiers for recent data, large for old) | same |
 | Late materialization of large payloads | core rows + separate payload files with pointers | same |
-| Custom inverted index for object storage (term zones, chunked postings) | scan + per-segment bloom behind a `TextIndex` interface; custom index is backlog (§6) | custom index from backlog, range reads on S3 |
+| Custom inverted index for object storage (term zones, chunked postings) | ~~scan + per-segment bloom~~ per-segment index (term zones, chunked postings, no word positions) behind the `TextIndex` trait, built in M3 ([D-026](decisions.md#d-026), §6) | same index, range reads on S3 |
 | Progressive querying (newest segments first, early stop) | same | same |
 
 SmithDB numbers to compare against (prod, cloud scale), at P50 / P99: trace tree 92ms / 595ms, single run 71ms / 358ms,
@@ -55,21 +55,23 @@ the interfaces below, never through shared mutable state, so each can later beco
 
 | Service | Owns | Provides |
 |---|---|---|
-| **Ingest** | WAL, memtable, flush | `accept(batch) -> ack`; `fresh_scan(filter)` for data not yet in segments |
+| **Ingest** | WAL, memtable, flush | `accept(batch) -> ack`; `fresh_scan(filter)` for data not yet in segments (as built: a pinned snapshot of the memtables, read by query's own code, [D-017](decisions.md#d-017)) |
 | **Query** | planning, merge-on-read, progressive query | runs/traces/threads/search/stats APIs; reads segments + Ingest's `fresh_scan` |
 | **Compaction** | tiered merges, segment swaps | background only; reads and writes segments, swaps them atomically in the metastore |
 
 Cloud path: Compaction splits into one **scheduler** plus scalable **workers**, and the cluster manager becomes its own
 service. Self-hosted SmithDB runs five services (roadmap R-6). Locally they all stay in one process.
 
-Shared storage interfaces (one simple v0 implementation each):
+Shared storage interfaces (one simple v0 implementation each). *As built (M3)*: only `TextIndex` is a Rust trait;
+`ObjectStore` is the `object_store` crate's trait, wrapped by storage's `Store`; `Metastore` and `Cache` are concrete
+structs; there is no `SegmentFormat` trait (Parquet is used directly). The services are crates without service traits.
 
 | Interface | v0 implementation | SmithDB / cloud implementation |
 |---|---|---|
 | `ObjectStore` | local filesystem | S3/GCS/Azure |
 | `Metastore` | SQLite | Postgres |
 | `SegmentFormat` | Parquet | Vortex (backlog) |
-| `TextIndex` | scan + per-segment bloom | custom inverted index (backlog) |
+| `TextIndex` | ~~scan + per-segment bloom~~ per-segment inverted index, no positions (M3, D-026) | same, plus word positions if needed |
 | `Cache` | in-memory LRU | memory + local SSD tier |
 
 ## 3. Data model
@@ -99,18 +101,25 @@ RunEvent {
 ### 3.2 Physical layout
 ```
 .tracedb/
-  meta.sqlite                         # segments, delete vectors, projects
+  meta.sqlite                         # segments, field_stats, state, dedup_keys, feedback (§3.3)
   wal/<ts>.wal                        # append-only, fsync per batch
   data/<project>/<yyyy-mm-dd>/
     seg-<ulid>.core.parquet           # small columns, sorted by (trace_id, dotted_order)
     seg-<ulid>.payload.parquet        # run_id, inputs, outputs, events (zstd)
-    seg-<ulid>.fts                    # backlog: inverted index sidecar
+    seg-<ulid>.fts.dict.parquet       # text index: terms, sorted, page index as term zones (M3, D-026)
+    seg-<ulid>.fts.post               # text index: chunked postings (payload row numbers)
 ```
 Core rows carry `payload_seg` + `payload_row` pointers. List and filter queries never touch payload files.
 
 ### 3.3 Metastore tables
 `segments(id, project, path, min_time, max_time, min_trace_id, max_trace_id, row_count, tier, state, created_at)`
 `delete_vectors(segment_id, roaring_bitmap)` · `upgrades(segment_id, row, patch_json)` · `projects(name, ttl_days)`
+
+*As built (M3, `crates/storage/src/metastore.rs`)*: `segments(id, project, core_path, payload_path, fts_path, fts_bytes,
+min/max_start_key, min/max_trace_id, min/max_seq, row_count, needs_merge_rows, core_bytes, payload_bytes, tier, state,
+created_at)` · `field_stats(segment_id, path, type, …)` · `state(schema_version, flushed_seq)` · `dedup_keys(flushed_seq,
+newest_at, keys)` · `feedback(id, run_id, …)`. `delete_vectors` and `upgrades` come with M4 compaction / backlog B1;
+`projects` with retention (B1).
 
 ## 4. Ingestion
 
@@ -132,7 +141,9 @@ Endpoints (all accept batches):
   `post.{run_id}.inputs|outputs|events` (big fields, separate parts), `attachment.{run_id}.{name}` (binary), `feedback.{id}`.
   The client may merge a post+patch for the same run before sending. Every run must carry `trace_id` and `dotted_order`.
 - Optional zstd-compressed multipart (`Content-Encoding: zstd`). It appears to be opted into via the server's
-  info/flags, so we don't advertise it in v0. *Verify.*
+  info/flags, so we don't advertise it in v0. *Verify.* *Superseded by [D-030](decisions.md#d-030)*: verified, and
+  `/info` now sends `instance_flags.zstd_compression_enabled: true` with `use_multipart_endpoint: true`; multipart
+  decodes zstd (fixtures `sdk-0.14.17-multipart-zstd`). Attachment parts are rejected per part ([D-031](decisions.md#d-031)).
 - Single-run `POST /runs` and `PATCH /runs/{id}` exist as older or fallback paths.
 - Run fields: `id, trace_id, parent_run_id, dotted_order, name, run_type, start_time, end_time, inputs, outputs, error,
   events, tags, extra` (metadata lives in `extra.metadata`), `session_name` (= project), `serialized`, `reference_example_id`.
@@ -144,16 +155,24 @@ Endpoints (all accept batches):
   zstd is used only for multipart and only if `/info` sets `instance_flags.zstd_compression_enabled`; `RunTree.patch`
   still re-sends full `events`. The SDK retries `408, 425, 429, 500, 502, 503, 504` and honours `Retry-After`.
 - Feedback: `POST /feedback` JSON whenever `/info` has an empty `version` (tracedb's), so that is the default; a `feedback.{id}` multipart part only with a versioned `/info` ([D-027](decisions.md#d-027)).
-- The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (M5) is a cheap add-on.
+- The SDK also has an OTel mode that skips `/info`. That's another reason OTLP ingest (backlog, outside v0) is a cheap add-on.
 - Test approach: run the real SDK against tracedb in CI, recording requests as golden files; one fixture set per pinned SDK version. Pins: Python **0.14.17** (current) and **0.8.18** (older agents still run it). JS: pin when JS fixtures are recorded.
 
 Write path: validate → assign `event_seq` → append to WAL → insert into memtable (Arrow builders keyed by project) → ack.
+*As built*: the memtable holds merged run states, not Arrow builders; flush defaults are 64 MB measured as heap or 2 min
+(`--memtable`, `--flush-age`; [D-028](decisions.md#d-028); M2 used 128 MB of JSON or 10 min).
 Flush when the memtable passes 64 MB or 5 s → sort by `(trace_id, dotted_order, event_seq)` → write core + payload Parquet →
 register in metastore → truncate WAL. Recovery on startup = replay WAL.
 
 ## 5. Query
 
 ### 5.1 API
+*Superseded*: the real API is in [003 contracts/http-api.md](../003-m3-search-aggregates-speed/contracts/http-api.md). Routes
+(`crates/server/src/lib.rs`): `POST /api/query` (filters, incl. `search(…)`), `POST /api/aggregate`,
+`GET /api/aggregate/stream`, `GET /api/traces/{trace_id}`, `GET /api/runs/{run_id}`, `GET /api/fields`,
+`GET /api/fields/values`, `GET /api/feedback`, `GET /api/roots`, `GET /api/projects`, `GET /api/tail`. Threads (M4) and
+`POST /sql` are not built. The original table, kept for history:
+
 | Endpoint | Pattern |
 |---|---|
 | `GET /traces/{trace_id}` | tree load: core rows in dotted order; payloads on demand |
@@ -175,24 +194,31 @@ trace_filter: eq(status,"error")              -- predicate on the ROOT run
 tree_filter:  search("rate limit")            -- ANY run in the same trace matches
 ```
 The DSL compiles to a DataFusion `LogicalPlan`. `tree_filter` becomes a semi-join on `trace_id`.
+*Superseded by [D-017](decisions.md#d-017)*: DataFusion prunes and scans files; merging, the exact filter and root /
+any-run conditions run in query's own code on merged runs. There is no `TableProvider` and no semi-join plan.
 
 ### 5.3 Execution techniques (copied from SmithDB)
 - **Pruning**: the metastore picks segments by project and time range, then trace_id bounds. Parquet row-group statistics and
   page indexes handle the rest.
 - **Progressive querying**: for `ORDER BY start_time DESC LIMIT n`, walk segments newest-first in time windows, stream
   results, and stop once `n` rows are found and no older window can beat them. This replaces sort-everything-then-limit.
-- **Fresh data**: the plan is `UNION(memtable_scan, segment_scan)` followed by a merge-by-run_id for uncompacted events.
+- **Fresh data**: the plan is `UNION(memtable_scan, segment_scan)` followed by a merge-by-run_id for uncompacted events
+  (as built: a pinned memtable + file set, merged in query's own code, D-017).
 - **Late materialization**: project only core columns, then fetch payloads by pointer for the final `n` rows.
 - **Delete vectors**: applied as a row filter at scan time.
 - **Cache**: a `Cache` interface; v0 implementation is an in-memory LRU for file footers and hot row groups (stands in for SmithDB's SSD cache). A disk tier can be added behind the same interface for cloud.
 
 ## 6. Full-text search
-- **v0**: substring/token scan of payload files, limited to segments that pass a per-segment **bloom filter on tokens**.
-  This is fine for laptop-scale data (≤ a few GB).
-- **Backlog** (the interesting part, following SmithDB): a per-segment `.fts` sidecar behind the same `TextIndex` interface
-  - terms stored in row groups with **min/max term zones**, so a lookup reads one small block;
-  - postings and positions **chunked apart from the term dictionary**, fetched with range reads (S3-friendly, no huge allocations);
-  - postings reference `(run_id, field)` and feed back into DataFusion as a run_id filter.
+- ~~**v0**: substring/token scan of payload files, limited to segments that pass a per-segment bloom filter on tokens.~~
+  *Superseded by [D-026](decisions.md#d-026)*: Parquet blooms match whole values, not words, so the scan stayed too slow.
+- **v0 (built in M3)**, following SmithDB: each flush writes a per-segment sidecar behind the `TextIndex` trait
+  (`crates/storage/src/fts.rs`)
+  - `seg-<ulid>.fts.dict.parquet`: one row per `(term, field)` (field = inputs, outputs or error), sorted, small pages
+    with the page index as **min/max term zones**, so a lookup reads one small block;
+  - `seg-<ulid>.fts.post`: postings (payload row numbers) **chunked apart from the term dictionary**, fetched with range
+    reads (S3-friendly, no huge allocations);
+  - **no word positions**: a phrase is checked against the payload text of the candidate rows (staged; revisit if
+    text-search p99 misses).
 
 ## 7. Compaction & lifecycle
 - **Tiers**: T0 (memtable flushes, ~seconds of data) → T1 (merge into ~15-minute files) → T2 (daily, ~256 MB files).
@@ -211,9 +237,12 @@ A static SPA embedded in the binary (`rust-embed`) at `http://localhost:7070`:
 ## 9. CLI
 `tracedb serve [--data ./.tracedb] [--port 7070]` · `tracedb tail [--filter …]` · `tracedb query '<dsl>'` ·
 `tracedb sql '<sql>'` · `tracedb import claude-code|jsonl <path>` · `tracedb seed --traces 10000` · `tracedb bench`
+*As built (M3)*: `serve`, `seed`, `query`, `demo`, `bench`; no `tail`, `sql` or `import` yet. CLI contract:
+[003 contracts/cli.md](../003-m3-search-aggregates-speed/contracts/cli.md).
 
 ## 10. Demo script & done-check
-`make demo`:
+`make demo` (*as built*: there is no Makefile; `tracedb demo --seed 7` loads the scenario and checks the counts, and
+`tracedb bench --check` checks the speed targets):
 1. `tracedb serve` starts a fresh data dir.
 2. `tracedb seed --traces 20000` generates synthetic agent traces (depth 3–8, 20–300 spans, ~5% errors, 10% with
    end events delayed 30–120 s, threads of 2–10 traces, payloads 1–50 KB) through `/runs/batch`.
@@ -230,6 +259,9 @@ A static SPA embedded in the binary (`rust-embed`) at `http://localhost:7070`:
 
 ## 11. Milestones
 
+*Superseded*: the phases of record are in [roadmap.md](roadmap.md#phases) (M3 = search, aggregates, multipart; OTLP and
+the cloud split are backlog, outside v0). The original table, kept for history:
+
 UI first: every milestone ships its browser view and is demoed in the browser (spec.md FR-025). curl/CLI demos are secondary.
 
 | | Scope | Demo |
@@ -245,6 +277,7 @@ UI first: every milestone ships its browser view and is demoed in the browser (s
 ## 12. Crates
 `tokio`, `axum`, `datafusion`, `arrow`, `parquet`, `object_store`, `sqlx` (sqlite + postgres), `serde_json`, `uuid`, `ulid`,
 `roaring`, `moka` (cache), `rust-embed`, `clap`, `opentelemetry-proto` (M5). Backlog: `vortex`.
+*As built*: no `roaring` or `opentelemetry-proto` yet (no delete vectors, no OTLP).
 Pin `object_store` to the **0.13** line: `vortex-datafusion` 0.91 (DataFusion 55) needs `object_store` 0.13.2, and the
 latest is 0.14.2. Staying on 0.13 keeps the Vortex swap open (roadmap R-4).
 
@@ -256,5 +289,6 @@ spec.md's Assumptions set defaults for 1 (compat first), 2 (importer is P2), 3 (
 2. **Claude Code importer priority**: pull it into M3 as the "local agent" hook?
 3. **Merge semantics**: last-write-wins per field vs. append-only fields (e.g. `events`, streamed tokens)?
 4. ~~**FTS**: custom index or tantivy?~~ Decided 2026-11-05: scan + bloom in v0, custom index in backlog; tantivy dropped.
+   *Superseded by [D-026](decisions.md#d-026)*: the custom index (no positions) was built in M3.
 5. **UI stack**: plain TS + Vite SPA, or reuse an existing OSS trace viewer?
 6. ~~**Exact LangSmith wire format**~~ Checked 2026-11-05 against SDK 0.14.17 (see §4); re-check multipart against the pinned SDK when M3 starts.

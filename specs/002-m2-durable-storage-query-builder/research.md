@@ -8,7 +8,7 @@ source on 2026-11-06.
 - **Decision**: `datafusion` **55.2** (default features off; `parquet`, `nested_expressions`, `datetime_expressions`),
   which brings `arrow` / `parquet` **59.3** and `object_store` **0.13.2**. `sqlx` **0.9** (`sqlite`, `postgres`,
   `runtime-tokio`), `ulid` 3, `moka` 0.12 for `Cache`. Resolved in a scratch crate: DataFusion 55.2 → arrow 59.3.2,
-  parquet 59.3.2, object_store 0.13.2.
+  parquet 59.3.2, object_store 0.13.2. (M2 built no `Cache`, [D-013](../000-tracedb-master-plan/decisions.md#d-013); M3's `Cache` uses moka, [D-028](../000-tracedb-master-plan/decisions.md#d-028).)
 - **Why**: DataFusion 55 is the line `vortex-datafusion` 0.91 supports, and it pins `object_store` 0.13, exactly the
   pin backlog R-4 asked for. Taking arrow/parquet through DataFusion avoids two arrow versions in one binary (latest
   standalone arrow is 60.1).
@@ -52,6 +52,9 @@ source on 2026-11-06.
 - **Considered**: a JSON text column with a JSON UDF (reads big strings for every filter); one column per discovered
   path (schema changes every flush; DataFusion handles it but the catalog and files get messy); the
   `datafusion-functions-json` crate (still parses text per row).
+- **Superseded by [D-012](../000-tracedb-master-plan/decisions.md#d-012):** one JSON text column `attrs`, evaluated by our filter code after the scan (maps get
+  no row-group or page pruning anyway). Unpromoted paths don't read payloads: they report `not_indexed`
+  ([D-011](../000-tracedb-master-plan/decisions.md#d-011)).
 
 ## M2-R7. Filter language
 - **Decision**: LangSmith's grammar as the canonical text form: `eq neq gt gte lt lte has and or not`, `null`, the
@@ -69,6 +72,10 @@ source on 2026-11-06.
 - **Why**: constitution's architecture constraint (DataFusion + Arrow); the two custom pieces are the SmithDB-specific
   parts (fresh data, merge-on-read).
 - **Considered**: hand-rolled scan loops (fast to start, no joins, no path to M3 aggregates).
+- **Superseded by [D-017](../000-tracedb-master-plan/decisions.md#d-017):** DataFusion prunes, uses blooms and pushes filters into file scans; merging versions,
+  the exact filter, root / any-run conditions and ordering run in our code on the merged runs
+  ([scan.rs](../../crates/query/src/scan.rs), [lib.rs](../../crates/query/src/lib.rs)). No `TableProvider`,
+  `fresh_scan`, UDAF or semi-joins were built.
 
 ## M2-R9. Live views by re-querying changed traces
 - **Decision**: a live view collects changed trace ids per 100 ms tick and re-runs its query restricted to them

@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-06
 
-**Status**: Draft
+**Status**: Built 2026-11-07, passed locally (see the [roadmap](../000-tracedb-master-plan/roadmap.md) STATE)
 
 **Input**: User description: "let's do 3rd milestone, outline what needs to be done." Scope from the
 [roadmap](../000-tracedb-master-plan/roadmap.md) M3 section ("Core demo"), plus the follow-ups and rough edges found
@@ -41,8 +41,9 @@ Answer "is this a pattern, and how bad is it?" at interactive speed. This is **t
   worked (step 13).
 - **It makes the speed claims real.** M2's targets were sized for its own stage (500 ms lists). The master promises
   100 ms filters, 50 ms traces and 500 ms text search at 2M runs, measured on every change, not asserted.
-- **It removes the last setup step.** Today the current LangSmith SDK needs a setting changed to avoid the upload
-  format tracedb doesn't accept. After M3, the endpoint is the only setting.
+- **It removes the last setup step.** Before M3, the current LangSmith SDK needed a setting changed to avoid the
+  upload format tracedb didn't accept. Since M3, `/info` advertises multipart and zstd and both are accepted, so the
+  endpoint is the only setting.
 - **It completes the SmithDB read path.** Text search with an index, late materialization of payloads, progressive
   answers and a cache are the SmithDB pieces M2 left for later.
 
@@ -342,9 +343,9 @@ master text is not repeated.
 
 - 🟢 **SC-01**: On the scenario data, searching `"429 Too Many Requests"` returns exactly 31 runs, all `fetch_url` (master step 7).
 - 🟢 **SC-02**: Batch a grouped by name shows `fetch_url` at 14% errors and p95 31 s, and the batch total cost is $4.12 (step 9); batch a vs batch b appear side by side and overlaid (step 13).
-- 🟠 **SC-03**: At 2M runs (about 5 GB raw JSON) on the reference laptop, medians: trace tree ≤ 50 ms, single run ≤ 50 ms, filtered list ≤ 100 ms, text search ≤ 500 ms, grouped query or chart ≤ 1 s, field and value suggestions ≤ 200 ms; every 99th percentile ≤ 5× its median (master QR-004, QR-008).
+- 🟠 **SC-03**: At 2M runs (about 5 GB raw JSON) on the reference laptop, medians: trace tree ≤ 50 ms, single run ≤ 50 ms, filtered list ≤ 100 ms, text search ≤ 500 ms, grouped query or chart ≤ 1 s, field and value suggestions ≤ 200 ms; every 99th percentile ≤ 5× its median (master QR-004, QR-008). *As built*: `tracedb bench` times text search as three rows (rare phrase, common word, search + filter; 2026-11-07), each held to the 500 ms median; the full 2M run is in the backlog (D3-1).
 - 🟠 **SC-04**: Upload throughput ≥ 20,000 events/s sustained while queries run (QR-005).
-- 🟠 **SC-05**: Idle memory ≤ 200 MB, and data on disk (including the text index) ≤ half the size of the same data as raw JSON (QR-006).
+- 🟠 **SC-05**: Idle memory ≤ 200 MB, and data on disk (including the text index) ≤ half the size of the same data as raw JSON (QR-006). *As built*: the idle part is waived for M3 ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) and left to M4 compaction (D3-2); the disk part stays in the bench verdict.
 - 🟢 **SC-06**: A grouped query over all 2M runs shows a first estimate within 1 s.
 - 🟠 **SC-07**: The demo command passes every check for steps 4–9 and 13 (plus the feedback check) on an empty folder, on local and cloud-style storage, with identical numbers.
 - 🟠 **SC-08**: An unmodified agent on the pinned SDK, with default settings and only the endpoint changed, traces in with zero items reported unsupported.

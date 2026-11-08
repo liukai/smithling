@@ -13,12 +13,12 @@ How to prove each milestone works. Contracts: [http-api](contracts/http-api.md),
 cargo build --release
 ./target/release/tracedb serve --data /tmp/tracedb-demo
 ```
-Expected: it prints `listening on http://localhost:7070`, and the browser shows the empty runs list with
-"point an agent here" instructions.
+Expected: it prints `tracedb listening on http://127.0.0.1:7070   data: /tmp/tracedb-demo`, and the browser shows
+the empty runs list with "point an agent here" instructions.
 
 ## 2. M1: see a trace in the browser
 ```bash
-curl -s localhost:7070/v1/events -d @tests/fixtures/one-trace.json
+./target/release/tracedb seed --traces 1     # one research-agent trace, sent to localhost:7070
 ```
 Expected: the trace appears in the runs list within 1 s. Opening it shows the tree and waterfall, and clicking a run
 shows its inputs and outputs.
@@ -38,7 +38,7 @@ Expected: every check reports PASS, and the command exits with 0.
 
 | Check | Expected |
 |---|---|
-| failing roots, batch a, last 12 h | 14 |
+| failing roots, batch a | 14 |
 | quiet failures (any tool errored) | 23 |
 | search `"429 Too Many Requests"` | 31, all `fetch_url` |
 | `fetch_url` error rate / p95 | 14% / 31 s |
@@ -50,11 +50,12 @@ Then open the browser and repeat the checks by clicking (SC-008).
 
 ## 5. Performance (QR-004/005)
 ```bash
-./target/release/tracedb seed --traces 20000 --data /tmp/tracedb-bench   # about 2M runs
-./target/release/tracedb bench --data /tmp/tracedb-bench
+./target/release/tracedb bench --smoke --check                 # 200k runs: the PR gate
+./target/release/tracedb bench --runs 2000000 --check          # full 2M runs; deferred (roadmap D3-1)
 ```
+`bench` loads its own data (`--data <dir>` keeps it for reuse).
 Expected: a P50/P99 table within the targets: tree and single run ≤ 50 ms, filter ≤ 100 ms, search ≤ 500 ms,
-thread ≤ 150 ms, P99 ≤ 5× P50, and ingest ≥ 20k events/s.
+thread ≤ 150 ms (from M4), P99 ≤ 5× P50, and ingest ≥ 20k events/s. Idle memory is reported, not checked, until M4 (D-028).
 
 ## 6. Durability (QR-003)
 ```bash

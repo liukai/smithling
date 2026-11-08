@@ -49,10 +49,11 @@ string   = '"' { char | escape } '"' ;
 | `tags` | list of string | use `has` |
 | `total_tokens`, `input_tokens`, `output_tokens` | number | |
 | `trace_id`, `run_id`, `parent_run_id` | uuid string | |
-| `metadata.<path>`, `inputs.<path>`, `outputs.<path>` **(tracedb)** | any scalar | promoted paths are fast; others read payloads (`not_indexed` warning) |
+| `metadata.<path>`, `inputs.<path>`, `outputs.<path>` **(tracedb)** | any scalar | promoted paths only; a value that wasn't promoted matches `eq/neq null`, any other comparison is false with a `not_indexed{path, runs}` warning, payloads are not read ([D-011](../../000-tracedb-master-plan/decisions.md#d-011)) |
 
 LangSmith's `feedback_key` / `feedback_score` parse but return `unsupported: feedback is supported from M4`.
-`search(…)` returns `unsupported: search() is supported from M3`.
+`search(…)` returns `unsupported: search() is supported from M3`. (M2; removed in M3: both parse and run, see the
+[M3 filter contract](../../003-m3-search-aggregates-speed/contracts/).)
 
 ## Typing rules
 - Comparisons only match values of the same type. `gte(outputs.status_code, 400)` matches numbers; string values

@@ -40,13 +40,15 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
     for the excerpt. Settled 2026-11-06 as SmithDB difference **(c)**: revisit if text-search p99 misses its target
     or a phrase's candidate set passes ~50k rows.
   - Size estimate: about +12% of today's files, so disk goes from 19% to about 31–35% of the raw JSON (target ≤ 50%).
+    *Measured*: the index is 0.2% of raw JSON on the bench load and 6.9% on prose-like payloads, both under the
+    target ([D-026](../000-tracedb-master-plan/decisions.md#d-026)).
     Phrase latency estimate: 50–200 ms median at 2M runs.
 - **Considered**: tantivy (not in the offline registry; no `object_store` directory, so it can't range-read S3);
   `fst` dictionaries (the whole file must be fetched before a lookup); Parquet bloom filters on payload columns (whole
   values only); scan only (1–3 s); roaring bitmaps for postings (not in the offline registry; delta + bit-pack in
   ~100 lines is enough at segment scale).
 - **Changes a recorded decision**: roadmap 2026-11-05 "custom search index is backlog; v0 uses scan + per-segment
-  bloom". Needs a decision-log entry (D-024 proposed) when this plan is approved.
+  bloom". Logged as [D-026](../000-tracedb-master-plan/decisions.md#d-026).
 
 ## 🟢 M3-R2. Words: Unicode word boundaries, lower case, JSON string and scalar leaves
 - **Decision**: tokenize every string and scalar leaf of `inputs`, `outputs` (JSON) and the `error` text with
@@ -285,7 +287,8 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   ([storage/lib.rs:7](../../crates/storage/src/lib.rs#L7), [D-013](../000-tracedb-master-plan/decisions.md#d-013)).
   **Decision**: a bounded memory `Cache` in `storage` (`moka` 0.12.16, in the offline registry) for Parquet footers,
   page indexes, index pages, postings chunks and payload ranges, default **32 MB** and counted inside the 200 MB.
-  A disk tier (e.g. foyer) is later, behind the same trait. This revisits D-013 (needs a decision-log entry).
+  A disk tier (e.g. foyer) is later, behind the same trait. This revisits D-013 (logged as
+  [D-028](../000-tracedb-master-plan/decisions.md#d-028)).
 - **Idle memory**:
 
   | State | Footprint |
@@ -359,8 +362,8 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   - **Calibration**: a fixed workload (decode one shipped Parquet file 20× + a sort) gives
     `r = runner / reference`, clamped to [1, 3]. `budget = target × r`, and `r` goes in the JSON. A p99 over 5× its
     p50 fails regardless.
-  - **CI**: a 2M-run release job on `main` and nightly, with a step summary; a 200k smoke run on PRs. The 2M
-    runner's time and disk aren't verified yet.
+  - **CI**: a 2M-run release job on pushes to `main`/`master` and nightly, with a step summary; a 200k smoke run
+    on PRs. The 2M runner's time and disk aren't verified yet.
 - **Considered**: criterion (micro-benchmarks, not a P50/P99 table over HTTP); a fixed CI threshold (fails on a
   slow runner for the wrong reason; spec assumption).
 
@@ -392,4 +395,4 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 | `moka` | 0.12.16 | offline registry; was M2-R1's pick, dropped by D-013 | `Cache` (R12) |
 | `proptest` | 1.12.0 | already used | aggregate == naive, tokenizer, multipart round trip |
 | `datafusion` / `parquet` / `object_store` | 55.2 / 59.3.2 / 0.13.2 | unchanged | |
-| `tikv-jemallocator` | 0.7.0 | offline registry (`mimalloc` is not) | returns freed memory (R12), if approved |
+| `tikv-jemallocator` | 0.7.0 | offline registry (`mimalloc` is not) | returns freed memory (R12); approved and built (D-028) |

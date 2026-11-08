@@ -1,13 +1,18 @@
 # M2 code starter guide
 
 How to read the M2 code: what each goal needs and where it lives, the critical parts, and one run traced from
-upload to the query that finds it, with line-level links. It describes the code as built on branch
-`002-m2-durable-storage-query-builder` as of 2026-11-06 (commit `2990136` plus the in-progress dedup-key and
-early-stop changes). If a line number has drifted, search for the function name.
+upload to the query that finds it, with line-level links. It describes the M2 code as built.
+
+**Line links are valid at commit `6e77f12`**, where this guide was written (M2 closed later, at `c7595c6`). M3 changed
+ingest, query and storage heavily, so on today's code many line numbers point elsewhere: read the lines at `6e77f12`
+(`git show 6e77f12:<path>`), or search for the function name. For the code as it is now, see the
+[M3 starter guide](../003-m3-search-aggregates-speed/starter-guide.md). Since the crate split, paths point at the new
+crate locations (`crates/server`, `crates/tools`), while line numbers are as of `6e77f12`, when those files were under
+`crates/tracedb`.
 
 For *why* it is built this way, see [design.md](design.md); for the PR order, [plan.md](plan.md). Where the code
-differs from the design, the [decision log](../000-tracedb-master-plan/decisions.md) says why (D-015 to D-022 are the
-M2 ones). This guide is about *where* things live.
+differs from the design, the [decision log](../000-tracedb-master-plan/decisions.md) says why (D-012 to D-024 are the
+M2 ones; D-023 and D-024 came after this guide; D-025 to D-029 are M3's). This guide is about *where* things live.
 
 **Colour key** (diagrams use the fill colour; tables and headings use the marker):
 
@@ -157,7 +162,7 @@ storage ([D-015](../000-tracedb-master-plan/decisions.md#d-015)).
 |---|---|---|---|---|
 | 1 | 🟢 | [model/src/filter/ast.rs](../../crates/model/src/filter/ast.rs), [eval.rs](../../crates/model/src/filter/eval.rs) | The query language. Everything else builds or consumes `Expr`; `eval` is the only judge | 20 min |
 | 2 | 🟠 | [model/src/merge.rs](../../crates/model/src/merge.rs) (`merge_versions`) | The M1 merge rule, now over stored versions | 10 min |
-| 3 | 🟢 | [ingest/src/memtable.rs](../../crates/ingest/src/memtable.rs) | `Mem` and `Version`: what a reader pins (46 lines) | 5 min |
+| 3 | 🟢 | [ingest/src/memtable.rs](../../crates/ingest/src/memtable.rs) | `Mem` and `Version`: what a reader pins (46 lines in M2) | 5 min |
 | 4 | 🟠 | [ingest/src/writer.rs](../../crates/ingest/src/writer.rs) | Identity check before the WAL; freeze; `429` | 20 min |
 | 5 | 🟢 | [ingest/src/flush.rs](../../crates/ingest/src/flush.rs) | **Critical.** Write → register → trim | 15 min |
 | 6 | 🟢 | [ingest/src/recover.rs](../../crates/ingest/src/recover.rs) | **Critical.** Orphans, multi-version set, replay, dedup window | 20 min |
@@ -238,7 +243,7 @@ disk aren't checked here ([D-009](../000-tracedb-master-plan/decisions.md#d-009)
 
 | Step | Code |
 |---|---|
-| Limits: 128 MB or 10 min per memtable, 1 GB unflushed WAL (`serve --memtable`, `--flush-age`) | [lib.rs:39-61](../../crates/ingest/src/lib.rs#L39), [main.rs:32-40](../../crates/tracedb/src/main.rs#L32) |
+| Limits (M2): 128 MB or 10 min per memtable, 1 GB unflushed WAL (`serve --memtable`, `--flush-age`); M3: 64 MB measured as heap, 2 min ([D-028](../000-tracedb-master-plan/decisions.md#d-028)) | [lib.rs:39-61](../../crates/ingest/src/lib.rs#L39), [main.rs:32-40](../../crates/tracedb/src/main.rs#L32) |
 | Freeze when full, old, or the WAL passes half its limit, and no flush is running | [writer.rs:98-111](../../crates/ingest/src/writer.rs#L98) |
 | Roll the WAL first, so every older file holds only frozen events | [writer.rs:112-117](../../crates/ingest/src/writer.rs#L112) → [wal.rs:159](../../crates/ingest/src/wal.rs#L159) |
 | O(1) swap: active becomes frozen, a fresh active takes uploads | [writer.rs:118-123](../../crates/ingest/src/writer.rs#L118) |
@@ -288,7 +293,8 @@ Where the design moved:
   only its keys (a `dedup_keys` row, [metastore.rs:43-46](../../crates/storage/src/metastore.rs#L43)) and the WAL is
   trimmed right away.
 - **No bloom lookup at flush** ([D-016](../000-tracedb-master-plan/decisions.md#d-016)). `needs_merge` comes from
-  "created by an update" or the multi-version set (Scene 4).
+  "created by an update" or the multi-version set (Scene 4). M3: the writer keeps a filter of flushed run ids, so a
+  second start for a run on disk joins the set too ([D-025](../000-tracedb-master-plan/decisions.md#d-025), [flushed.rs](../../crates/ingest/src/flushed.rs)).
 - **Field stats are summed in memory from the pinned `Version`**, not by SQL
   ([D-020](../000-tracedb-master-plan/decisions.md#d-020)); the catalog stays the durable copy.
 
@@ -314,7 +320,7 @@ flowchart TB
     C["read catalog: flushed_seq S,<br/>segments, stats, keys"]:::new
     O["delete orphan files<br/>(only if the WAL covers S)"]:::new
     X["skip missing / unreadable files"]:::new
-    MV["multi-version set from<br/>needs_merge columns"]:::new
+    MV["multi-version set from<br/>needs_merge columns (M2)"]:::new
     RP["replay WAL seq > S<br/>into ACTIVE"]:::revised
     DD["dedup window: saved keys + WAL"]:::revised
     GO["start writer + flusher, open HTTP"]:::revised
@@ -330,12 +336,12 @@ flowchart TB
 | Read `flushed_seq`, active segments, field stats, saved key sets, and the file listing | [recover.rs:35-43](../../crates/ingest/src/recover.rs#L35) |
 | Orphans = data files not in the catalog. Refuse to delete them if the WAL doesn't reach back to `flushed_seq` (wrong `--metastore`?) | [recover.rs:46-81](../../crates/ingest/src/recover.rs#L46) |
 | A registered file that's missing is left out and reported in `/healthz` `corrupt_segments` | [recover.rs:87-91](../../crates/ingest/src/recover.rs#L87) |
-| Multi-version set: read `run_id` + `needs_merge` of each file that has such rows (an unreadable one is left out) | [recover.rs:92-104](../../crates/ingest/src/recover.rs#L92) → [segment.rs:792](../../crates/storage/src/segment.rs#L792) |
-| Saved dedup keys → window entries and "already flushed" run ids | [recover.rs:124-138](../../crates/ingest/src/recover.rs#L124) → `unpack` [dedup.rs:28](../../crates/ingest/src/dedup.rs#L28) |
+| Multi-version set: read `run_id` + `needs_merge` of each file that has such rows (an unreadable one is left out). M3 reads every file's columns and footer, and rebuilds the flushed-ids filter from them ([D-025](../000-tracedb-master-plan/decisions.md#d-025)) | [recover.rs:92-104](../../crates/ingest/src/recover.rs#L92) → [segment.rs:792](../../crates/storage/src/segment.rs#L792) |
+| Saved dedup keys → window entries and "already flushed" run ids (M3: the flushed-ids filter replaces the latter, [D-025](../000-tracedb-master-plan/decisions.md#d-025)) | [recover.rs:124-138](../../crates/ingest/src/recover.rs#L124) → `unpack` [dedup.rs:28](../../crates/ingest/src/dedup.rs#L28) |
 | Replay: skip `seq ≤ S`; apply the rest through the same `RunStore::apply`; a new state from an update joins the multi-version set | [recover.rs:144-169](../../crates/ingest/src/recover.rs#L144) |
 | Flushed records left by a crash between commit and trim: save their keys, then trim | [recover.rs:174-191](../../crates/ingest/src/recover.rs#L174) |
 | An M1 folder (only `wal/`) gets a fresh catalog with `flushed_seq = 0` | [recover.rs:3](../../crates/ingest/src/recover.rs#L3), [metastore.rs:97-103](../../crates/storage/src/metastore.rs#L97) |
-| Start writer and flusher; the port opens only after this | [lib.rs:444-527](../../crates/ingest/src/lib.rs#L444), [tracedb/src/lib.rs:120-141](../../crates/server/src/lib.rs#L117) |
+| Start writer and flusher; the port opens only after this | [lib.rs:444-527](../../crates/ingest/src/lib.rs#L444), [server/src/lib.rs:120-141](../../crates/server/src/lib.rs#L117) |
 
 M1's torn-tail versus corruption rule for WAL records is unchanged (`replay_file`,
 [wal.rs:262](../../crates/ingest/src/wal.rs#L262)).
@@ -374,7 +380,7 @@ flowchart TB
 | **Prune**: files by project (or unknown project), start-key range, trace-id range | `file_in_scope` [scan.rs:75](../../crates/query/src/scan.rs#L75) |
 | **Scan**: DataFusion reads core files with scope ∧ (pushed ∨ `needs_merge`) | [scan.rs:304-310](../../crates/query/src/scan.rs#L304) → `read_core` [scan.rs:221](../../crates/query/src/scan.rs#L221) |
 | **Multi-version ids**: marked in a file, created by an update, or in the multi-version set | [scan.rs:312-322](../../crates/query/src/scan.rs#L312) |
-| Fetch every version of those, from every file that may hold one (any project), `run_id IN (…)` in chunks; blooms skip most files | [scan.rs:323-341](../../crates/query/src/scan.rs#L323) → `versions_of` [scan.rs:244](../../crates/query/src/scan.rs#L244) |
+| Fetch every version of those, from every file that may hold one (any project), `run_id IN (…)` in chunks; blooms skip most files. Changed by [D-024](../000-tracedb-master-plan/decisions.md#d-024) (`7c5b094`): up to 2,000 ids one `IN` scan, more read each file's run ids first; M3: lists use merged file rows kept across requests ([D-029](../000-tracedb-master-plan/decisions.md#d-029)) | [scan.rs:323-341](../../crates/query/src/scan.rs#L323) → `versions_of` [scan.rs:244](../../crates/query/src/scan.rs#L244) |
 | **Merge**: group by run id, merge versions and their attributes | [scan.rs:343-361](../../crates/query/src/scan.rs#L343) → `merge_group` [scan.rs:365](../../crates/query/src/scan.rs#L365) |
 | **Filter**: one evaluator on merged runs, for file and memtable rows alike | [lib.rs:235-252](../../crates/query/src/lib.rs#L235) → `eval` [eval.rs:25](../../crates/model/src/filter/eval.rs#L25) |
 | **Trace / tree conditions**: for each chunk of 2,000 candidates in page order, re-run `matching` over their whole traces (roots for `trace_filter`, any run for `tree_filter`) and keep traces that match | [lib.rs:356-372](../../crates/query/src/lib.rs#L356) → `trace_conditions` [lib.rs:434-463](../../crates/query/src/lib.rs#L434) |
@@ -399,7 +405,7 @@ Where the design moved:
 | `GET /api/traces/{id}` | [routes/api.rs:243](../../crates/server/src/routes/api.rs#L243) |
 | Scope = one trace id: files pruned by `min/max_trace_id`, then DataFusion uses the `trace_id` bloom | [query/lib.rs:466-472](../../crates/query/src/lib.rs#L466), [scan.rs:66-73](../../crates/query/src/scan.rs#L66), [scan.rs:104-106](../../crates/query/src/scan.rs#L104) |
 | Same merge as Scene 6; child counts computed from the trace; sorted by `dotted_order` (the M1 tree order) | [lib.rs:476-492](../../crates/query/src/lib.rs#L476) |
-| `GET /api/runs/{id}?include=…`: header by run id, then payload from the memtable or payload files, newest version per field | [lib.rs:496-528](../../crates/query/src/lib.rs#L496) → `scan::payload` [scan.rs:391](../../crates/query/src/scan.rs#L391) |
+| `GET /api/runs/{id}?include=…`: header by run id, then payload from the memtable or payload files, newest version per field (M2 probes every file in scope; M3 reads each payload by row number from the file of its flush, [D-029](../000-tracedb-master-plan/decisions.md#d-029)) | [lib.rs:496-528](../../crates/query/src/lib.rs#L496) → `scan::payload` [scan.rs:391](../../crates/query/src/scan.rs#L391) |
 | The UI tree and step panel are M1's | [ui/src/TraceView.tsx](../../ui/src/TraceView.tsx) |
 
 `/api/roots` (M1's list) is now a query: [api.rs:196-234](../../crates/server/src/routes/api.rs#L196).
@@ -454,7 +460,7 @@ The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.tes
 | Without `--url`, start its own server on a temp folder (4 MB memtable) | [demo.rs:90-139](../../crates/tools/src/demo.rs#L90), [demo.rs:156](../../crates/tools/src/demo.rs#L156) |
 | Generate the scenario: 200 batch roots, 14 failing, 23 quiet failures, prompt versions, background traffic | [scenario.rs:65](../../crates/tools/src/scenario.rs#L65), [scenario.rs:193](../../crates/tools/src/scenario.rs#L193) |
 | Load: starts, background until they're in files after two flushes, then late updates into the memtable | [scenario.rs:336-407](../../crates/tools/src/scenario.rs#L336) |
-| Five checks through the real HTTP API, including "checks across memtable and files" | [demo.rs:255-343](../../crates/tools/src/demo.rs#L255) |
+| Five checks through the real HTTP API, including "checks across memtable and files" (since M3 the default is `--checks m2,m3`, 10 checks) | [demo.rs:255-343](../../crates/tools/src/demo.rs#L255) |
 | Pass/fail table; exit 0 / 1 / 2 (not reachable) | [demo.rs:63](../../crates/tools/src/demo.rs#L63) |
 
 ## 5. HTTP status codes in M2
@@ -464,10 +470,10 @@ The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.tes
 | ⚪ | 202 | durable and applied (rejections listed in `rejected[]`) | [routes/ingest.rs:117-121](../../crates/server/src/routes/ingest.rs#L117) |
 | 🟠 | 429 + Retry-After: 1 | queue full; or next memtable full during a flush; or unflushed WAL ≥ 1 GB | [ingest/src/lib.rs:554-560](../../crates/ingest/src/lib.rs#L554), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/server/src/routes/errors.rs#L25) |
 | ⚪ | 503 + Retry-After: 5 | WAL write or fsync failed | [writer.rs:222-234](../../crates/ingest/src/writer.rs#L222) → [errors.rs:26-28](../../crates/server/src/routes/errors.rs#L26) |
-| 🟢 | 400 `bad_filter` / `unsupported` | filter text error, with `slot`, `start`, `end` | [routes/api.rs:58-78](../../crates/server/src/routes/api.rs#L58) |
+| 🟢 | 400 `bad_filter` / `unsupported` | filter text error, with `slot`, `start`, `end` (`unsupported` is M2's; removed in M3, where `search()` and feedback parse) | [routes/api.rs:58-78](../../crates/server/src/routes/api.rs#L58) |
 | 🟢 | 400 `bad_cursor`, `bad_time`, `bad_order`, `bad_column` | other query errors | [api.rs:80-163](../../crates/server/src/routes/api.rs#L80) |
 | 🟢 | 500 `query_failed` | engine or storage error during a query | [api.rs:158-163](../../crates/server/src/routes/api.rs#L158) |
-| ⚪ | 413 / 415 / 501 | body over 50 MB / multipart / feedback (the message now says M3) | [tracedb/src/lib.rs:98](../../crates/server/src/lib.rs#L95), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
+| ⚪ | 413 / 415 / 501 | body over 50 MB / multipart / feedback (the message now says M3). Since M3 only 413 remains: multipart accepted (`6b5e47a`), feedback stored (`27aa5d8`) | [server/src/lib.rs:98](../../crates/server/src/lib.rs#L95), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
 
 `507` is gone: M2 flushes to disk instead.
 
@@ -476,7 +482,7 @@ The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.tes
 Checked on 2026-11-06 with the release binary (port 7070 assumed; add `--port`/`--url` to change it):
 
 ```bash
-tracedb demo --seed 7                      # 5 checks, all pass; ~1 s, 2 flushes
+tracedb demo --seed 7                      # 5 checks, all pass; ~1 s, 2 flushes (M3: add --checks m2; default is 10 checks)
 
 tracedb serve --data /tmp/tdb --memtable 4MB &
 tracedb seed --traces 300 --no-delay       # ~49k runs, ~245 flushes at 4 MB
@@ -522,32 +528,39 @@ cargo test --release -p tracedb --test crash -- --ignored   # kill -9 at every f
 
 ## 8. Rough edges found while writing it
 
-Checked against a seeded server unless marked otherwise. None are fixed.
+Checked against a seeded server unless marked otherwise. None were fixed when this was written; later fixes are
+marked **Fixed in …**.
 
 - **A corrupt data file is caught at start only if it has `needs_merge` rows.** Only those files are read at start
   ([recover.rs:92](../../crates/ingest/src/recover.rs#L92)). Overwrite a file that has none, restart, and
   `/healthz` says `ok: true, corrupt_segments: []`. Then every query whose scope includes that file fails with `500
-  query_failed` ("Corrupt footer").
+  query_failed` ("Corrupt footer"). **Fixed in `9a10d84`** (M3, [D-025](../000-tracedb-master-plan/decisions.md#d-025)): start checks every file's footer.
 - **A data file that disappears after start breaks queries, not health.** Start does check that every file exists
   ([recover.rs:87](../../crates/ingest/src/recover.rs#L87)). Delete one while serving, and every query over it
   returns `500` ("No files found at …"), while `/healthz` stays `ok`. It doesn't return fewer rows silently.
+  **Fixed in `9a10d84`** (M3): damaged files are skipped while serving, named in a `skipped_files` warning and in
+  `/healthz` `damaged_segments`.
 - **The field browser counts versions, not runs.** Stats are per stored version, so a late update's version adds
   to the counts. On a seeded folder `/api/fields/values?path=run_type` lists `other 4873`, yet
   `eq(run_type, "other")` with `"count": true` matches 0: the update versions have no `run_type` until merged.
-  `status` is likewise counted 53,625 times for 48,752 runs.
+  `status` is likewise counted 53,625 times for 48,752 runs. **Fixed in `8cc8d83`** ([D-023](../000-tracedb-master-plan/decisions.md#d-023)): multi-version runs
+  are counted once, merged.
 - **A second *start* for a run already on disk isn't marked `needs_merge`**
   ([D-016](../000-tracedb-master-plan/decisions.md#d-016)). Reads still merge versions they happen to see
   ([scan.rs:350](../../crates/query/src/scan.rs#L350)). A pushed-down filter can drop one of them, though, and then
-  the run is judged on the other. The SDK doesn't send this.
+  the run is judged on the other. The SDK doesn't send this. **Fixed in `9a10d84`** (M3, [D-025](../000-tracedb-master-plan/decisions.md#d-025)): a filter of
+  flushed run ids marks such a start multi-version.
 - **Identity conflicts for runs only on disk are accepted** and reported as a warning, not rejected
   ([D-009](../000-tracedb-master-plan/decisions.md#d-009)).
 - **Cloud paths are untested.** The S3 branch of `Store::open` ([object.rs:32](../../crates/storage/src/object.rs#L32))
   and the Postgres placeholders ([metastore.rs:120](../../crates/storage/src/metastore.rs#L120)) never run in a test.
   `ci/cloud.yml` and the cloud CI job (tasks T003, T068, T069) are still open, so "same results on cloud storage" is
-  unproven.
+  unproven. **Tasks closed in `4ae49f0`**, but the job and the S3/Postgres tests have still not run (no Docker or
+  remote CI here; backlog D3-3 in the [roadmap](../000-tracedb-master-plan/roadmap.md)).
 - **No browser check of the UI.** UI tests run in jsdom (vitest). I didn't open the UI, and didn't render this
   guide's Mermaid charts.
 - **`tracedb seed` timestamps run into the future.** Traces are spaced 7 s apart from "now", so 300 traces end ~35
-  min ahead. `--time 12h` still includes them (there's no upper bound); a `time.to` of now would not.
+  min ahead. `--time 12h` still includes them (there's no upper bound); a `time.to` of now would not. **Fixed in
+  `9a10d84`**: runs never start in the future.
 - **`crates/query` line numbers will move.** The early-stop change (D-021: `window.rs`, `select`, `scan.rs`,
-  `pushdown.rs`) was still in progress when this was written.
+  `pushdown.rs`) was still in progress when this was written. Superseded: line links are pinned to `6e77f12` (header).

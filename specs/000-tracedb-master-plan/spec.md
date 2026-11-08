@@ -82,7 +82,7 @@ autocomplete for fields and values) to get exactly 14 failing root runs, then ex
 
 **Acceptance Scenarios**:
 
-1. **Given** the scenario data, **When** the developer filters to the last 12 h, tag `batch=2026-11-05-a`, root runs only, status error, **Then** exactly 14 runs are returned.
+1. **Given** the scenario data, **When** the developer filters to tag `batch=2026-11-05-a`, root runs only, status error, **Then** exactly 14 runs are returned.
 2. **Given** the same data, **When** they filter for root runs with status ok where *any* run in the same trace has status error, **Then** exactly 23 runs are returned.
 3. **Given** runs with user-defined metadata and structured tool outputs, **When** they filter on `metadata.prompt_version = "v7"` and `outputs.status_code = 429`, **Then** only runs matching both are returned.
 4. **Given** more results than fit on one page, **When** they page forward, **Then** results continue newest first with no duplicates or gaps, even while new runs are arriving.

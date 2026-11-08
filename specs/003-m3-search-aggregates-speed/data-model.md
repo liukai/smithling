@@ -51,15 +51,18 @@ flowchart TB
 | `post_off` | u64 | byte offset of the posting list in `fts.post` |
 | `post_len` | u32 | byte length |
 
-Sorted by `(term, field)`, ~4 KB data pages, page index on: each page's min/max `term` is a **term zone**, so a
-lookup reads the footer (cached) and one page. zstd.
+Sorted by `(term, field)`, 256-row data pages (`ZONE_ROWS`), page index on: each page's min/max `term` is a
+**term zone**, so a lookup reads the footer (cached) and one page. zstd. A term is cut to its first 64 bytes on a
+char boundary (`MAX_TERM_BYTES`); a longer word then matches any word sharing that prefix, a superset the verify
+step trims.
 
 ### 2.2 Postings: `seg-<id>.fts.post`
 
 ```text
 file   = [chunk]…                          # ~64 KB chunks; a list never straddles a chunk unless it's larger
 list   = n: varint, then blocks
-block  = 128 row numbers: first value varint, deltas bit-packed at the block's max width
+block  = up to 128 row numbers: first row varint, gap bit width (1 byte), then the gaps (delta − 1)
+         bit-packed at that width, low bits first
 ```
 
 Row numbers are payload rows (`payload_row` in the core file). No positions (settled, reason (c)).
@@ -211,12 +214,13 @@ AggMsg = Estimate(AggResult with partial = true) | Result(AggResult) | Error{cod
 ```text
 Feedback { id, run_id, trace_id?, key, score?: f64, value?: JSON, comment?, correction?: JSON,
            feedback_source?: {type, metadata}, session_id?, created_at, modified_at, extra: {unknown fields} }
-FeedbackIndex: HashMap<RunId, SmallVec<(key, score)>>     # loaded at start from the catalog; ~40 B per item
+FeedbackIndex { by_run: HashMap<RunId, Vec<Entry { id, key, score }>>, by_id: HashMap<id, RunId> }
+                                                           # loaded at start from the catalog; ~40 B per item
 ```
 
 Orphaned feedback = rows whose `run_id` is in neither memtable nor the flushed-ids filter (a 1% false positive can
-hide one; an orphan has no run, so no project or time). They are listed, never dropped. The index is
-`HashMap<RunId, Vec<(id, key, score)>>` (the id, so a retried or patched item replaces its entry).
+hide one; an orphan has no run, so no project or time). They are listed, never dropped. Each entry keeps its id,
+and `by_id` maps an id to its run, so a retried or patched item replaces its entry, even if its `run_id` changed.
 
 ## 9. 🟠 In-memory structures (changes)
 
@@ -225,7 +229,7 @@ hide one; an orphan has no run, so no project or time). They are listed, never d
 | 🟢 | Flushed-ids bloom | writer | every flushed run id; a new start that hits it joins the multi-version set | ≈2.4 MB (1% false positives) |
 | 🟢 | Damaged-file map | ingest, read by query and `/healthz` | segment id → reason, found at start or while serving | small |
 | 🟢 | `Cache` | storage | footers, page indexes, dictionary pages, postings chunks, payload pages (LRU by bytes; an entry ≤ ⅛ of it) | 32 MB default (`--cache`, D-028) |
-| 🟢 | Feedback index | ingest | `run_id → [(key, score)]` | ~40 B per item |
+| 🟢 | Feedback index | ingest | `run_id → [(id, key, score)]`, plus `id → run_id` | ~40 B per item |
 | 🟢 | Aggregate accumulators | one query | per group: counters, sums, latency values, histogram | ≤ 16 MB latencies per 2M runs; capped at 4M values |
 | 🟠 | Memtable limit | writer | measured as heap (`RunStore::bytes`), 64 MB (was 128 MB of JSON bytes, ≈4× that in heap) | see research M3-R12, D-028 |
 | 🟠 | Dedup window | writer | 16 B fingerprints, at most 1M (`--dedup-keys`), pruned while idle (was ~300 B per key in memory) | ≈50 MB at the cap; 0 idle |
@@ -233,12 +237,16 @@ hide one; an orphan has no run, so no project or time). They are listed, never d
 ## 10. 🟢 Object layout additions
 
 ```
-<storage root>/<project>/<yyyy-mm-dd>/seg-<ulid>.fts.dict.parquet
+<storage root>/<project>/<yyyy-mm-dd>/seg-<ulid>.fts.dict.parquet          written by flush
 <storage root>/<project>/<yyyy-mm-dd>/seg-<ulid>.fts.post
+<storage root>/<project>/<yyyy-mm-dd>/seg-<ulid>.fts-<µs>.dict.parquet     written by backfill (M2 files)
+<storage root>/<project>/<yyyy-mm-dd>/seg-<ulid>.fts-<µs>.post
 <data>/prices.toml                       optional user price list
 ```
 
-Written once next to the segment's core and payload files; same orphan rule on start.
+`segments.fts_path` holds the stem (`…/seg-<ulid>.fts` or `…/seg-<ulid>.fts-<µs>`); the two files are
+`<stem>.dict.parquet` and `<stem>.post`. Backfill adds the time it ran, in µs, so its new objects never reuse a
+name. Written once next to the segment's core and payload files; same orphan rule on start.
 
 ## 11. Lifecycle: a segment's text index
 
@@ -250,13 +258,15 @@ stateDiagram-v2
     written --> [*]: orphan, deleted on start
     none --> written: backfill puts sidecar
     indexed --> unreadable: read error
-    unreadable --> written: backfill rewrites (new name)
     classDef new fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
     classDef revised fill:#ffe0b2,stroke:#ef6c00,color:#1b1b1b
     classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
     class none old
     class written, indexed, unreadable new
 ```
+
+An unreadable sidecar logs a warning and its file is searched by reading it. Backfill only picks segments with no
+`fts_path`, and `/healthz` `unindexed_segments` counts only those, so an unreadable one stays as is (backlog).
 
 ## 12. Worked example: the 31 hits
 
