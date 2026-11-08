@@ -33,7 +33,9 @@ Take four agent runs:
 A **row layout** writes them record by record:
 
 ```text
-[1, fetch_url, ok, 812, "fetched 2,041 bytes…"] [2, plan, ok, 2104, "step 1: search…"] [3, fetch_url, error, …] …
+[1, fetch_url, ok, 812, "fetched 2,041 bytes…"]
+[2, plan, ok, 2104, "step 1: search…"]
+[3, fetch_url, error, …] …
 ```
 
 A **columnar layout** writes them column by column:
@@ -142,16 +144,21 @@ separate file and are read only for the rows on screen.
 ## 5. Live coding: see it on your laptop
 
 [`crates/tools/examples/columnar_tour.rs`](crates/tools/examples/columnar_tour.rs) generates 1,000,000 synthetic agent
-runs (7 columns, ~5% errors, about 20 runs per second in time order), writes them once as **JSON lines** (a row
-layout) and once as **Parquet** (columnar, with tracedb's own settings), then answers three questions both ways.
+runs (10 columns, ~5% errors, about 20 runs per second in time order) and stores them three ways:
+
+| Layout | What it is |
+|---|---|
+| **rows, no index** | JSON lines, read start to finish |
+| **rows + 2 indexes** | the same file plus a sparse **time index** (one entry per 1,024 rows, like a clustered B-tree) and a **secondary index on `status`** (one entry per error row), both saved to disk |
+| **columns** | Parquet with tracedb's own settings, queried with **Apache DataFusion** (the engine tracedb uses) |
 
 ```bash
 cargo run --release -p tracedb-tools --example columnar_tour            # 1,000,000 runs
 cargo run --release -p tracedb-tools --example columnar_tour -- 200000  # smaller
 ```
 
-The row side really parses every line; the columnar side uses **Apache DataFusion** (the engine tracedb uses) and
-reports what the Parquet scan actually read (`EXPLAIN ANALYZE` metrics). Output from a MacBook, release build:
+Every answer below is computed all three ways and the three agree. For the columnar side, "what was read" comes from
+DataFusion's own `EXPLAIN ANALYZE` scan counters. Output from a MacBook, release build.
 
 ### Step 1: the transposition
 
@@ -159,76 +166,148 @@ The heart of the program is turning a `Vec<Run>` (rows) into one array per colum
 
 ```rust
 let batch = RecordBatch::try_new(schema, vec![
-    Arc::new(Int64Array::from_iter_values(runs.iter().map(|r| r.run_id))),
-    Arc::new(StringArray::from_iter_values(runs.iter().map(|r| r.name.as_str()))),
-    Arc::new(StringArray::from_iter_values(runs.iter().map(|r| r.status.as_str()))),
+    ints(|r| r.run_id),
+    ints(|r| r.start_ms),
+    strs(|r| &r.name),
+    strs(|r| &r.status),
     // … one array per column
 ])?;
 ```
 
 and writing it with the same settings as tracedb's data files: ~64k-row row groups, page-level statistics, ZSTD.
 
-### Step 2: storage
+### Step 2: storage, and what indexes cost
 
 ```text
-  rows    (JSON lines): 215.1 MB
-  columns (Parquet):    21.4 MB  (10% of the rows file)
+                                        on disk   write time
+  rows (JSON lines)                    266.2 MB       319 ms
+  rows + 2 indexes                     266.6 MB       360 ms   (+15.6 KB time index, +397.2 KB status index)
+  columns (Parquet)                     21.7 MB       371 ms   (8% of the rows file)
   16 row groups of up to 65536 rows
-  column          on disk      per row   encodings
-  run_id           2.9 MB       2.93 B   PLAIN,RLE,RLE_DICTIONARY
-  start_ms         3.3 MB       3.26 B   PLAIN,RLE,RLE_DICTIONARY
-  name             0.4 MB       0.38 B   PLAIN,RLE,RLE_DICTIONARY
-  status           0.1 MB       0.07 B   PLAIN,RLE,RLE_DICTIONARY
-  latency_ms       1.9 MB       1.89 B   PLAIN,RLE,RLE_DICTIONARY
-  tokens           1.9 MB       1.86 B   PLAIN,RLE,RLE_DICTIONARY
-  output          11.0 MB      10.97 B   PLAIN,RLE,RLE_DICTIONARY
+  column             on disk      per row   encodings
+  run_id              2.9 MB       2.93 B   PLAIN,RLE,RLE_DICTIONARY
+  start_ms            3.3 MB       3.26 B   PLAIN,RLE,RLE_DICTIONARY
+  name              380.7 KB       0.38 B   PLAIN,RLE,RLE_DICTIONARY
+  status             69.2 KB       0.07 B   PLAIN,RLE,RLE_DICTIONARY
+  status_code        79.4 KB       0.08 B   PLAIN,RLE,RLE_DICTIONARY
+  latency_ms          1.9 MB       1.89 B   PLAIN,RLE,RLE_DICTIONARY
+  tokens              1.9 MB       1.86 B   PLAIN,RLE,RLE_DICTIONARY
+  batch               2.4 KB       0.00 B   PLAIN,RLE,RLE_DICTIONARY
+  prompt_version    130.9 KB       0.13 B   PLAIN,RLE,RLE_DICTIONARY
+  output             11.0 MB      11.01 B   PLAIN,RLE,RLE_DICTIONARY
 ```
 
 What to notice (idea 2):
 
 - **`status` costs 0.07 bytes per row.** Two distinct values → dictionary codes → 1 bit each → long runs of `ok`
   collapse under RLE. In JSON the same field costs ~14 bytes per row (`"status":"ok",`).
-- **`name` (8 tools) costs 0.38 bytes per row** for the same reason.
+- **`batch` costs almost nothing** (2.4 KB for a million rows): it's `a` for the first half and `b` for the second,
+  so RLE stores two runs.
 - **Integers shrink from 8 bytes to ~2–3** because sequential and small values compress well.
-- **`output` is half the file**: free text is the one thing that stays big. Keep that in mind for step 3.
+- **`output` is half the file**: free text is the one thing that stays big. Keep that in mind for step 7.
+- **The two indexes are small here (+0.4 MB, +13% write time)** because they're minimal: a *sparse* time index and a
+  status index that only lists the 5% of rows that failed. See "Is it fair?" below for what real indexes cost.
 
-### Step 3: "how many runs failed?" (ideas 1, 2, 4)
+### Step 3: "how many runs failed?" (ideas 1, 2)
 
 ```text
-  rows:       49811 errors in    233 ms, reading 215.1 MB
-  columns:    49811 errors in     10 ms, bytes_scanned=68.98 K  row_groups_pruned_statistics=16 total → 16 matched
+                           answer        time   what was read
+  rows, no index            49656      303 ms   read 266.2 MB
+  rows + status index       49656        0 ms   read 397.2 KB
+  columns (Parquet)         49656       10 ms   read 69.20 K · row groups 16 total → 16 matched
 ```
 
-Same answer. The columnar scan read **69 KB** (the `status` column) instead of 215 MB: 3,000× fewer bytes.
-Statistics can't skip anything here (every row group contains both `ok` and `error`), so all 16 row groups match;
-the win is entirely from reading one tiny column.
+An index **built for exactly this question** wins: counting its entries answers it without touching the table. The
+columnar file gets within milliseconds **without any index chosen ahead of time**, by reading the 69 KB `status`
+column. Statistics can't skip anything here (every row group has both `ok` and `error`).
 
 ### Step 4: "how many runs started in the newest 1% of the time range?" (idea 3)
 
 ```text
-  rows:       10000 runs   in    243 ms, reading 215.1 MB
-  columns:    10000 runs   in      2 ms, bytes_scanned=54.38 K  row_groups_pruned_statistics=16 total → 1 matched
+  rows, no index            10000      299 ms   read 266.2 MB
+  rows + time index         10000        3 ms   read 2.9 MB
+  columns (Parquet)         10000        2 ms   read 54.38 K · row groups 16 total → 1 matched
 ```
 
-**15 of 16 row groups were skipped from the footer alone**: their `start_ms` max is before the cutoff. That works
-because runs arrive in time order, so each row group covers a narrow time slice. tracedb relies on exactly this:
-its lists are time-scoped, and files are pruned by time before they're opened.
+With a time index the row store also skips 99% of the table, so **this part of the original comparison was unfair**.
+The difference that remains: the row store reads the newest 1% of *rows* (all ten fields, 2.9 MB); the columnar file
+skips 15 of 16 row groups from the footer and reads only `start_ms` from the one left (54 KB). Both depend on the data
+being in time order; tracedb relies on exactly this for its time-scoped lists.
 
 ### Step 5: "average latency per tool" (ideas 1, 4)
 
 ```text
-  rows:    8 groups in    254 ms, reading 215.1 MB
-  columns: 8 groups in      3 ms, bytes_scanned=2.27 M
+  rows, any index               8      322 ms   read 266.2 MB
+  columns (Parquet)             8        3 ms   read 2.27 M
 ```
 
-Two columns (`name`, `latency_ms`), 2.3 MB, aggregated as arrays.
+A full aggregate needs every row, so no index helps a row store; the columnar side reads two columns.
 
-### Is the comparison fair?
+### Step 6: several conditions at once (SmithDB's "narrow it down")
 
-The **byte counts** are the layout effect and are fair: any row store has to read whole records (a binary row
-format would be smaller than JSON, but would still read every field of every row). The **times** also include JSON
-parsing, which a binary row store would avoid, so treat the millisecond gap as an upper bound on the layout effect,
-and the byte gap as the real one.
+Errors in the newest 25% of the time range, from batch b, slower than 30 s: four conditions, like SmithDB's "errors
+in the last 12 h, tagged `batch=a`, slower than 2 s".
+
+```text
+  rows, no index             4294      305 ms   read 266.2 MB
+  rows + time index          4294       75 ms   read 66.7 MB
+  rows + status index        4294       48 ms   read 11.5 MB
+  columns (Parquet)          4294        3 ms   read 1.39 M · row groups 16 total → 5 matched
+                                                  · rows by page index 279.1 K total → 258.6 K matched
+```
+
+```mermaid
+flowchart TB
+    subgraph R["Row store"]
+        direction TB
+        R1["Pick ONE index (status: 5% of rows)"] --> R2["Fetch each indexed row: all 10 fields"]
+        R2 --> R3["Check the other 3 conditions per row"]
+    end
+    subgraph C["Columnar"]
+        direction TB
+        C1["Footer: drop row groups whose start_ms is too old (11 of 16)"] --> C2["Page index: drop pages that can't match"]
+        C2 --> C3["Decode only the 4 filter columns, AND them as arrays"]
+    end
+```
+
+A row database typically uses **one index per table access** and checks the remaining conditions on every row that
+index returns (some can intersect several indexes, at extra cost). The columnar scan applies **all four conditions
+together**: row-group and page statistics on `start_ms` cut the data to a quarter, then the four small columns are
+decoded and combined as arrays. Reads: 1.4 MB vs 11.5 MB with the best single index.
+
+### Step 7: a column nobody indexed (SmithDB's "look inside the JSON")
+
+`prompt_version = v7` and `status_code = 429`, like SmithDB's `metadata.prompt_version = "v7"`:
+
+```text
+  rows, no index            18608      303 ms   read 266.2 MB
+  rows + indexes                                neither column has an index: same full scan
+  columns (Parquet)         18608        3 ms   read 210.3 K
+```
+
+This is the case that matters most for traces: **the fields people filter on aren't known in advance** (metadata
+keys, tool outputs). A row store needs an index per column it might ever be asked about; a columnar file has
+per-page statistics on every column for free and, at worst, reads just the columns the filter names.
+
+### Is it fair? Not entirely, and here's what an index costs
+
+The first version of this tour compared Parquet with a row file that had **no index at all**, read start to finish.
+That was fair for full aggregates (step 5) and unfair for selective filters (step 4), where any real row database
+would use an index. This version adds two indexes so the comparison is honest, and they come with a cost:
+
+| Cost | In this tour | In a real row database (typical, not measured here) |
+|---|---|---|
+| **Storage** | +0.4 MB (+0.15%): a sparse time index and an error-only status index | a full B-tree secondary index stores a key and a row pointer **per row**: roughly 10–20 bytes per row per indexed column, i.e. tens of MB per column at a million rows |
+| **Write time** | +41 ms (+13%) to build both while writing | every insert and update also updates every index (random writes into B-tree pages) |
+| **Choosing** | two indexes, picked for two of these questions | you must guess which columns will be filtered; every new question (a new metadata key) needs a new index |
+| **Multi-condition** | one index per access, rest checked per row (step 6) | index intersection exists but costs extra I/O |
+
+Two other caveats, in the row store's favor: the row side parses JSON (a binary row format would be faster to
+decode, though it still reads whole rows), and it isn't compressed. So treat the **millisecond** gaps as upper
+bounds, and the **bytes read** as the real layout effect.
+
+What columnar storage gets "for free" sits inside its 21.7 MB: per-row-group and per-page min/max for **every**
+column, dictionaries, and the ability to read any subset of columns.
 
 ### Experiments to try
 
@@ -236,14 +315,97 @@ Edit `generate()` in the example and re-run:
 
 1. **Break the sort order.** Replace `t0 + i as i64 * 50` with `t0 + rng.below(n as u64) as i64 * 50`. Step 4's
    pruning collapses (every row group covers the whole time range, so none can be skipped) and `bytes_scanned`
-   grows to the whole `start_ms` column (the count changes too, since the cutoff now comes from a random run).
-2. **Make `status` noisy.** Use 50% errors: the column stops collapsing under RLE and grows.
+   grows to the whole `start_ms` column (the count changes too, since the cutoff now comes from a random run). The
+   sparse time index breaks the same way: it only works on time-ordered rows.
+2. **Make `status` noisy.** Use 50% errors: the column stops collapsing under RLE, and the status index grows 10×.
 3. **Search the text.** Add a query `filter(col("output").like(lit("%429%")))`: statistics can't help with
    substrings, so it reads the whole `output` column. That's why tracedb added a per-file text index in M3.
 
 ---
 
-## 6. How tracedb uses all this
+## 6. tracedb, live: one trace spread over files and memory
+
+The tour above is a single sealed file. tracedb is harder: data keeps arriving, a run's **start and end arrive
+minutes apart**, and a single trace ends up spread over **many Parquet files and the in-memory table** at once. Here
+is a real server answering queries in exactly that state.
+
+### The setup
+
+```bash
+tracedb serve --data /tmp/split --port 7099 --memtable 1MB      # tiny memtable: flush constantly
+tracedb seed --traces 300 --no-delay --url http://127.0.0.1:7099 # every start first, then the late ends
+curl -s 127.0.0.1:7099/healthz                                   # runs in memory, segments on disk
+```
+
+```text
+sent 300 traces (46862 steps): 46862 starts, 4607 late updates
+{'runs': 107, 'segments': 484, 'memtable_bytes': 347440, 'frozen': False, ...}
+```
+
+So **46,862 runs** are stored as **51,362 rows** in **484 files**, plus **107 runs in memory**. The extra ~4,500 rows
+are late ends filed apart from their starts. One trace looks like this:
+
+```mermaid
+flowchart TB
+    T["Trace 51ccd9bb (140 runs, 7 failed steps)"]
+    F1["File A: root start, first steps (status running)"]
+    F2["File B: more steps, some ends"]
+    F3["File C: late ends of steps in A (error, outputs)"]
+    M["Memtable: the newest ends, not flushed yet"]
+    Q["Query: find all versions, merge per run, then filter"]
+    T --> F1
+    T --> F2
+    T --> F3
+    T --> M
+    F1 --> Q
+    F2 --> Q
+    F3 --> Q
+    M --> Q
+```
+
+### The queries
+
+Filters from the README and the SmithDB post, sent to `POST /api/query` with `"count": true` (read everything, report
+the exact total) unless noted. Stats are the server's own:
+
+| # | Question | Filter | matched | files scanned | rows read (of 51,362) | rows merged | ms |
+|---|---|---|---|---|---|---|---|
+| 1 | what failed? | `eq(status, "error")` | 2,238 | 484 | 2,235 | 4,714 | 62 |
+| 2 | narrow it down (4 conditions) | `and(eq(status,"error"), eq(run_type,"tool"), gt(latency,1), has(tags,"batch=seed-1"))`, last 12 h | 275 | 484 | 539 | 4,714 | 49 |
+| 2b | same, first page only | (no `count`) | 100 (stopped early) | **200** | 188 | 1,890 | **19** |
+| 3 | look inside the JSON | `and(eq(metadata.prompt_version,"v7"), eq(status,"error"))` | 1,101 | 484 | 991 | 4,714 | 55 |
+| 4 | think in trees: root ok, any step failed | root, `eq(status,"ok")`, tree filter `eq(status,"error")` | 284 | 484 | 15,923 | 13,928 | 1,001 |
+| 4b | same, first page only | (no `count`) | 108 (stopped early) | 356 | 6,266 | 5,524 | 168 |
+| 5 | a filter that can't be pushed down | `or(eq(status,"error"), eq(outputs.nope.deep.deeper.deepest,"x"))` | 2,238 | 484 | **51,362** | 4,714 | 254 |
+
+(`latency` is in seconds in the filter language, as in LangSmith.)
+
+### How to read it
+
+- **"rows read" is the pushdown working.** For query 2, DataFusion applies all four conditions while scanning the
+  Parquet files and hands back 539 rows out of 51,362. It's a superset: rows of runs that may have another version
+  always pass, because a file row alone can't be trusted (it may say `running` while the run's end, elsewhere, says
+  `error`).
+- **"rows merged" is the split runs being reassembled.** About 4,700 runs have pieces in more than one place. They
+  are combined field by field (newest value of each field wins) *before* the exact filter runs, so the answer is the
+  same as if every run were in one place.
+- **Trees cost more.** Query 4 must find the failing *steps* and then check their *roots*: candidates are checked
+  2,000 at a time with a second scan by `trace_id`, and `files_version_lookup` = 484 shows it looking for other
+  versions in every file. It's the slowest query here (1 s with `count`, 168 ms for a first page).
+- **Asking for one page stops early.** Without `count`, lists read the newest slice of time first and stop once the
+  page is full: query 2b opened 200 of 484 files.
+- **When pushdown isn't possible, it reads more, never wrongly.** In query 5 one branch of the `or` names a path that
+  isn't stored as an attribute, so nothing can be pushed into the scan: all 51,362 rows come back from the files,
+  the merge and exact filter run on all of them, and the answer is the same 2,238. (A condition on a non-stored path
+  by itself never matches and the response says so with a `not_indexed` warning.)
+
+The code for this path is [scan.rs](crates/query/src/scan.rs) (find every version, merge) and
+[pushdown.rs](crates/query/src/pushdown.rs) (what may be pushed into the Parquet scan and why it must be a superset).
+These numbers come from a deliberately tiny memtable; real flushes are 64 MB, so there are far fewer files.
+
+---
+
+## 7. How tracedb uses all this
 
 | Idea | In tracedb |
 |---|---|
@@ -260,3 +422,90 @@ Edit `generate()` in the example and re-run:
 Where to read the code: [segment.rs](crates/storage/src/segment.rs) (writing and reading the files),
 [scan.rs](crates/query/src/scan.rs) and [pushdown.rs](crates/query/src/pushdown.rs) (pruning, scanning, merging),
 [fts.rs](crates/storage/src/fts.rs) (the text index).
+
+---
+
+## Appendix A: a tracedb segment, illustrated
+
+What one flush leaves on disk, conceptually (not byte for byte). A **segment** is one flush's data for one project:
+four immutable files and one catalog row.
+
+### On disk
+
+```text
+<data>/data/
+└── research-agent-1a2b3c4d/          one folder per project (name + hash)
+    └── 2026-11-08/                   one folder per day
+        ├── seg-01JD….core.parquet          small fields, one row per run version
+        ├── seg-01JD….payload.parquet       inputs / outputs / events, same rows, same order
+        ├── seg-01JD….fts.dict.parquet      text index: the words
+        └── seg-01JD….fts.post              text index: which rows contain each word
+<data>/meta.sqlite                    the catalog: one row per segment (+ field stats, dedup keys)
+```
+
+### The catalog row: read before any file is opened
+
+| id | project | min/max start_key | min/max trace_id | rows | needs_merge rows | paths |
+|---|---|---|---|---|---|---|
+| `01JD…` | research-agent | 09:00:00 … 09:02:00 | `0193…` … `0193…` | 48,211 | 2,140 | core, payload, fts |
+
+A query compares its project, time window and trace ids against these ranges and drops the segment without any I/O
+if it can't match.
+
+### Inside `core.parquet`
+
+```text
+core.parquet
+├── row group 1  (~64k rows; rows sorted by trace_id, then dotted_order: each trace is contiguous, in tree order)
+│   ├── run_id        [16-byte ids]                      ← bloom filter: "is run X in this row group?"
+│   ├── trace_id      [t1 t1 t1 … t2 t2 …]               ← bloom filter; min/max per page
+│   ├── dotted_order  [t1.root, t1.root.a, t1.root.a.x …]
+│   ├── start_key     [µs timestamps]                    ← min/max per page: time pruning
+│   ├── name          dictionary {fetch_url, plan, llm…} + codes
+│   ├── status        dictionary {ok, error, running} + codes, long runs
+│   ├── latency_ms, start_time, end_time, tokens, model …
+│   ├── tags          lists of strings
+│   ├── attrs         JSON of promoted leaves: {"metadata.prompt_version":"v7","outputs.status_code":429}
+│   ├── present, first_seq, last_seq, needs_merge         ← what the merge needs
+│   ├── inputs_bytes, outputs_bytes, events_bytes         ← sizes, without reading payloads
+│   └── payload_row   [0, 1, 2, …]                        ← this row's row number in payload.parquet
+├── row group 2 …
+└── footer: schema · per row group and per page: min, max, null count · page index · bloom filter offsets
+```
+
+Each column of each row group is a **column chunk**, cut into **pages** of a few thousand values; statistics are kept
+per page so the reader can skip inside a row group too.
+
+### `payload.parquet`, `fts.dict.parquet`, `fts.post`
+
+```mermaid
+flowchart TB
+    C["core row 1,204: run r42, status error, payload_row 1,204"]
+    P["payload.parquet row 1,204: inputs, outputs, events (JSON text)"]
+    D["fts.dict.parquet: term 429 · field outputs · 31 rows · offset 10,240"]
+    O["fts.post at 10,240: rows [402, 403, …, 1,204, …]"]
+    C -->|"payload_row"| P
+    D -->|"post_off, post_len"| O
+    O -->|"payload row numbers"| P
+```
+
+- **payload.parquet** has just `run_id`, `inputs`, `outputs`, `events`, in the core file's row order, so row *n* in
+  one is row *n* in the other. It has its own bloom filter on `run_id`.
+- **fts.dict.parquet** is sorted by `(term, field)`; each page's min/max term works as a "term zone", so finding a
+  word reads the footer and one small page.
+- **fts.post** holds the row-number lists, delta-encoded and bit-packed in blocks of 128, in 64 KB chunks.
+
+### How a query walks a segment
+
+```mermaid
+flowchart TB
+    A["Catalog row: project, time and trace ranges"]
+    B["core footer: per row group min/max, page index, blooms"]
+    C["Pages of the filter columns only (status, start_key, attrs …)"]
+    D["The rest of the core columns, only for rows that passed"]
+    E["Merge with this run's versions elsewhere, exact filter"]
+    F["Open a run: payload.parquet, just its row, just the fields asked for"]
+    A --> B --> C --> D --> E --> F
+```
+
+Each step only happens for what survived the one before: a typical list never opens `payload.parquet` at all.
