@@ -2,8 +2,8 @@
 
 use std::net::SocketAddr;
 
-use tracedb::{ServeConfig, open};
 use tracedb_ingest::Limits;
+use tracedb_server::{ServeConfig, open};
 
 fn cfg(dir: &std::path::Path, prices: Option<std::path::PathBuf>) -> ServeConfig {
     ServeConfig {

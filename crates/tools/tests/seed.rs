@@ -1,8 +1,8 @@
 //! `tracedb seed` shapes (spec Story 4) and determinism; then a real send through the HTTP path.
 
-mod common;
+use tracedb_server::testkit as common;
 
-use tracedb::seed::{PROJECT, generate, send};
+use tracedb_tools::seed::{PROJECT, generate, send};
 
 #[test]
 fn shapes_match_the_spec() {
@@ -34,7 +34,7 @@ fn same_seed_same_traces() {
     let a = generate(42, 5, 0);
     let b = generate(42, 5, 0);
     let c = generate(43, 5, 0);
-    let ids = |t: &[tracedb::seed::GenTrace]| t.iter().map(|x| x.trace_id).collect::<Vec<_>>();
+    let ids = |t: &[tracedb_tools::seed::GenTrace]| t.iter().map(|x| x.trace_id).collect::<Vec<_>>();
     assert_eq!(ids(&a), ids(&b));
     assert_eq!(
         a[0].steps.iter().map(|s| s.post.clone()).collect::<Vec<_>>(),
@@ -70,10 +70,10 @@ async fn sends_through_the_agent_path_and_every_item_is_accepted() {
 #[tokio::test]
 async fn unreachable_server_is_reported() {
     let err = send("http://127.0.0.1:9", &generate(1, 1, 0), true).await.unwrap_err();
-    assert!(matches!(err, tracedb::seed::SeedError::Unreachable(..)));
+    assert!(matches!(err, tracedb_tools::seed::SeedError::Unreachable(..)));
 }
 
-fn times(traces: &[tracedb::seed::GenTrace]) -> Vec<i64> {
+fn times(traces: &[tracedb_tools::seed::GenTrace]) -> Vec<i64> {
     let at = |v: &serde_json::Value| v.as_str().map(|s| tracedb_model::Ts::parse(s).unwrap().0);
     traces
         .iter()
@@ -92,7 +92,7 @@ fn times(traces: &[tracedb::seed::GenTrace]) -> Vec<i64> {
 #[test]
 fn seeded_runs_never_start_or_end_in_the_future() {
     let now = tracedb_model::Ts::now().0;
-    let traces = tracedb::seed::generate_before(42, 50, now);
+    let traces = tracedb_tools::seed::generate_before(42, 50, now);
     let t = times(&traces);
     assert!(
         t.iter().all(|&x| x <= now),
@@ -102,9 +102,9 @@ fn seeded_runs_never_start_or_end_in_the_future() {
     // Recent: the last trace ends near now (within its 7 s slot plus the longest duration).
     assert!(t.iter().max().unwrap() > &(now - 50 * 7_000_000 - 3_600_000_000));
     // Deterministic for a given seed and time; ids differ when the time does.
-    let again = tracedb::seed::generate_before(42, 50, now);
+    let again = tracedb_tools::seed::generate_before(42, 50, now);
     assert_eq!(traces[3].steps[5].post, again[3].steps[5].post);
-    let later = tracedb::seed::generate_before(42, 50, now + 1);
+    let later = tracedb_tools::seed::generate_before(42, 50, now + 1);
     assert_ne!(traces[0].trace_id, later[0].trace_id);
 }
 
@@ -112,9 +112,9 @@ fn seeded_runs_never_start_or_end_in_the_future() {
 async fn seeding_the_same_seed_twice_into_one_folder_is_accepted() {
     let server = common::start().await;
     let url = format!("http://{}", server.addr);
-    let first = tracedb::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
+    let first = tracedb_tools::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
     send(&url, &first, true).await.unwrap();
-    let second = tracedb::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
+    let second = tracedb_tools::seed::generate_before(7, 3, tracedb_model::Ts::now().0);
     send(&url, &second, true).await.expect("no identity_conflict");
     let steps: usize = first.iter().chain(&second).map(|t| t.steps.len()).sum();
     assert_eq!(server.state.ingest.health().runs, steps);

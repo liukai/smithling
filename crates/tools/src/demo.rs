@@ -11,7 +11,7 @@ use tracedb_ingest::Limits;
 
 use crate::scenario::{self, Loaded, PROJECT, Scenario};
 use crate::seed::SeedError;
-use crate::{ServeConfig, app, parse_size};
+use tracedb_server::{ServeConfig, app, parse_size};
 
 /// The demo's own server's memtable: small, so a few MB of background load forces the flushes it needs.
 const DEMO_MEMTABLE: u64 = 4 * MB;
@@ -231,7 +231,7 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
         prices: None,
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
-    let (state, _) = tokio::task::spawn_blocking(move || crate::open(&cfg)).await??;
+    let (state, _) = tokio::task::spawn_blocking(move || tracedb_server::open(&cfg)).await??;
     let addr = listener.local_addr()?;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {

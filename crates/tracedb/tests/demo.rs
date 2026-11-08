@@ -1,11 +1,11 @@
 //! `tracedb demo` (contracts/cli.md): the overnight-eval scenario on its own server, a pass/fail table, exit 1
 //! naming expected vs actual, 2 when `--url` isn't reachable.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use serde_json::json;
-use tracedb::demo::{Check, report};
-use tracedb::scenario;
+use tracedb_tools::demo::{Check, report};
+use tracedb_tools::scenario;
 
 fn demo(args: &[&str]) -> (i32, String, String) {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))

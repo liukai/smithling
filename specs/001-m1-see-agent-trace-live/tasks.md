@@ -34,7 +34,7 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 - [X] T003 [P] Add workspace dependencies in root `Cargo.toml` (`[workspace.dependencies]`): tokio (full), axum, serde, serde_json, uuid (serde, v4), crc32fast, clap (derive), rust-embed, tower-http (limit, compression), reqwest (json, rustls, default-features off), proptest (dev), anyhow, thiserror, tracing, tracing-subscriber, indexmap, xxhash-rust
 - [X] T004 [P] Add `rustfmt.toml`, `clippy.toml`, and `[workspace.lints]` (deny warnings in CI) in the repo root
 - [X] T005 [P] Scaffold the UI: `ui/package.json` (React, React DOM, Vite, TypeScript, @tanstack/react-virtual), `ui/vite.config.ts` (output `ui/dist`), `ui/tsconfig.json`, `ui/index.html`, `ui/src/main.tsx` rendering an empty `App`
-- [X] T006 Add `crates/tracedb/build.rs`: run `npm ci && npm run build` in `ui/` when `ui/src/**` changes (`cargo:rerun-if-changed`); skip if `TRACEDB_SKIP_UI=1` and `ui/dist` exists
+- [X] T006 Add `crates/server/build.rs`: run `npm ci && npm run build` in `ui/` when `ui/src/**` changes (`cargo:rerun-if-changed`); skip if `TRACEDB_SKIP_UI=1` and `ui/dist` exists
 - [X] T007 [P] Add `.github/workflows/ci.yml`: Linux job with Node 24 + Rust 1.99; steps `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`; cache `~/.cargo` and `ui/node_modules`
 
 **Checkpoint**: `cargo build` produces `target/debug/tracedb` and CI is green on an empty program.
@@ -72,7 +72,7 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 ### Serving skeleton (`crates/tracedb`)
 - [X] T026 Implement the CLI in `crates/tracedb/src/cli.rs` (clap): `serve --data ./.tracedb --port 7070 --bind 127.0.0.1 --max-memory 2GB` and `seed` (args filled in US4); `main.rs` dispatches
 - [X] T027 Implement the server in `crates/tracedb/src/server.rs`: axum router, body limit 50 MB (`413`), tracing, graceful shutdown; opens `Ingest` before binding the port; `GET /healthz` → `{ok, wal_ok, runs, memory_bytes, capacity_bytes}`
-- [X] T028 [P] Serve the embedded UI in `crates/tracedb/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
+- [X] T028 [P] Serve the embedded UI in `crates/server/src/routes/ui.rs` with rust-embed over `ui/dist`; unknown non-API paths return `index.html` (client routing)
 - [X] T029 Implement native ingest `POST /v1/events` in `crates/tracedb/src/routes/native.rs`: `{events: [RunEvent]}` → `202 {accepted, rejected}`; status codes per contracts/http-api.md: `429` + `Retry-After: 1` on `Busy`, `507` when the budget is full and the batch has a new run (nothing applied), `503` + `Retry-After: 5` on storage errors
 
 **Checkpoint**: `tracedb serve` starts, replays its WAL, accepts native events, and `/healthz` reports run count.
@@ -85,8 +85,8 @@ fixtures in `tests/fixtures/`; scripts in `scripts/`.
 model; T067–T069 land with the HTTP layer in PR3.
 
 - [X] T066 Add `address` to the model: `RunFields.address: Option<String>`, `Run.address`, `RunHeader.address` in `crates/model/src/run.rs` and `crates/model/src/views.rs`; validation "≤ 512 chars" → `too_large` in `crates/model/src/validate.rs`; immutable once set (`identity_conflict` if a later event differs) in `crates/model/src/merge.rs`; tests in `crates/model/tests/merge.rs` and `crates/model/tests/validate.rs`
-- [X] T067 Map overload and storage errors to HTTP in `crates/tracedb/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/tracedb/tests/status_codes.rs`
-- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/tracedb/tests/status_codes.rs`
+- [X] T067 Map overload and storage errors to HTTP in `crates/server/src/routes/errors.rs` per contracts/http-api.md: `Busy` → `429` + `Retry-After: 1`; budget full with a new run in the batch → `507`, nothing applied; storage error → `503` + `Retry-After: 5`; test each in `crates/server/tests/status_codes.rs`
+- [X] T068 Add `POST /feedback` → `501 {error: {code: "unsupported", message: "feedback is supported from M3"}}` in `crates/tracedb/src/routes/langsmith.rs`; test in `crates/server/tests/status_codes.rs`
 - [X] T069 Serve `/info` with `version: ""` and `tracedb_version` in `crates/tracedb/src/routes/langsmith.rs`; extend `scripts/record-sdk-fixtures.py` (T030) to fail if the SDK logs a "Backend version" warning while tracing
 
 ---
@@ -100,16 +100,16 @@ and see its runs appear within 1 s and update when they finish.
 
 ### Tests for User Story 1
 - [X] T030 [P] [US1] Write `scripts/record-sdk-fixtures.py`: runs a LangGraph example agent against a recording HTTP endpoint, once with `langsmith==0.14.17` and once with `langsmith==0.8.18`, and writes each request (method, path, headers, body) to `tests/fixtures/sdk-<version>/requests.jsonl` plus the expected merged runs to `tests/fixtures/sdk-<version>/expected-runs.json`; include one run sent with `LANGSMITH_AGENT_ID`/`LANGSMITH_AGENT_ENVIRONMENT` and no project; commit the recorded fixtures
-- [X] T031 [P] [US1] Contract test `crates/tracedb/tests/contract.rs`: replay `tests/fixtures/sdk-*/requests.jsonl` (0.14.17 and 0.8.18) against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
-- [X] T032 [P] [US1] E2E test `crates/tracedb/tests/e2e_tail.rs`: subscribe to `/api/tail?project=p`, upload 1,000 events at a steady rate, assert p99 confirm→received < 1 s (SC-02) and that a burst of 1,000 updates to one run yields ≤ 10 messages/s
-- [X] T033 [P] [US1] API test `crates/tracedb/tests/roots.rs`: `/api/roots` newest first, cursor paging without repeats while new runs arrive, project and status filters, `limit ≤ 200`
+- [X] T031 [P] [US1] Contract test `crates/server/tests/contract.rs`: replay `tests/fixtures/sdk-*/requests.jsonl` (0.14.17 and 0.8.18) against an in-process server; assert 100% accepted and runs equal `expected-runs.json` (SC-06)
+- [X] T032 [P] [US1] E2E test `crates/server/tests/e2e_tail.rs`: subscribe to `/api/tail?project=p`, upload 1,000 events at a steady rate, assert p99 confirm→received < 1 s (SC-02) and that a burst of 1,000 updates to one run yields ≤ 10 messages/s
+- [X] T033 [P] [US1] API test `crates/server/tests/roots.rs`: `/api/roots` newest first, cursor paging without repeats while new runs arrive, project and status filters, `limit ≤ 200`
 
 ### Implementation for User Story 1
-- [X] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/tracedb/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
+- [X] T034 [US1] Implement LangSmith → `RunEvent` mapping in `crates/server/src/langsmith_map.rs` per design §6: `post`/`POST /runs` → `Post`, `patch`/`PATCH /runs/{id}` → `Patch`; `session_name` → `project`, else `session_id`, else `<agent id>/<environment>` from `address`, else `default`; keep `address` as sent; `extra.metadata` → `metadata`, rest of `extra` → `extra`; drop `serialized` and attachments, recording sizes in `dropped`; compute `body_hash` with xxhash64 over canonical JSON
 - [X] T035 [US1] Implement LangSmith routes in `crates/tracedb/src/routes/langsmith.rs`: `GET /info` → `{version: "", tracedb_version, batch_ingest_config: {use_multipart_endpoint: false, size_limit: 100, size_limit_bytes: 20971520}, instance_flags: {}}`; `POST /runs/batch`; `POST /runs`; `PATCH /runs/{run_id}`; `POST /runs/multipart` → `415 {error: {code: "unsupported", message: "multipart is supported from M3"}}`; accept and ignore API-key headers
 - [X] T036 [P] [US1] Implement roots in `crates/query/src/roots.rs` and cursor in `crates/query/src/cursor.rs`: keyset `(start_time desc, run_id)`, cursor = base64 of `{start_time, run_id, filter_hash}`, filters `project`, `status`
-- [X] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/tracedb/src/routes/api.rs`
-- [X] T038 [US1] Implement the per-tab tail task in `crates/tracedb/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
+- [X] T037 [US1] Implement `Query` in `crates/query/src/lib.rs` over `ingest::Snapshot` (no dependency on ingest internals), and routes `GET /api/roots`, `GET /api/projects` in `crates/server/src/routes/api.rs`
+- [X] T038 [US1] Implement the per-tab tail task in `crates/server/src/routes/tail.rs` per design §4.3: `GET /api/tail?project=` or `?trace=`; subscribe first, then send `hello {server_seq}`; `pending: IndexMap<RunId, Arc<RunHeader>>` keeping the higher `last_seq`; leading-edge send if nothing was sent in the last 100 ms, otherwise flush on the 100 ms tick as one `runs [..]` event; `resync {}` on `Lagged` or `pending > 5,000`; comment heartbeat every 15 s
 - [X] T039 [P] [US1] UI API client and live stream in `ui/src/api.ts` and `ui/src/live.ts`: fetch helpers; EventSource wrapper that waits for `hello` before loading, applies `runs` by `last_seq`, reloads on `resync`, reconnects automatically
 - [X] T040 [US1] UI runs list in `ui/src/RunsList.tsx`: columns status, name, start, latency, tokens, tags; project and status pickers; `older ▸` paging; new roots on top when scrolled to the top, otherwise a "N new runs" pill; `● live` indicator; state in the URL query
 - [X] T041 [P] [US1] UI empty state in `ui/src/EmptyState.tsx`: shows `LANGSMITH_TRACING=true LANGSMITH_ENDPOINT=http://localhost:7070` setup and a `tracedb seed` hint
@@ -127,11 +127,11 @@ and see its runs appear within 1 s and update when they finish.
 loads; opening a step shows its full payload.
 
 ### Tests for User Story 2
-- [X] T043 [P] [US2] API test `crates/tracedb/tests/trace.rs`: `/api/traces/{id}` returns headers only, sorted by `dotted_order`, with `run_count` and `has_running`; `/api/runs/{id}?include=inputs,outputs,events` returns only the requested payloads; orphan children appear in their trace
-- [X] T044 [P] [US2] E2E timing test `crates/tracedb/tests/e2e_trace_open.rs`: a 250-step trace with 40 KB payloads returns from `/api/traces/{id}` in < 200 ms on CI hardware (UI render budget brings the total under SC-03's 1 s)
+- [X] T043 [P] [US2] API test `crates/server/tests/trace.rs`: `/api/traces/{id}` returns headers only, sorted by `dotted_order`, with `run_count` and `has_running`; `/api/runs/{id}?include=inputs,outputs,events` returns only the requested payloads; orphan children appear in their trace
+- [X] T044 [P] [US2] E2E timing test `crates/server/tests/e2e_trace_open.rs`: a 250-step trace with 40 KB payloads returns from `/api/traces/{id}` in < 200 ms on CI hardware (UI render budget brings the total under SC-03's 1 s)
 
 ### Implementation for User Story 2
-- [X] T045 [P] [US2] Implement trace and run reads in `crates/query/src/trace.rs` and `crates/query/src/run.rs`; add routes `GET /api/traces/{trace_id}` and `GET /api/runs/{run_id}` to `crates/tracedb/src/routes/api.rs`
+- [X] T045 [P] [US2] Implement trace and run reads in `crates/query/src/trace.rs` and `crates/query/src/run.rs`; add routes `GET /api/traces/{trace_id}` and `GET /api/runs/{run_id}` to `crates/server/src/routes/api.rs`
 - [X] T046 [P] [US2] UI tree model in `ui/src/treeModel.ts`: build the parent/child structure from headers sorted by `dotted_order`; collapse/expand state; flattened visible rows shared by the tree and the waterfall
 - [X] T047 [US2] UI trace view in `ui/src/TraceView.tsx`, `ui/src/Tree.tsx`, `ui/src/Waterfall.tsx`: virtualized rows (@tanstack/react-virtual); bars positioned by start/end relative to the root; running steps drawn open-ended; live updates via `?trace=` subscription
 - [X] T048 [P] [US2] UI JSON viewer in `ui/src/JsonView.tsx`: collapsible objects/arrays, wrapped long strings; payloads over 2 MB first render as collapsed raw text
@@ -151,7 +151,7 @@ upload; 10 rounds.
 - [X] T050 [P] [US3] Crash harness `crates/tracedb/tests/crash.rs` (`#[ignore]`, run in CI): spawn `tracedb serve` on a temp folder, upload continuously from N clients logging every confirmed item id, `kill -9` at a random 0.5–5 s, restart, assert every confirmed id is present and merged correctly; 10 rounds (SC-04)
 - [X] T051 [P] [US3] Retry-after-crash test in `crates/tracedb/tests/crash.rs`: an unconfirmed batch re-sent after restart is stored exactly once
 - [X] T052 [P] [US3] Restart timing test `crates/tracedb/tests/restart.rs` (`#[ignore]`): fill to the default budget, restart, assert ready within 30 s and log replay throughput
-- [X] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/tracedb/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
+- [X] T053 [US3] Disk-error handling in `crates/ingest/src/writer.rs` and `crates/server/src/routes/*`: on fsync/write error stop confirming, return `503` + `Retry-After: 5` with reason, `/healthz` `wal_ok: false`; test with a fault-injecting WAL in `crates/ingest/tests/disk_error.rs`
 - [X] T054 [US3] Add the crash and restart tests to `.github/workflows/ci.yml` (`cargo test -- --ignored crash restart`)
 
 **Checkpoint**: crash harness green in CI 10/10.
@@ -164,8 +164,8 @@ upload; 10 rounds.
 
 **Independent Test**: `tracedb seed --traces 100` → browse traces with deep trees, late finishes, errors, large payloads.
 
-- [X] T055 [P] [US4] Seed shape test `crates/tracedb/tests/seed.rs`: with `--seed 42`, generated traces have depth 3–8, 20–300 steps, ≈5% errors, ≈10% of steps finishing 30–120 s late, payloads 1–50 KB; the same seed gives the same output
-- [X] T056 [US4] Implement the generator in `crates/tracedb/src/seed.rs`: research-agent-like step names (`plan`, `web_search`, `fetch_url`, `python_exec`, `summarize`, `llm`), LangSmith-shaped `post`/`patch` items with valid `dotted_order`, deterministic from `--seed`
+- [X] T055 [P] [US4] Seed shape test `crates/tools/tests/seed.rs`: with `--seed 42`, generated traces have depth 3–8, 20–300 steps, ≈5% errors, ≈10% of steps finishing 30–120 s late, payloads 1–50 KB; the same seed gives the same output
+- [X] T056 [US4] Implement the generator in `crates/tools/src/seed.rs`: research-agent-like step names (`plan`, `web_search`, `fetch_url`, `python_exec`, `summarize`, `llm`), LangSmith-shaped `post`/`patch` items with valid `dotted_order`, deterministic from `--seed`
 - [X] T057 [US4] Wire `tracedb seed [--traces 100] [--seed 42] [--url http://localhost:7070]` in `crates/tracedb/src/cli.rs`: sends batches to `/runs/batch` (≤ 100 items), sends late `patch`es after their delay (or immediately with `--no-delay`), exit codes 0/1/2
 
 **Checkpoint (demo)**: `tracedb seed --traces 100`, then click through the generated traces.

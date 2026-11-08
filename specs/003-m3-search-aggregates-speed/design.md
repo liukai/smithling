@@ -433,7 +433,7 @@ flowchart TB
   - `leave()` refetches the shown columns ([Samples.tsx:76](../../ui/src/views/Samples.tsx#L76));
   - arrivals while scrolled are buffered behind an "N new" pill.
 - **Seed** (FR-22):
-  - base time = now − n·7 s − the longest duration ([seed.rs:84](../../crates/tracedb/src/seed.rs#L84));
+  - base time = now − n·7 s − the longest duration ([seed.rs:84](../../crates/tools/src/seed.rs#L84));
   - the base time is mixed into the id stream, so seeding the same seed twice doesn't reuse run ids with new
     `dotted_order`s. That reuse was the `identity_conflict` seen in M2; `demo` stays deterministic.
 

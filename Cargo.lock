@@ -3992,38 +3992,22 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 name = "tracedb"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
  "clap",
- "datafusion",
- "futures-util",
- "httparse",
- "indexmap",
- "mime_guess",
- "proptest",
  "reqwest",
- "rust-embed",
- "serde",
  "serde_json",
  "sqlx",
  "tempfile",
- "thiserror",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
- "tower-http",
  "tracedb-ingest",
  "tracedb-model",
- "tracedb-query",
+ "tracedb-server",
  "tracedb-storage",
- "tracing",
+ "tracedb-tools",
  "tracing-subscriber",
  "url",
  "uuid",
- "xxhash-rust",
- "zstd",
 ]
 
 [[package]]
@@ -4086,6 +4070,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracedb-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "httparse",
+ "indexmap",
+ "mime_guess",
+ "proptest",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracedb-ingest",
+ "tracedb-model",
+ "tracedb-query",
+ "tracedb-server",
+ "tracedb-storage",
+ "tracing",
+ "url",
+ "uuid",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
 name = "tracedb-storage"
 version = "0.1.0"
 dependencies = [
@@ -4106,6 +4123,30 @@ dependencies = [
  "tracing",
  "ulid",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "tracedb-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "datafusion",
+ "futures-util",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracedb-ingest",
+ "tracedb-model",
+ "tracedb-query",
+ "tracedb-server",
+ "tracedb-storage",
  "uuid",
 ]
 

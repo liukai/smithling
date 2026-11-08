@@ -1,7 +1,7 @@
 //! `POST /api/query` (contracts/http-api.md): results, errors that point at the problem, paging that stays
 //! stable while data arrives, and M1's `/api/roots` answered by the same planner.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::collections::HashSet;
 
@@ -385,7 +385,7 @@ async fn late_update_text_is_found_across_memtable_and_files() {
 /// SC-01: on the scenario data, the phrase finds exactly the 31 planted runs, all `fetch_url`, with excerpts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_phrase_finds_the_31() {
-    use tracedb::scenario::{self, generate, load};
+    use tracedb_tools::scenario::{self, generate, load};
     const MB: u64 = 1024 * 1024;
     let server = start_with(|c| c.limits.memtable_bytes = MB).await;
     let s = generate(7, tracedb_model::Ts::now().0, MB);

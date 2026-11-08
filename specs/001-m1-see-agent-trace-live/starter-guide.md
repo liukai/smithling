@@ -71,8 +71,8 @@ segments and DataFusion.
 | 5 | [ingest/src/wal.rs](../../crates/ingest/src/wal.rs) | **Critical.** On-disk format, torn tail vs corruption | 20 min |
 | 6 | [ingest/src/lib.rs](../../crates/ingest/src/lib.rs) (`open`, `accept`) | Startup replay, backpressure | 10 min |
 | 7 | [ingest/src/store.rs](../../crates/ingest/src/store.rs) | Indexes, keyset paging | 15 min |
-| 8 | [tracedb/src/routes/tail.rs](../../crates/tracedb/src/routes/tail.rs) | **Critical.** Live fan-out and coalescing | 15 min |
-| 9 | [langsmith_map.rs](../../crates/tracedb/src/langsmith_map.rs), [routes/ingest.rs](../../crates/tracedb/src/routes/ingest.rs) | Wire-format translation (skim) | 10 min |
+| 8 | [tracedb/src/routes/tail.rs](../../crates/server/src/routes/tail.rs) | **Critical.** Live fan-out and coalescing | 15 min |
+| 9 | [langsmith_map.rs](../../crates/server/src/langsmith_map.rs), [routes/ingest.rs](../../crates/server/src/routes/ingest.rs) | Wire-format translation (skim) | 10 min |
 | 10 | [ui/src/live.ts](../../ui/src/live.ts), [RunsList.tsx](../../ui/src/RunsList.tsx) | How the browser stays in sync | 10 min |
 
 Skip on the first pass: `validate.rs` (limits), `seed.rs`, `routes/ui.rs`, `cursor.rs` (34 lines, obvious),
@@ -123,12 +123,12 @@ session_name:"research"}]}`.
 
 | Step | Code |
 |---|---|
-| The route is registered | [tracedb/src/lib.rs:42](../../crates/tracedb/src/lib.rs#L42) → `runs_batch` |
-| post and patch items are tagged with an `Op` | [routes/ingest.rs:46-53](../../crates/tracedb/src/routes/ingest.rs#L46) |
-| Each item is translated; a bad item is rejected alone, not the whole batch | [routes/ingest.rs:103-116](../../crates/tracedb/src/routes/ingest.rs#L103) → `incoming()` [langsmith_map.rs:33](../../crates/tracedb/src/langsmith_map.rs#L33) |
-| A hash of the raw body is taken for dedup | [langsmith_map.rs:39](../../crates/tracedb/src/langsmith_map.rs#L39) |
-| LangSmith names map to ours (`session_name` → project, `extra.metadata` → metadata) | [langsmith_map.rs:101-114](../../crates/tracedb/src/langsmith_map.rs#L101) |
-| Unknown fields are kept, not lost (stored under `extra.other`) | [langsmith_map.rs:128-137](../../crates/tracedb/src/langsmith_map.rs#L128) |
+| The route is registered | [tracedb/src/lib.rs:42](../../crates/server/src/lib.rs#L39) → `runs_batch` |
+| post and patch items are tagged with an `Op` | [routes/ingest.rs:46-53](../../crates/server/src/routes/ingest.rs#L46) |
+| Each item is translated; a bad item is rejected alone, not the whole batch | [routes/ingest.rs:103-116](../../crates/server/src/routes/ingest.rs#L103) → `incoming()` [langsmith_map.rs:33](../../crates/server/src/langsmith_map.rs#L33) |
+| A hash of the raw body is taken for dedup | [langsmith_map.rs:39](../../crates/server/src/langsmith_map.rs#L39) |
+| LangSmith names map to ours (`session_name` → project, `extra.metadata` → metadata) | [langsmith_map.rs:101-114](../../crates/server/src/langsmith_map.rs#L101) |
+| Unknown fields are kept, not lost (stored under `extra.other`) | [langsmith_map.rs:128-137](../../crates/server/src/langsmith_map.rs#L128) |
 | Validated, then queued with a backpressure permit; a full queue returns 429 | [ingest/src/lib.rs:243-273](../../crates/ingest/src/lib.rs#L243) |
 | Sent to the writer; the HTTP task **awaits** the reply | [ingest/src/lib.rs:281-288](../../crates/ingest/src/lib.rs#L281) |
 
@@ -220,11 +220,11 @@ flowchart TB
 | Step | Code |
 |---|---|
 | The tab opens `/api/tail?trace=…` | [ui/src/live.ts:13-26](../../ui/src/live.ts#L13) |
-| Server **subscribes before sending `hello`**, so no change falls in the gap | [tail.rs:57-72](../../crates/tracedb/src/routes/tail.rs#L57) |
+| Server **subscribes before sending `hello`**, so no change falls in the gap | [tail.rs:57-72](../../crates/server/src/routes/tail.rs#L57) |
 | `hello` → the browser loads the trace | [live.ts:18-21](../../ui/src/live.ts#L18), [TraceView.tsx:30](../../ui/src/TraceView.tsx#L30) |
-| Change matches filter → keyed by run_id, only the newest version kept | [tail.rs:79-83](../../crates/tracedb/src/routes/tail.rs#L79) |
-| First change after a quiet spell goes at once; the rest every 100 ms | [tail.rs:87-90](../../crates/tracedb/src/routes/tail.rs#L87), [tail.rs:99-104](../../crates/tracedb/src/routes/tail.rs#L99) |
-| Tab too far behind (lag or > 5000 pending) → `resync`, the tab reloads | [tail.rs:84-86](../../crates/tracedb/src/routes/tail.rs#L84), [tail.rs:93-96](../../crates/tracedb/src/routes/tail.rs#L93) |
+| Change matches filter → keyed by run_id, only the newest version kept | [tail.rs:79-83](../../crates/server/src/routes/tail.rs#L79) |
+| First change after a quiet spell goes at once; the rest every 100 ms | [tail.rs:87-90](../../crates/server/src/routes/tail.rs#L87), [tail.rs:99-104](../../crates/server/src/routes/tail.rs#L99) |
+| Tab too far behind (lag or > 5000 pending) → `resync`, the tab reloads | [tail.rs:84-86](../../crates/server/src/routes/tail.rs#L84), [tail.rs:93-96](../../crates/server/src/routes/tail.rs#L93) |
 | Browser upserts by `last_seq`, so an older version never overwrites a newer one | [live.ts:29-39](../../ui/src/live.ts#L29) |
 
 How a burst is collapsed. One run is updated 1,000 times within a second; the tab gets about 10 messages, and
@@ -301,7 +301,7 @@ flowchart TB
 
 | Step | Code |
 |---|---|
-| `GET /api/roots?project=…&cursor=…` | [routes/api.rs:32-50](../../crates/tracedb/src/routes/api.rs#L32) |
+| `GET /api/roots?project=…&cursor=…` | [routes/api.rs:32-50](../../crates/server/src/routes/api.rs#L32) |
 | Cursor checked against a hash of the filter, so it can't be reused with a different filter | [query/src/lib.rs:47-59](../../crates/query/src/lib.rs#L47), [cursor.rs:27-34](../../crates/query/src/cursor.rs#L27) |
 | Keyset scan over `BTreeSet<(Reverse(start), run_id)>`: range after the cursor, take `limit+1` to know if there's more | [store.rs:164-204](../../crates/ingest/src/store.rs#L164) |
 | Trace view: the trace's runs sorted by `dotted_order`, which is tree order | [store.rs:147-161](../../crates/ingest/src/store.rs#L147) |
@@ -310,13 +310,13 @@ flowchart TB
 
 | Code | Meaning | Raised at |
 |---|---|---|
-| 202 | durable and applied (some items may be listed in `rejected`) | [routes/ingest.rs:117-121](../../crates/tracedb/src/routes/ingest.rs#L117) |
+| 202 | durable and applied (some items may be listed in `rejected`) | [routes/ingest.rs:117-121](../../crates/server/src/routes/ingest.rs#L117) |
 | 429 + Retry-After: 1 | writer queue full | [ingest/src/lib.rs:267-273](../../crates/ingest/src/lib.rs#L267) |
 | 507 | memory budget full and the batch adds a new run | [writer.rs:82-89](../../crates/ingest/src/writer.rs#L82) |
 | 503 + Retry-After: 5 | WAL write or fsync failed | [writer.rs:133-140](../../crates/ingest/src/writer.rs#L133) |
-| 413 / 415 / 501 | body over 50 MB / multipart / feedback | [tracedb/src/lib.rs:55](../../crates/tracedb/src/lib.rs#L55), [routes/ingest.rs:66-80](../../crates/tracedb/src/routes/ingest.rs#L66) |
+| 413 / 415 / 501 | body over 50 MB / multipart / feedback | [tracedb/src/lib.rs:55](../../crates/server/src/lib.rs#L52), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
 
-The mapping from errors to codes is in [routes/errors.rs:23](../../crates/tracedb/src/routes/errors.rs#L23).
+The mapping from errors to codes is in [routes/errors.rs:23](../../crates/server/src/routes/errors.rs#L23).
 
 ## 5. Things to try while reading
 
@@ -330,7 +330,7 @@ cargo test --release -p tracedb --test crash -- --ignored   # kill -9 harness (s
 
 The tests are the spec in executable form: [model/tests/merge.rs](../../crates/model/tests/merge.rs),
 [ingest/tests/wal_replay.rs](../../crates/ingest/tests/wal_replay.rs),
-[tracedb/tests/e2e_tail.rs](../../crates/tracedb/tests/e2e_tail.rs).
+[tracedb/tests/e2e_tail.rs](../../crates/server/tests/e2e_tail.rs).
 
 ## 6. Known rough edges (found while writing this guide, not fixed)
 

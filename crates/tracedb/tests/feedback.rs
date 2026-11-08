@@ -1,7 +1,7 @@
 //! `POST /feedback`, `PATCH /feedback/{id}` and `GET /api/feedback` (contracts/http-api.md): stored in the catalog
 //! whether or not the run exists, attached when it arrives, reloaded on start, kept through kill -9.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};

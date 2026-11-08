@@ -8,46 +8,54 @@ license.workspace = true
 [lints]
 workspace = true
 
-[lib]
-name = "tracedb"
-path = "src/lib.rs"
-
 [[bin]]
 name = "tracedb"
 path = "src/main.rs"
 
+[features]
+default = ["tools"]
+# `seed`, `query`, `demo` and `bench`; without it the binary only has `serve`.
+tools = ["dep:tracedb-tools"]
+
 [dependencies]
 tracedb-model.workspace = true
 tracedb-ingest.workspace = true
-tracedb-query.workspace = true
 tracedb-storage.workspace = true
-indexmap.workspace = true
-tokio-stream.workspace = true
+tracedb-server.workspace = true
+tracedb-tools = { workspace = true, optional = true }
 tokio.workspace = true
-axum.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
 clap.workspace = true
-rust-embed.workspace = true
-mime_guess.workspace = true
-tower-http.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
-anyhow.workspace = true
-xxhash-rust.workspace = true
-reqwest.workspace = true
-thiserror.workspace = true
-tempfile.workspace = true
-zstd.workspace = true
-httparse.workspace = true
 tikv-jemallocator.workspace = true
 tikv-jemalloc-ctl.workspace = true
-datafusion.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
-proptest.workspace = true
-futures-util.workspace = true
+tracedb-server = { workspace = true, features = ["testkit"] }
+tracedb-tools.workspace = true
 sqlx.workspace = true
 url.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[[test]]
+name = "bench_cli"
+required-features = ["tools"]
+
+[[test]]
+name = "bench_m2"
+required-features = ["tools"]
+
+[[test]]
+name = "cli_query"
+required-features = ["tools"]
+
+[[test]]
+name = "demo"
+required-features = ["tools"]
+
+[[test]]
+name = "idle_memory"
+required-features = ["tools"]

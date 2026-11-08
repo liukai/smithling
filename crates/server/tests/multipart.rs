@@ -1,7 +1,7 @@
 //! `POST /runs/multipart`: the SDK's multipart upload (plain or zstd) stores runs exactly as `/runs/batch` does,
 //! and bad parts are rejected by name (contracts/http-api.md).
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -400,7 +400,7 @@ async fn decoded_body_over_the_limit_is_413() {
     parts.push(Part {
         name: format!("attachment.{}.big", uid(1)),
         content_type: "application/octet-stream".into(),
-        data: vec![0; tracedb::MAX_BODY_BYTES + 1],
+        data: vec![0; tracedb_server::MAX_BODY_BYTES + 1],
         with_length: true,
     });
     let body = encode(&parts);

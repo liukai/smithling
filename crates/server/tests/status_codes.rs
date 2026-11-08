@@ -1,11 +1,11 @@
 //! Whole-request failures use status codes the SDK acts on (contracts/http-api.md).
 
-mod common;
+use tracedb_server::testkit as common;
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use tracedb::routes::errors::accept_error;
 use tracedb_ingest::AcceptError;
+use tracedb_server::routes::errors::accept_error;
 
 fn root(n: u32, project: &str) -> Value {
     let id = format!("00000000-0000-4000-8000-{n:012}");
@@ -76,7 +76,7 @@ async fn info_has_every_batch_key_the_sdk_reads() {
 #[tokio::test]
 async fn oversized_body_is_413() {
     let server = common::start().await;
-    let big = vec![b'x'; tracedb::MAX_BODY_BYTES + 1];
+    let big = vec![b'x'; tracedb_server::MAX_BODY_BYTES + 1];
     let r = reqwest::Client::new()
         .post(server.url("/runs/batch"))
         .header("content-type", "application/json")

@@ -1,0 +1,47 @@
+[package]
+name = "tracedb-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Helpers for integration tests in this and other crates: an in-process server and request helpers.
+testkit = ["dep:tempfile", "dep:reqwest", "dep:futures-util"]
+
+[dependencies]
+tracedb-model.workspace = true
+tracedb-ingest.workspace = true
+tracedb-query.workspace = true
+tracedb-storage.workspace = true
+indexmap.workspace = true
+tokio-stream.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+xxhash-rust.workspace = true
+zstd.workspace = true
+httparse.workspace = true
+tempfile = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+tracedb-server = { workspace = true, features = ["testkit"] }
+base64.workspace = true
+proptest.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+sqlx.workspace = true
+url.workspace = true

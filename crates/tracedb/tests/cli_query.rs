@@ -1,7 +1,7 @@
 //! `tracedb query` (contracts/cli.md): a table or JSON lines from a running server; exit 1 on a bad query,
 //! 2 when the server isn't reachable.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use common::*;
 use serde_json::{Value, json};
@@ -219,15 +219,18 @@ async fn search_adds_a_phrase_to_the_filter() {
 async fn compares_batch_a_with_batch_b_in_b_columns() {
     const MB: u64 = 1024 * 1024;
     let server = start_with(|c| c.limits.memtable_bytes = MB).await;
-    let s = tracedb::scenario::generate(7, tracedb_model::Ts::now().0, MB);
-    tracedb::scenario::load(&format!("http://{}", server.addr), &s)
+    let s = tracedb_tools::scenario::generate(7, tracedb_model::Ts::now().0, MB);
+    tracedb_tools::scenario::load(&format!("http://{}", server.addr), &s)
         .await
         .unwrap();
     let tag = |t: &str| format!("has(tags, {t:?})");
-    let (a, b) = (tag(tracedb::scenario::BATCH_TAG), tag(tracedb::scenario::BATCH_B_TAG));
+    let (a, b) = (
+        tag(tracedb_tools::scenario::BATCH_TAG),
+        tag(tracedb_tools::scenario::BATCH_B_TAG),
+    );
     let base = [
         "--project",
-        tracedb::scenario::PROJECT,
+        tracedb_tools::scenario::PROJECT,
         "--group-by",
         "name",
         "--metrics",

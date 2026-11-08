@@ -1,7 +1,7 @@
 //! Live views for any query (spec Story 4, design §4.5): the query re-run over the traces that changed.
 //! M1's `?project=` / `?trace=` tails are covered by `e2e_tail.rs`.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::time::{Duration, Instant};
 

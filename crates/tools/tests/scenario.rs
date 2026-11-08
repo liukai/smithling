@@ -1,17 +1,17 @@
 //! The overnight-eval scenario (research M2-R14, M3-R11): deterministic, exact planted counts checked naively over
 //! the generated items, and loaded through `/runs/batch` so its checks cross memtable and files.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
-use tracedb::langsmith_map::{Dialect, map_item};
-use tracedb::scenario::{self, Scenario, generate, load};
 use tracedb_model::cost::{self, Cost, Prices};
 use tracedb_model::filter::parse_filter;
 use tracedb_model::{Op, RunEvent, Source, Ts};
 use tracedb_query::QuerySpec;
+use tracedb_server::langsmith_map::{Dialect, map_item};
+use tracedb_tools::scenario::{self, Scenario, generate, load};
 
 /// 2026-11-06T12:00:00Z.
 const NOW: i64 = 1_793_966_400_000_000;
@@ -481,11 +481,11 @@ async fn refuses_a_server_that_already_holds_the_batch() {
     let s = generate(7, Ts::now().0, MB);
     load(&url, &s).await.unwrap();
     let err = load(&url, &s).await.unwrap_err();
-    assert!(matches!(err, tracedb::seed::SeedError::Refused(..)), "{err}");
+    assert!(matches!(err, tracedb_tools::seed::SeedError::Refused(..)), "{err}");
 }
 
 #[tokio::test]
 async fn unreachable_server_is_reported() {
     let err = load("http://127.0.0.1:9", &generate(1, NOW, MB)).await.unwrap_err();
-    assert!(matches!(err, tracedb::seed::SeedError::Unreachable(..)));
+    assert!(matches!(err, tracedb_tools::seed::SeedError::Unreachable(..)));
 }

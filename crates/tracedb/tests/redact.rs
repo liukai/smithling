@@ -3,8 +3,8 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tracedb::{ServeConfig, storage_summary};
 use tracedb_ingest::Limits;
+use tracedb_server::{ServeConfig, storage_summary};
 
 const SECRETS: [&str; 4] = ["hunter2", "topsecret", "AKIAEXAMPLE", "sekret"];
 

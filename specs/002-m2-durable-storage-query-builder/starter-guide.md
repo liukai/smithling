@@ -50,13 +50,13 @@ Four ideas carry M2 (on top of M1's four):
 | 🟢 | Click to build, text to edit, both the same query | chips ⇄ AST ⇄ text; parser and printer mirrored in TypeScript | [ui/src/query/](../../ui/src/query/chips.ts), [model/filter/print.rs](../../crates/model/src/filter/print.rs) |
 | 🟢 | Fields and values with counts | flush-time field stats + memtable stats per request | [segment.rs](../../crates/storage/src/segment.rs) (`StatsBuilder`), [query/fields.rs](../../crates/query/src/fields.rs) |
 | 🟢 | Samples and Table views; URL is the query | `columns`, URL ⇄ `QueryState` | [views/](../../ui/src/views/Samples.tsx), [query/url.ts](../../ui/src/query/url.ts) |
-| 🟠 | Any query live | re-query changed traces every 100 ms | [query/tail.rs](../../crates/query/src/tail.rs), [routes/tail.rs](../../crates/tracedb/src/routes/tail.rs) |
+| 🟠 | Any query live | re-query changed traces every 100 ms | [query/tail.rs](../../crates/query/src/tail.rs), [routes/tail.rs](../../crates/server/src/routes/tail.rs) |
 | 🟠 | Bursts slow down, never fail | `429` when the next memtable fills during a flush, or unflushed WAL ≥ 1 GB | [writer.rs](../../crates/ingest/src/writer.rs) |
 | 🟠 | Fast restart | catalog read, small WAL replay, multi-version set from one column | [recover.rs](../../crates/ingest/src/recover.rs) |
 | 🟢 | Same results on cloud storage | `Store` (local or S3), `Metastore` (SQLite or Postgres) | [object.rs](../../crates/storage/src/object.rs), [metastore.rs](../../crates/storage/src/metastore.rs) |
-| 🟢 | Scenario numbers on every change | `tracedb demo`, overnight-eval scenario | [demo.rs](../../crates/tracedb/src/demo.rs), [scenario.rs](../../crates/tracedb/src/scenario.rs) |
+| 🟢 | Scenario numbers on every change | `tracedb demo`, overnight-eval scenario | [demo.rs](../../crates/tools/src/demo.rs), [scenario.rs](../../crates/tools/src/scenario.rs) |
 | 🟠 | Honest retries | identity check before the WAL | [writer.rs](../../crates/ingest/src/writer.rs) |
-| 🟠 | UI work without server rebuilds; Rust build without Node | `--ui-dir`; `build.rs` embeds `ui/dist` if present | [routes/ui.rs](../../crates/tracedb/src/routes/ui.rs), [build.rs](../../crates/tracedb/build.rs) |
+| 🟠 | UI work without server rebuilds; Rust build without Node | `--ui-dir`; `build.rs` embeds `ui/dist` if present | [routes/ui.rs](../../crates/server/src/routes/ui.rs), [build.rs](../../crates/server/build.rs) |
 
 ## 2. The system, one path at a time
 
@@ -173,10 +173,10 @@ Skip on the first pass: `segment.rs` encode/decode (long, mechanical), `parse.rs
 
 ## 4. Walkthrough: one run, from upload to the 23 quiet failures
 
-The overnight-eval scenario ([scenario.rs](../../crates/tracedb/src/scenario.rs)) plants a `fetch_url` step in 23
+The overnight-eval scenario ([scenario.rs](../../crates/tools/src/scenario.rs)) plants a `fetch_url` step in 23
 traces whose root finishes `ok`. Its start is uploaded with the batch; background traffic fills the 4 MB demo
 memtable until those starts are in files after two flushes; then the late update (error, `status_code: 429`) lands
-in the active memtable ([scenario.rs:336](../../crates/tracedb/src/scenario.rs#L336)). The developer then asks for
+in the active memtable ([scenario.rs:336](../../crates/tools/src/scenario.rs#L336)). The developer then asks for
 roots that finished ok but have an error anywhere in their trace. Bands: 🟠 the M1 write path, revised; 🟢 flush and
 query, new.
 
@@ -219,7 +219,7 @@ sequenceDiagram
 
 | Step | Code |
 |---|---|
-| Route, mapping and validation are M1's | [routes/ingest.rs:103-124](../../crates/tracedb/src/routes/ingest.rs#L103) → [ingest/src/lib.rs:530](../../crates/ingest/src/lib.rs#L530) |
+| Route, mapping and validation are M1's | [routes/ingest.rs:103-124](../../crates/server/src/routes/ingest.rs#L103) → [ingest/src/lib.rs:530](../../crates/ingest/src/lib.rs#L530) |
 | Queue permit; a full queue is `429` (as M1) | [lib.rs:554-560](../../crates/ingest/src/lib.rs#L554) |
 | Writer loop: freeze check, gather a group, refuse if overloaded | [writer.rs:48-87](../../crates/ingest/src/writer.rs#L48) |
 | Dedup: an exact repeat is counted as accepted, skipped | [writer.rs:172-178](../../crates/ingest/src/writer.rs#L172) |
@@ -243,10 +243,10 @@ disk aren't checked here ([D-009](../000-tracedb-master-plan/decisions.md#d-009)
 | Roll the WAL first, so every older file holds only frozen events | [writer.rs:112-117](../../crates/ingest/src/writer.rs#L112) → [wal.rs:159](../../crates/ingest/src/wal.rs#L159) |
 | O(1) swap: active becomes frozen, a fresh active takes uploads | [writer.rs:118-123](../../crates/ingest/src/writer.rs#L118) |
 | Hand the flusher the frozen memtable, its max seq and its dedup keys | [writer.rs:124-131](../../crates/ingest/src/writer.rs#L124) |
-| "Busy" only if the *next* memtable fills during a flush, or the WAL is over 1 GB → `429 Retry-After: 1` | [writer.rs:90-94](../../crates/ingest/src/writer.rs#L90), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/tracedb/src/routes/errors.rs#L25) |
+| "Busy" only if the *next* memtable fills during a flush, or the WAL is over 1 GB → `429 Retry-After: 1` | [writer.rs:90-94](../../crates/ingest/src/writer.rs#L90), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/server/src/routes/errors.rs#L25) |
 
 `507` is gone ([D-006](../000-tracedb-master-plan/decisions.md#d-006)). `--max-memory` and `--max-runs` are still
-accepted, with a notice ([main.rs:118-120](../../crates/tracedb/src/main.rs#L118)).
+accepted, with a notice ([main.rs:118-120](../../crates/tracedb/src/main.rs#L122)).
 
 ### 🟢 Scene 3: the flush (the part that must never lose data)
 
@@ -335,7 +335,7 @@ flowchart TB
 | Replay: skip `seq ≤ S`; apply the rest through the same `RunStore::apply`; a new state from an update joins the multi-version set | [recover.rs:144-169](../../crates/ingest/src/recover.rs#L144) |
 | Flushed records left by a crash between commit and trim: save their keys, then trim | [recover.rs:174-191](../../crates/ingest/src/recover.rs#L174) |
 | An M1 folder (only `wal/`) gets a fresh catalog with `flushed_seq = 0` | [recover.rs:3](../../crates/ingest/src/recover.rs#L3), [metastore.rs:97-103](../../crates/storage/src/metastore.rs#L97) |
-| Start writer and flusher; the port opens only after this | [lib.rs:444-527](../../crates/ingest/src/lib.rs#L444), [tracedb/src/lib.rs:120-141](../../crates/tracedb/src/lib.rs#L120) |
+| Start writer and flusher; the port opens only after this | [lib.rs:444-527](../../crates/ingest/src/lib.rs#L444), [tracedb/src/lib.rs:120-141](../../crates/server/src/lib.rs#L117) |
 
 M1's torn-tail versus corruption rule for WAL records is unchanged (`replay_file`,
 [wal.rs:262](../../crates/ingest/src/wal.rs#L262)).
@@ -364,7 +364,7 @@ flowchart TB
 
 | Step | Code |
 |---|---|
-| HTTP body → `QuerySpec`; each filter slot is parsed, and a parse error is `400 bad_filter` with slot and byte range | [routes/api.rs:165-181](../../crates/tracedb/src/routes/api.rs#L165), [api.rs:90](../../crates/tracedb/src/routes/api.rs#L90), [api.rs:58-78](../../crates/tracedb/src/routes/api.rs#L58) → `parse_filter` [parse.rs:22](../../crates/model/src/filter/parse.rs#L22) |
+| HTTP body → `QuerySpec`; each filter slot is parsed, and a parse error is `400 bad_filter` with slot and byte range | [routes/api.rs:165-181](../../crates/server/src/routes/api.rs#L165), [api.rs:90](../../crates/server/src/routes/api.rs#L90), [api.rs:58-78](../../crates/server/src/routes/api.rs#L58) → `parse_filter` [parse.rs:22](../../crates/model/src/filter/parse.rs#L22) |
 | One `QuerySpec` for every read (UI, API, CLI, live, demo) | [query/lib.rs:60](../../crates/query/src/lib.rs#L60) |
 | Cursor: checked against a hash of the query; later pages narrow the time bound to the cursor | [lib.rs:265-279](../../crates/query/src/lib.rs#L265) → [cursor.rs:27](../../crates/query/src/cursor.rs#L27) |
 | **Pin**: under the memtable lock take the `Version` and copies of the memtable runs in scope, without payloads | [lib.rs:281](../../crates/query/src/lib.rs#L281) → `scan::pin` [scan.rs:162](../../crates/query/src/scan.rs#L162) |
@@ -396,13 +396,13 @@ Where the design moved:
 
 | Step | Code |
 |---|---|
-| `GET /api/traces/{id}` | [routes/api.rs:243](../../crates/tracedb/src/routes/api.rs#L243) |
+| `GET /api/traces/{id}` | [routes/api.rs:243](../../crates/server/src/routes/api.rs#L243) |
 | Scope = one trace id: files pruned by `min/max_trace_id`, then DataFusion uses the `trace_id` bloom | [query/lib.rs:466-472](../../crates/query/src/lib.rs#L466), [scan.rs:66-73](../../crates/query/src/scan.rs#L66), [scan.rs:104-106](../../crates/query/src/scan.rs#L104) |
 | Same merge as Scene 6; child counts computed from the trace; sorted by `dotted_order` (the M1 tree order) | [lib.rs:476-492](../../crates/query/src/lib.rs#L476) |
 | `GET /api/runs/{id}?include=…`: header by run id, then payload from the memtable or payload files, newest version per field | [lib.rs:496-528](../../crates/query/src/lib.rs#L496) → `scan::payload` [scan.rs:391](../../crates/query/src/scan.rs#L391) |
 | The UI tree and step panel are M1's | [ui/src/TraceView.tsx](../../ui/src/TraceView.tsx) |
 
-`/api/roots` (M1's list) is now a query: [api.rs:196-234](../../crates/tracedb/src/routes/api.rs#L196).
+`/api/roots` (M1's list) is now a query: [api.rs:196-234](../../crates/server/src/routes/api.rs#L196).
 `/api/projects` counts every run, from the catalog ([D-019](../000-tracedb-master-plan/decisions.md#d-019),
 [lib.rs:532](../../crates/query/src/lib.rs#L532)).
 
@@ -410,7 +410,7 @@ Where the design moved:
 
 | Step | Code |
 |---|---|
-| `GET /api/tail?q=<query body>` (or M1's `?project=` / `?trace=`); HTTP only frames SSE | [routes/tail.rs:30-74](../../crates/tracedb/src/routes/tail.rs#L30) |
+| `GET /api/tail?q=<query body>` (or M1's `?project=` / `?trace=`); HTTP only frames SSE | [routes/tail.rs:30-74](../../crates/server/src/routes/tail.rs#L30) |
 | **Subscribe before `Hello`**, so no change falls in the gap | [query/tail.rs:99-114](../../crates/query/src/tail.rs#L99) |
 | Each change adds its trace (and run) to the pending set | [tail.rs:142-150](../../crates/query/src/tail.rs#L142) |
 | Re-run the query with `traces = changed`, no limit; the first change after a quiet spell goes at once, then ≤ every 100 ms; changes keep arriving while a query runs | [tail.rs:119-128](../../crates/query/src/tail.rs#L119) |
@@ -429,7 +429,7 @@ conditions, only runs newer than the tab's load are sent ([tail.rs:103-107](../.
 | Stats per file are built at flush: per path and type, count, top 50 values, `other_count`; past 10,000 paths a file is marked incomplete | `StatsBuilder` [segment.rs:683](../../crates/storage/src/segment.rs#L683), [segment.rs:695](../../crates/storage/src/segment.rs#L695) |
 | They load into `Version.field_stats` at start and at each flush | [recover.rs:108-112](../../crates/ingest/src/recover.rs#L108), [memtable.rs:35](../../crates/ingest/src/memtable.rs#L35) |
 | `catalog`: file stats in scope + memtable stats computed now, the active memtable in 4,096-run batches so the writer never stalls | [query/fields.rs:83-127](../../crates/query/src/fields.rs#L83) |
-| `/api/fields`: paths by count; `/api/fields/values`: top 50 values, `approximate` when cut | [fields.rs:130](../../crates/query/src/fields.rs#L130), [fields.rs:168](../../crates/query/src/fields.rs#L168) ← [routes/api.rs:312-327](../../crates/tracedb/src/routes/api.rs#L312) |
+| `/api/fields`: paths by count; `/api/fields/values`: top 50 values, `approximate` when cut | [fields.rs:130](../../crates/query/src/fields.rs#L130), [fields.rs:168](../../crates/query/src/fields.rs#L168) ← [routes/api.rs:312-327](../../crates/server/src/routes/api.rs#L312) |
 | UI: click a value adds `eq(path, v)`, Alt-click adds `not(eq(path, v))` | [ui/src/fields/ValueList.tsx:39](../../ui/src/fields/ValueList.tsx#L39), [views/Runs.tsx:93-96](../../ui/src/views/Runs.tsx#L93) |
 
 ### 🟢 Scene 10: the panel and the text are the same query
@@ -451,23 +451,23 @@ The parser is mirrored, not shared. [parse.test.ts](../../ui/src/query/parse.tes
 
 | Step | Code |
 |---|---|
-| Without `--url`, start its own server on a temp folder (4 MB memtable) | [demo.rs:90-139](../../crates/tracedb/src/demo.rs#L90), [demo.rs:156](../../crates/tracedb/src/demo.rs#L156) |
-| Generate the scenario: 200 batch roots, 14 failing, 23 quiet failures, prompt versions, background traffic | [scenario.rs:65](../../crates/tracedb/src/scenario.rs#L65), [scenario.rs:193](../../crates/tracedb/src/scenario.rs#L193) |
-| Load: starts, background until they're in files after two flushes, then late updates into the memtable | [scenario.rs:336-407](../../crates/tracedb/src/scenario.rs#L336) |
-| Five checks through the real HTTP API, including "checks across memtable and files" | [demo.rs:255-343](../../crates/tracedb/src/demo.rs#L255) |
-| Pass/fail table; exit 0 / 1 / 2 (not reachable) | [demo.rs:63](../../crates/tracedb/src/demo.rs#L63) |
+| Without `--url`, start its own server on a temp folder (4 MB memtable) | [demo.rs:90-139](../../crates/tools/src/demo.rs#L90), [demo.rs:156](../../crates/tools/src/demo.rs#L156) |
+| Generate the scenario: 200 batch roots, 14 failing, 23 quiet failures, prompt versions, background traffic | [scenario.rs:65](../../crates/tools/src/scenario.rs#L65), [scenario.rs:193](../../crates/tools/src/scenario.rs#L193) |
+| Load: starts, background until they're in files after two flushes, then late updates into the memtable | [scenario.rs:336-407](../../crates/tools/src/scenario.rs#L336) |
+| Five checks through the real HTTP API, including "checks across memtable and files" | [demo.rs:255-343](../../crates/tools/src/demo.rs#L255) |
+| Pass/fail table; exit 0 / 1 / 2 (not reachable) | [demo.rs:63](../../crates/tools/src/demo.rs#L63) |
 
 ## 5. HTTP status codes in M2
 
 | | Code | Meaning | Raised at |
 |---|---|---|---|
-| ⚪ | 202 | durable and applied (rejections listed in `rejected[]`) | [routes/ingest.rs:117-121](../../crates/tracedb/src/routes/ingest.rs#L117) |
-| 🟠 | 429 + Retry-After: 1 | queue full; or next memtable full during a flush; or unflushed WAL ≥ 1 GB | [ingest/src/lib.rs:554-560](../../crates/ingest/src/lib.rs#L554), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/tracedb/src/routes/errors.rs#L25) |
-| ⚪ | 503 + Retry-After: 5 | WAL write or fsync failed | [writer.rs:222-234](../../crates/ingest/src/writer.rs#L222) → [errors.rs:26-28](../../crates/tracedb/src/routes/errors.rs#L26) |
-| 🟢 | 400 `bad_filter` / `unsupported` | filter text error, with `slot`, `start`, `end` | [routes/api.rs:58-78](../../crates/tracedb/src/routes/api.rs#L58) |
-| 🟢 | 400 `bad_cursor`, `bad_time`, `bad_order`, `bad_column` | other query errors | [api.rs:80-163](../../crates/tracedb/src/routes/api.rs#L80) |
-| 🟢 | 500 `query_failed` | engine or storage error during a query | [api.rs:158-163](../../crates/tracedb/src/routes/api.rs#L158) |
-| ⚪ | 413 / 415 / 501 | body over 50 MB / multipart / feedback (the message now says M3) | [tracedb/src/lib.rs:98](../../crates/tracedb/src/lib.rs#L98), [routes/ingest.rs:66-80](../../crates/tracedb/src/routes/ingest.rs#L66) |
+| ⚪ | 202 | durable and applied (rejections listed in `rejected[]`) | [routes/ingest.rs:117-121](../../crates/server/src/routes/ingest.rs#L117) |
+| 🟠 | 429 + Retry-After: 1 | queue full; or next memtable full during a flush; or unflushed WAL ≥ 1 GB | [ingest/src/lib.rs:554-560](../../crates/ingest/src/lib.rs#L554), [writer.rs:75-80](../../crates/ingest/src/writer.rs#L75) → [errors.rs:25](../../crates/server/src/routes/errors.rs#L25) |
+| ⚪ | 503 + Retry-After: 5 | WAL write or fsync failed | [writer.rs:222-234](../../crates/ingest/src/writer.rs#L222) → [errors.rs:26-28](../../crates/server/src/routes/errors.rs#L26) |
+| 🟢 | 400 `bad_filter` / `unsupported` | filter text error, with `slot`, `start`, `end` | [routes/api.rs:58-78](../../crates/server/src/routes/api.rs#L58) |
+| 🟢 | 400 `bad_cursor`, `bad_time`, `bad_order`, `bad_column` | other query errors | [api.rs:80-163](../../crates/server/src/routes/api.rs#L80) |
+| 🟢 | 500 `query_failed` | engine or storage error during a query | [api.rs:158-163](../../crates/server/src/routes/api.rs#L158) |
+| ⚪ | 413 / 415 / 501 | body over 50 MB / multipart / feedback (the message now says M3) | [tracedb/src/lib.rs:98](../../crates/server/src/lib.rs#L95), [routes/ingest.rs:66-80](../../crates/server/src/routes/ingest.rs#L66) |
 
 `507` is gone: M2 flushes to disk instead.
 

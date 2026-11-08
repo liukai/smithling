@@ -1,7 +1,7 @@
 //! Replays real LangSmith SDK traffic (recorded by scripts/record-sdk-fixtures.py) and compares the
 //! stored runs with the recorder's independent expectation.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::path::PathBuf;
 

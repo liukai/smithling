@@ -1,8 +1,8 @@
-#![allow(dead_code)]
+//! In-process server and request helpers for integration tests (feature `testkit`).
 
 use std::net::SocketAddr;
 
-use tracedb::{AppState, app};
+use crate::{AppState, app};
 use tracedb_ingest::{Ingest, IngestConfig};
 
 pub struct Server {

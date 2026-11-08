@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tracedb::{ServeConfig, parse_size, serve};
 use tracedb_ingest::Limits;
+use tracedb_server::{ServeConfig, parse_size, serve};
 
 /// Returns freed memory to the OS (the system allocator kept ~1 GB after a load); tuned in `.cargo/config.toml`.
 #[global_allocator]
@@ -61,6 +61,7 @@ enum Cmd {
         #[arg(long)]
         prices: Option<PathBuf>,
     },
+    #[cfg(feature = "tools")]
     /// Generate realistic research-agent traces and send them to a running tracedb.
     Seed {
         #[arg(long, default_value_t = 100)]
@@ -73,12 +74,15 @@ enum Cmd {
         #[arg(long)]
         no_delay: bool,
     },
+    #[cfg(feature = "tools")]
     /// Run a query against a running tracedb and print a table (or JSON lines).
-    Query(tracedb::cli_query::QueryArgs),
+    Query(tracedb_tools::cli_query::QueryArgs),
+    #[cfg(feature = "tools")]
     /// Load the overnight-eval scenario and run the M2 and M3 checks (`--checks` picks); prints a pass/fail table.
-    Demo(tracedb::demo::DemoArgs),
+    Demo(tracedb_tools::demo::DemoArgs),
+    #[cfg(feature = "tools")]
     /// Load the reference volume, time each query type and print P50/P99 against the targets.
-    Bench(tracedb::bench::BenchArgs),
+    Bench(tracedb_tools::bench::BenchArgs),
 }
 
 /// `10m`, `30s`, `2h` → microseconds.
@@ -184,25 +188,30 @@ async fn run() -> ExitCode {
                 }
             }
         }
+        #[cfg(feature = "tools")]
         Cmd::Demo(args) => {
-            let code = tracedb::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            let code = tracedb_tools::demo::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
+        #[cfg(feature = "tools")]
         Cmd::Bench(args) => {
-            let code = tracedb::bench::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            let code = tracedb_tools::bench::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
+        #[cfg(feature = "tools")]
         Cmd::Query(args) => {
-            let code = tracedb::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
+            let code =
+                tracedb_tools::cli_query::run(&args, &mut std::io::stdout().lock(), &mut std::io::stderr()).await;
             ExitCode::from(code)
         }
+        #[cfg(feature = "tools")]
         Cmd::Seed {
             traces,
             seed,
             url,
             no_delay,
         } => {
-            let generated = tracedb::seed::generate_before(seed, traces, tracedb_model::Ts::now().0);
+            let generated = tracedb_tools::seed::generate_before(seed, traces, tracedb_model::Ts::now().0);
             let steps: usize = generated.iter().map(|t| t.steps.len()).sum();
             let late = generated
                 .iter()
@@ -214,12 +223,12 @@ async fn run() -> ExitCode {
                     "{late} steps finish late; their updates follow over the next 2 minutes (use --no-delay to skip the wait)"
                 );
             }
-            match tracedb::seed::send(url.trim_end_matches('/'), &generated, no_delay).await {
+            match tracedb_tools::seed::send(url.trim_end_matches('/'), &generated, no_delay).await {
                 Ok((posts, patches)) => {
                     println!("sent {traces} traces ({steps} steps): {posts} starts, {patches} late updates");
                     ExitCode::SUCCESS
                 }
-                Err(e @ tracedb::seed::SeedError::Unreachable(..)) => {
+                Err(e @ tracedb_tools::seed::SeedError::Unreachable(..)) => {
                     eprintln!("tracedb seed: {e}");
                     ExitCode::from(2)
                 }

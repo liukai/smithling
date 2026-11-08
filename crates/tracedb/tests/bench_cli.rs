@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use tracedb::bench;
+use tracedb_tools::bench;
 
 fn bench(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tracedb"));

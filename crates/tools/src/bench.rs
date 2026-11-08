@@ -22,7 +22,7 @@ use tracedb_ingest::Limits;
 use tracedb_model::Ts;
 use uuid::Uuid;
 
-use crate::{AppState, ServeConfig, app};
+use tracedb_server::{AppState, ServeConfig, app};
 
 pub const PROJECT: &str = "bench";
 pub const STEPS: u64 = 9;
@@ -938,7 +938,7 @@ async fn start(dir: &Path, limits: Limits) -> anyhow::Result<Own> {
         prices: None,
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
-    let (state, _) = tokio::task::spawn_blocking(move || crate::open(&cfg)).await??;
+    let (state, _) = tokio::task::spawn_blocking(move || tracedb_server::open(&cfg)).await??;
     state.query.warm_aggregates();
     let addr = listener.local_addr()?;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();

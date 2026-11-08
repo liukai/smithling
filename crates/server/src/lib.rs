@@ -1,12 +1,9 @@
 //! The `tracedb` server: HTTP routes over the ingest and query services, plus the embedded UI.
 
-pub mod bench;
-pub mod cli_query;
-pub mod demo;
 pub mod langsmith_map;
 pub mod routes;
-pub mod scenario;
-pub mod seed;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

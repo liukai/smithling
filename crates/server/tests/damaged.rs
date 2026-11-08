@@ -1,7 +1,7 @@
 //! A data file deleted while serving: queries, traces, runs and fields answer from the other files and name
 //! the skipped one; `/healthz` reports it (spec Story 7 scenario 1, M3-FR-18).
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::time::{Duration, Instant};
 

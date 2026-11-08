@@ -139,7 +139,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   sampled_pct`. For a group-by on a path with field stats, the first estimate can come straight from the catalog's
   `field_stats` counts. Closing the stream cancels the computation; the UI drops events for an old query id.
 - **Why**: constitution II (progressive querying), FR-11, SC-06 (first estimate ≤ 1 s). SSE (axum 0.8.9) is how
-  `/api/tail` already streams ([routes/tail.rs](../../crates/tracedb/src/routes/tail.rs)).
+  `/api/tail` already streams ([routes/tail.rs](../../crates/server/src/routes/tail.rs)).
 - **Considered**: newest-first windows with partial sums (SmithDB's shape for lists; biased for "group batch a by
   name", since the newest files hold the late finishers); a WebSocket (no need for two-way traffic).
 
@@ -180,7 +180,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 
 ## 🟢 M3-R9. Multipart upload (settled: advertise multipart + zstd)
 - **Finding**: tracedb's `/info` decides the SDK's path. Today it returns `use_multipart_endpoint: false`
-  ([routes/ingest.rs:26](../../crates/tracedb/src/routes/ingest.rs#L26)), so the SDK never uses multipart; if `/info`
+  ([routes/ingest.rs:26](../../crates/server/src/routes/ingest.rs#L26)), so the SDK never uses multipart; if `/info`
   fails, the SDK defaults to multipart. Compression happens only if `instance_flags.zstd_compression_enabled`.
 - **Format** (SDK 0.14.17): `POST /runs/multipart`, boundary = uuid4 hex. Parts:
   - `post.{id}` / `patch.{id}`: the run minus its large fields;
@@ -238,7 +238,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 - **Finding**: today all 37 errored batch steps are `fetch_url` 429s with `error = "HTTPError: 429 Too Many
   Requests"`, the `fetch_url` count is random, late steps push `end_time`, the background `batch=nightly-smoke` uses
   the same error text, there is no cost field, and llm runs have no model
-  ([scenario.rs](../../crates/tracedb/src/scenario.rs)).
+  ([scenario.rs](../../crates/tools/src/scenario.rs)).
 - **Decision, batch a** (`batch=2026-11-05-a`, unchanged M2 counts):
 
   | What | Planted |
@@ -350,7 +350,7 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   version (M4 compaction), a compact or on-disk store for the kept rows, or larger memtables (fewer files) — for the
   user to decide; not hidden by a looser target.
 - **`tracedb bench`** `[--runs 2M] [--data DIR] [--json FILE]`:
-  - Moves `bench_m2::run()` into `crates/tracedb/src/bench.rs`.
+  - Moves `bench_m2::run()` into `crates/tools/src/bench.rs`.
   - Loads through HTTP `/runs/batch` from 8 clients while a query loop runs (measures SC-04 too;
     `throughput.rs` asserts only 5k ev/s without queries today).
   - Query mix: 101 random traces and runs, 100 varied lists, text searches, grouped queries, suggestions.
@@ -368,10 +368,10 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
 
 | # | Finding | Decision |
 |---|---|---|
-| a | Start reads only files with `needs_merge` rows ([recover.rs:92](../../crates/ingest/src/recover.rs#L92)); `corrupt` is fixed at start (`lib.rs:400,607`); `read_core` sends every URL through one `read_parquet`, so one bad file → `500 query_failed` ([api.rs:161](../../crates/tracedb/src/routes/api.rs#L161)) | check the footer of every file at start; a shared, growing `damaged` map in `Ingest`; on a scan failure, probe the files, mark the culprit, retry without it, add a `skipped_files` warning; `/healthz` reports the live map |
+| a | Start reads only files with `needs_merge` rows ([recover.rs:92](../../crates/ingest/src/recover.rs#L92)); `corrupt` is fixed at start (`lib.rs:400,607`); `read_core` sends every URL through one `read_parquet`, so one bad file → `500 query_failed` ([api.rs:161](../../crates/server/src/routes/api.rs#L161)) | check the footer of every file at start; a shared, growing `damaged` map in `Ingest`; on a scan failure, probe the files, mark the culprit, retry without it, add a `skipped_files` warning; `/healthz` reports the live map |
 | b | Double registration: the retry loop re-calls `flush(&job)` ([flush.rs:58](../../crates/ingest/src/flush.rs#L58)); `segment::write` mints a fresh ULID per attempt ([segment.rs:190](../../crates/storage/src/segment.rs#L190)); `commit_flush` accepts `flushed_seq <= ?` ([metastore.rs:290](../../crates/storage/src/metastore.rs#L290)) | write files and ids **once per job**, outside the retry loop; in the transaction, an existing segment id means "already committed" → `Ok`; the job's max seq is the commit token |
 | c | `leave()` refetches only the header and keeps old columns ([Samples.tsx:76](../../ui/src/views/Samples.tsx#L76)); "N new" was left out in M2 (T063) | refetch the shown columns; buffer arrivals while scrolled and show an "N new" pill |
-| d | `seed` timestamps run from now forward ([seed.rs:84](../../crates/tracedb/src/seed.rs#L84), [main.rs:159](../../crates/tracedb/src/main.rs#L159)) | base = now − n·7 s − the longest duration |
+| d | `seed` timestamps run from now forward ([seed.rs:84](../../crates/tools/src/seed.rs#L84), [main.rs:159](../../crates/tracedb/src/main.rs#L163)) | base = now − n·7 s − the longest duration |
 | e | `identity_conflict` when seeding again into a loaded folder: reproduced; the **same** seed reuses run ids (`Rng::new(seed)`) with timestamps from now, so `dotted_order` differs. Not an ingest bug | mix the base time into seed's id stream (demo stays deterministic), or report "already seeded" |
 | f | A second start for a run already on disk isn't multi-version (D-016) | fixed first; aggregates depend on it (R4) |
 

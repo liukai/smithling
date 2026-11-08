@@ -1,0 +1,32 @@
+[package]
+name = "tracedb-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracedb-model.workspace = true
+tracedb-ingest.workspace = true
+tracedb-query.workspace = true
+tracedb-storage.workspace = true
+tracedb-server.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+datafusion.workspace = true
+
+[dev-dependencies]
+tracedb-server = { workspace = true, features = ["testkit"] }
+futures-util.workspace = true
+proptest.workspace = true

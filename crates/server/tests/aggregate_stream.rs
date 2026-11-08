@@ -2,7 +2,7 @@
 //! the request's `query_id`; a bad request or failure is one last `error {code, message}`; closing the
 //! connection cancels the computation.
 
-mod common;
+use tracedb_server::testkit as common;
 
 use std::time::{Duration, Instant};
 

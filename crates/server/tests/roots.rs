@@ -1,4 +1,4 @@
-mod common;
+use tracedb_server::testkit as common;
 
 use common::*;
 use serde_json::Value;
