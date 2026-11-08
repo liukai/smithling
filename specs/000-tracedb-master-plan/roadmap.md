@@ -50,20 +50,21 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-06: **Keep 000 in step with reality**: after every phase checkpoint, update the roadmap (STATE, NEXT, progress), the [decision log](decisions.md) for any change of direction, and the master plan/design notes where the design moved. The decision log records every change of an earlier decision.
 - 2026-11-06: **After M2 is built, spec M3 the same way as 002** (spec → plan → tasks via speckit, Appendix A starter guide); M3 docs stay uncommitted until the user approves them.
 
-**STATE as of 2026-11-07** (verified by `git log`, `cargo test --workspace` 145 passed, clippy `-D warnings`, `tracedb demo --seed 7` 5/5, crash harness 10/10, `bench_m2` at 2M runs):
-M2 is **built, passed locally** on branch `002-m2-durable-storage-query-builder` (83/83 tasks, plan units 1–12 plus
-fixes D-019–D-024). 2M-run bench: lists 13–51 ms, trace 6 ms, run 28 ms, suggestions 3 ms, disk 19% of raw JSON;
-with 300+ overlapping files and late updates sent without a project, failing roots 52 ms and quiet failures 109 ms.
-**Not yet verified**: the UI in a real browser; the cloud CI job and no-outbound check under strace (no Docker or
-remote CI here). **Known gap**: queries inside a project that holds many unmerged late updates take seconds (4.5 s at
-192k such rows) — M3 unit 12 / M4 compaction. M3 is **specced and planned** (`specs/003-m3-search-aggregates-speed/`,
-128 tasks).
+**STATE as of 2026-11-07** (verified at `22ca7c8` by `cargo test --workspace` 301 passed, `npm test` 245, clippy `-D warnings`, crash harness, `tracedb demo --seed 7` 10/10, and the M3 quickstart run end to end):
+M2 is **built, passed locally**. M3 is **built, passed locally** on branch `003-m3-search-aggregates-speed` (14 plan
+units committed; 124/128 tasks): text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates,
+time series, distribution and batch comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive
+estimates; SDK multipart + zstd on defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI;
+`tracedb demo` checks M2 + M3; `tracedb bench` built. **Deferred by decision** (end-to-end first, performance later):
+the full 2M bench (D3-1) and idle memory ≤ 200 MB (D3-2). **Not verified here**: cloud CI (D3-3), the UI in a real
+browser (D3-4), no-outbound under strace (D3-5).
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) Cut `003-m3-search-aggregates-speed` from the 002 tip; commit the M3 spec, plan and tasks. 2) M3 units
-1, 2, 3 and 8 in parallel, then 5, 4, 6, 7, 9, UI, speed + bench, demo, starter guide. 3) Still open from M1/M2: the UI
-by eye in a browser; push to a remote so CI (incl. cloud) runs.
+**NEXT**: 1) Make the end-to-end first run work with defaults: `tracedb demo --url` against a default `serve`
+(64 MB memtable) fails "checks across memtable and files" (D3-8). 2) User looks at the UI in a browser (D3-4); push to a
+remote so CI (incl. cloud and the nightly bench) runs. 3) **Before M4: re-evaluate the deferred performance work**
+(D3-1, D3-2, parked branch `wip/m3-bench-three-rows`), then plan M4.
 
 ## Progress
 
@@ -71,7 +72,7 @@ by eye in a browser; push to a remote so CI (incl. cloud) runs.
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
-| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | specced and planned | 0/128 | — |
+| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 124/128 | demo 10/10 + quickstart (see STATE) |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
 
@@ -272,6 +273,7 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 | D3-5 | **No-outbound check under strace** | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
 | D3-6 | Chart metric and chosen group kept in the URL | Not in the URL contract | A shared link reopens the same chart metric and group |
 | D3-7 | Aggregate over a search stops early / cancels | The whole search runs before any estimate; closing the stream doesn't stop it | Estimate within 1 s with a search filter; cancel frees the scan |
+| D3-8 | `tracedb demo --url` against a default `serve` fails "checks across memtable and files" | The demo sizes its load for a 4 MB memtable; the server default is now 64 MB (heap) | The demo reads the server's memtable size (e.g. from `/healthz`) and passes against default settings |
 
 ## History
 
