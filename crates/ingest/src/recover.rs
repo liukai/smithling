@@ -140,7 +140,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         .collect();
 
     let mut active = RunStore::new();
-    let mut dedup = Dedup::new(cfg.limits.dedup_window_us);
+    let mut dedup = Dedup::with_cap(cfg.limits.dedup_window_us, cfg.limits.dedup_keys);
     let now = Ts::now();
     let (mut replay_rejected, mut skipped) = (0, 0);
     // Keys inside the window, inserted oldest first after replay (pruning pops from the front).

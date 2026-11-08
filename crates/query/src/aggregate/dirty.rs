@@ -9,6 +9,7 @@ use tracedb_model::{RunId, RunState};
 
 use super::progressive::Cancel;
 use super::{Accs, AggStats, Pick, Plan, keys_of};
+use crate::fields::Kept;
 use crate::scan::{Pinned, merge_group};
 
 pub(crate) struct Pin {
@@ -25,7 +26,7 @@ const CHUNK: usize = 4096;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk(
     pin: &Pin,
-    files: Option<&HashMap<RunId, (RunState, Attrs)>>,
+    files: Option<&HashMap<RunId, std::sync::Arc<Kept>>>,
     plan: &Plan,
     accs: &mut Accs,
     stats: &mut AggStats,
@@ -52,11 +53,11 @@ pub(crate) fn walk(
             accs.add(keys_of(plan.keys, &st.run, attrs, &plan.feedback), &plan.facts(&st.run));
         }
     };
-    let merged = |vs: Vec<(&RunState, &Attrs)>, file: Option<&(RunState, Attrs)>| {
+    let merged = |vs: Vec<(&RunState, &Attrs)>, file: Option<&Kept>| {
         let owned = vs
             .into_iter()
             .map(|(s, a)| (s.clone(), a.clone()))
-            .chain(file.cloned())
+            .chain(file.map(Kept::full))
             .collect();
         merge_group(owned, true)
     };
@@ -70,9 +71,9 @@ pub(crate) fn walk(
             return;
         }
         match vs {
-            None => add(&file.0, &file.1),
+            None => add(&file.state, &file.attrs),
             Some(vs) => {
-                let m = merged(vs, Some(file));
+                let m = merged(vs, Some(&**file));
                 add(&m.state, &m.attrs);
             }
         }

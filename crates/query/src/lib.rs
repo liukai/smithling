@@ -19,7 +19,7 @@ use std::time::Instant;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use serde::Serialize;
 use tracedb_ingest::{FeedbackLookup, Feedbacks, Include, Ingest};
-use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, TimeAt, contains_search, eval_with};
+use tracedb_model::filter::{EvalStats, Expr, Field, Path, Row, Side, TimeAt, contains_search, eval_with};
 use tracedb_model::text::{Match, Text};
 use tracedb_model::{RunHeader, RunId, RunView, Status, TraceId, TraceView, Ts};
 use tracedb_storage::StorageError;
@@ -222,7 +222,10 @@ impl Query {
         let ctx = SessionContext::new_with_config(cfg);
         ingest.storage().store.register(&ctx);
         Query {
-            fts: std::sync::Arc::new(Fts::new(ingest.storage().store.clone())),
+            fts: std::sync::Arc::new(Fts::with_cache(
+                ingest.storage().store.clone(),
+                ingest.storage().cache.clone(),
+            )),
             index: true,
             feedback: ingest.feedback(),
             ingest,
@@ -414,10 +417,13 @@ impl Query {
             }
         }
         let (mut scan_stats, mut eval_stats) = (ScanStats::default(), EvalStats::default());
-        let pinned = match &q.filter {
-            Some(f) if contains_search(f) => scan::pin_text(&self.ingest, &scope, &search::all(f)),
-            _ => scan::pin(&self.ingest, &scope),
-        };
+        let searches = q
+            .filter
+            .as_ref()
+            .filter(|f| contains_search(f))
+            .map(search::all)
+            .unwrap_or_default();
+        let pinned = self.pin_kept(&scope, &searches).await?;
         // By start time, read in windows in page order and stop once the page and one more run are found.
         let early = q.order == OrderBy::StartTime && !q.count && q.traces.is_none();
         let want = limit.saturating_add(1);
@@ -480,7 +486,9 @@ impl Query {
         let traces = self.searched_traces(q, &scope, &mut scan_stats).await?;
         let shown = q.filter.as_ref().filter(|_| excerpts).and_then(search::shown);
         let mut matches: HashMap<RunId, Match> = HashMap::new();
-        let mut chunk = if early { want.max(64) } else { scan::IN_CHUNK };
+        // A first page checks the text of only as many candidates as it shows (plus one for the next page),
+        // then twice as many each time some fail (late materialization).
+        let mut chunk = if early { want } else { scan::IN_CHUNK };
         let mut found: Vec<(Key, Merged)> = Vec::new();
         let mut complete = true;
         loop {
@@ -622,7 +630,7 @@ impl Query {
                 RunRow {
                     columns: columns(&m, &q.columns, &self.feedback),
                     r#match: matches.remove(&m.state.run.run_id),
-                    header: RunHeader::from_state(&m.state, 0),
+                    header: RunHeader::from_state(&m.shown(), 0),
                 }
             })
             .collect();
@@ -647,6 +655,33 @@ impl Query {
                 ms: started.elapsed().as_millis() as u64,
             },
         })
+    }
+
+    /// [`scan::pin_text`] with the kept merged file rows of multi-version runs (D-023) brought up to it under
+    /// one lock, so their versions aren't fetched again. If another request holds the lock (the start-up warm
+    /// up, an update), the pin goes without them: same results, read the M2 way.
+    async fn pin_kept(&self, scope: &Scope, searches: &[(&[String], Side)]) -> Result<scan::Pinned, QueryError> {
+        let Ok(mut cache) = self.version_rows.try_lock() else {
+            return Ok(scan::pin_text(&self.ingest, scope, searches));
+        };
+        let (mut pinned, frozen, multi) = scan::pin_for_kept(&self.ingest, scope, searches);
+        // A file dropped since (found damaged) is still in the kept rows: they're read again without it, in the
+        // background.
+        if cache.segments.len() > pinned.version.segments.len() {
+            *cache = Default::default();
+            drop(cache);
+            self.warm_aggregates();
+            return Ok(pinned);
+        }
+        match cache
+            .update(self, &pinned.version.segments, frozen.as_ref(), &multi)
+            .await
+        {
+            Ok(()) if cache.segments.len() == pinned.version.segments.len() => pinned.kept = Some(cache.rows.clone()),
+            Ok(()) => {}
+            Err(e) => tracing::warn!(error = %e, "kept rows not brought up to date; reading versions instead"),
+        }
+        Ok(pinned)
     }
 
     /// For `trace_filter` and `tree_filter`: the runs the text index says may match, by trace, if that slot's
@@ -793,37 +828,36 @@ impl Query {
 
     /// One run, with the payload fields asked for.
     pub async fn run(&self, id: RunId, include: Include) -> Result<Option<RunView>, QueryError> {
-        let scope = Scope {
-            run_id: Some(id),
-            ..Scope::default()
-        };
+        Ok(self.run_with_stats(id, include).await?.0)
+    }
+
+    /// [`Query::run`], with what it read: the run's versions (one scan of every file), the rows of its children
+    /// (to count them), and payload only from the files holding a version that set a field asked for.
+    pub async fn run_with_stats(
+        &self,
+        id: RunId,
+        include: Include,
+    ) -> Result<(Option<RunView>, ScanStats), QueryError> {
         let mut stats = ScanStats::default();
-        let Some(m) = scan::collect(&self.ctx, &self.ingest, &scope, None, &mut stats)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(None);
+        let Some(found) = scan::run_versions(&self.ctx, &self.ingest, id, &mut stats).await? else {
+            return Ok((None, stats));
         };
-        let children = self.trace(m.state.run.trace_id).await?.map_or(0, |t| {
-            t.runs.iter().filter(|r| r.parent_run_id == Some(id)).count() as u32
-        });
+        let m = found.merged();
+        let children = scan::child_count(&self.ctx, &self.ingest, m.state.run.trace_id, id, &mut stats).await?;
         let header = RunHeader::from_state(&m.state, children);
-        if !(include.inputs || include.outputs || include.events) {
-            return Ok(Some(RunView {
-                header,
-                inputs: None,
-                outputs: None,
-                events: None,
-            }));
-        }
-        let p = scan::payload(&self.ctx, &self.ingest, id, &scope).await?;
-        Ok(Some(RunView {
+        let p = if include.inputs || include.outputs || include.events {
+            let fields = (include.inputs, include.outputs, include.events);
+            found.payload(&self.ingest, id, fields, &mut stats).await?
+        } else {
+            Default::default()
+        };
+        let view = RunView {
             header,
             inputs: if include.inputs { p.inputs } else { None },
             outputs: if include.outputs { p.outputs } else { None },
             events: if include.events { p.events } else { None },
-        }))
+        };
+        Ok((Some(view), stats))
     }
 
     /// Projects and how many runs each holds (memtables + files). Counted from the catalog without reading

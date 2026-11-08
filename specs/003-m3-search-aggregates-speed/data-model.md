@@ -224,11 +224,11 @@ hide one; an orphan has no run, so no project or time). They are listed, never d
 |---|---|---|---|---|
 | 🟢 | Flushed-ids bloom | writer | every flushed run id; a new start that hits it joins the multi-version set | ≈2.4 MB (1% false positives) |
 | 🟢 | Damaged-file map | ingest, read by query and `/healthz` | segment id → reason, found at start or while serving | small |
-| 🟢 | `Cache` | storage | footers, page indexes, dictionary pages, postings chunks, payload ranges (LRU by bytes) | 32 MB default (proposed) |
+| 🟢 | `Cache` | storage | footers, page indexes, dictionary pages, postings chunks, payload pages (LRU by bytes; an entry ≤ ⅛ of it) | 32 MB default (`--cache`, D-028) |
 | 🟢 | Feedback index | ingest | `run_id → [(key, score)]` | ~40 B per item |
 | 🟢 | Aggregate accumulators | one query | per group: counters, sums, latency values, histogram | ≤ 16 MB latencies per 2M runs; capped at 4M values |
-| 🟠 | Memtable limit | writer | proposed: measured as heap, 64 MB (was 128 MB of JSON bytes) | see research M3-R12 |
-| 🟠 | Dedup window | writer | proposed: 16 B fingerprints with a cap (was ~300 B per key in memory) | — |
+| 🟠 | Memtable limit | writer | measured as heap (`RunStore::bytes`), 64 MB (was 128 MB of JSON bytes, ≈4× that in heap) | see research M3-R12, D-028 |
+| 🟠 | Dedup window | writer | 16 B fingerprints, at most 1M (`--dedup-keys`), pruned while idle (was ~300 B per key in memory) | ≈50 MB at the cap; 0 idle |
 
 ## 10. 🟢 Object layout additions
 

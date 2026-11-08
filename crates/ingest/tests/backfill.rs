@@ -112,10 +112,11 @@ async fn upload(ingest: &Ingest, n: u128) {
 async fn an_m2_folder_is_indexed_one_file_per_idle_period() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let (ingest, _) = Ingest::open(config(dir.path(), Duration::from_secs(3600))).unwrap();
+        // Everything flushed (by size, the rest by age), so a reopen has nothing to flush.
+        let (ingest, _) = Ingest::open(config(dir.path(), AGE)).unwrap();
         upload(&ingest, 160).await;
         let deadline = Instant::now() + Duration::from_secs(20);
-        while ingest.health().segments < 3 || ingest.health().frozen {
+        while ingest.health().segments < 3 || ingest.health().frozen || ingest.health().runs > 0 {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

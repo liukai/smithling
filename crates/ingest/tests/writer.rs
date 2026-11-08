@@ -81,6 +81,23 @@ async fn duplicates_are_stored_once_even_across_restart() {
 }
 
 #[tokio::test]
+async fn the_dedup_window_drains_while_idle_and_respects_its_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = IngestConfig::new(dir.path());
+    cfg.limits.dedup_window_us = 1_000_000;
+    cfg.limits.dedup_keys = 5;
+    let ingest = Ingest::open(cfg).unwrap().0;
+    let batch: Vec<_> = (1..=8)
+        .map(|i| post(root(uuid(i), "2026-11-05T02:00:00Z", "r")))
+        .collect();
+    assert_eq!(ingest.accept(batch).await.unwrap().accepted, 8);
+    assert_eq!(ingest.health().dedup_keys, 5, "the cap keeps the newest keys");
+    // No uploads: the writer's idle tick prunes the window.
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+    assert_eq!(ingest.health().dedup_keys, 0);
+}
+
+#[tokio::test]
 async fn bad_items_are_rejected_one_by_one() {
     let dir = tempfile::tempdir().unwrap();
     let ingest = open(dir.path());

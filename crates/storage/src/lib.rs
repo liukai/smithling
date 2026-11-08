@@ -4,9 +4,11 @@
 //! - [`metastore::Metastore`]: the catalog of segments and field stats (SQLite or Postgres).
 //! - [`segment`]: the Parquet core + payload format and its decoder.
 //! - [`fts`]: the per-segment text index sidecar behind [`fts::TextIndex`].
+//! - [`cache::Cache`]: the bounded memory cache of footers, index pages, postings and payload pages (D-028).
 //!
-//! Reads go through DataFusion; its Parquet metadata cache plays the role of design §5's `Cache`.
+//! Scans go through DataFusion and its Parquet metadata cache; text lookups and payload reads through `Cache`.
 
+pub mod cache;
 pub mod fts;
 pub mod metastore;
 pub mod object;

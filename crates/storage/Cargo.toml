@@ -23,6 +23,7 @@ ulid.workspace = true
 bytes.workspace = true
 url.workspace = true
 futures-util.workspace = true
+moka.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

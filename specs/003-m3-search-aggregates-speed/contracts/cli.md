@@ -6,7 +6,7 @@ Only what M3 adds or changes. Everything else is the [M2 CLI](../../002-m2-durab
 
 | | Command | Purpose |
 |---|---|---|
-| 🟠 | `tracedb serve … [--cache 32MB] [--memtable 64MB] [--flush-age 2m] [--prices PATH]` | `--cache` sizes the bounded data cache; memtable and flush-age defaults change if approved (design §11 q1); `--prices` overrides `<data>/prices.toml` |
+| 🟠 | `tracedb serve … [--cache 32MB] [--memtable 64MB] [--flush-age 2m] [--dedup-keys 1048576] [--prices PATH]` | `--cache` sizes the bounded data cache (counted in idle memory); `--memtable` now counts the memtable's heap (M2: 128MB of JSON, ~4× that in heap) and `--flush-age` defaults to 2m (M2: 10m) (design §11 q1, D-028); `--dedup-keys` caps the dedup window (16-byte keys, oldest out first); the M2 values stay settable; `--prices` overrides `<data>/prices.toml` |
 | 🟢 | `tracedb bench [--runs 2000000] [--data DIR] [--json FILE] [--check] [--smoke]` | load the reference volume (or reuse `--data`), run each query type n ≥ 100 times, print P50/P99 against the targets; `--check` exits 1 on a slipped target; `--smoke` = 200k runs |
 | 🟠 | `tracedb query … [--search TEXT] [--group-by KEY[,KEY]] [--metrics LIST] [--top 10] [--compare EXPR \| --shift 1d] [--json] ['EXPR']` | M2's query plus search and aggregates; with `--group-by` or `--metrics` it prints the aggregate table (exact, `POST /api/aggregate`) |
 | 🟠 | `tracedb demo [--seed 7] [--url URL \| --data DIR] [--checks m2,m3]` | generates batch a (re-planted) and batch b; runs the M2 and M3 checks (default both) |

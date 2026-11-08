@@ -30,6 +30,7 @@ use tracedb_model::{
     Op, Reason, RunFields, RunHeader, RunId, RunState, RunView, Source, Status, TraceId, TraceView, Ts, merge_versions,
     validate,
 };
+use tracedb_storage::cache::Cache;
 use tracedb_storage::{Metastore, SegmentMeta, StorageError, Store};
 
 pub use feedback::{Feedback, FeedbackError, FeedbackLookup, Feedbacks, KeyStat};
@@ -43,17 +44,23 @@ use crate::hub::Hub;
 use crate::wal::WalError;
 
 pub const DEFAULT_QUEUE_EVENTS: usize = 10_000;
-pub const DEFAULT_MEMTABLE_BYTES: u64 = 128 * 1024 * 1024;
-pub const DEFAULT_FLUSH_AGE_US: i64 = 10 * 60 * 1_000_000;
+/// Heap, as [`store::RunStore::bytes`] estimates it (M2: 128 MB of JSON, ~4× that in heap).
+pub const DEFAULT_MEMTABLE_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_FLUSH_AGE_US: i64 = 2 * 60 * 1_000_000;
 pub const DEFAULT_MAX_UNFLUSHED_WAL: u64 = 1024 * 1024 * 1024;
 
-/// When to freeze a memtable and when to tell clients to slow down (design §4.1, R-8, R-10).
+/// When to freeze a memtable and when to tell clients to slow down (design §4.1, R-8, R-10), and the memory
+/// held for reads.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub memtable_bytes: u64,
     pub flush_age_us: i64,
     pub max_unflushed_wal: u64,
     pub dedup_window_us: i64,
+    /// Dedup keys kept at most (the oldest go first).
+    pub dedup_keys: usize,
+    /// The data cache's bound ([`tracedb_storage::cache::Cache`]).
+    pub cache_bytes: u64,
 }
 
 impl Default for Limits {
@@ -63,6 +70,8 @@ impl Default for Limits {
             flush_age_us: DEFAULT_FLUSH_AGE_US,
             max_unflushed_wal: DEFAULT_MAX_UNFLUSHED_WAL,
             dedup_window_us: dedup::DEFAULT_WINDOW_US,
+            dedup_keys: dedup::DEFAULT_CAP,
+            cache_bytes: tracedb_storage::cache::DEFAULT_BYTES,
         }
     }
 }
@@ -201,6 +210,10 @@ pub struct Health {
     pub corrupt_segments: Vec<String>,
     /// Feedback items whose run hasn't arrived (a flushed-ids false positive can hide one).
     pub orphan_feedback: usize,
+    /// Keys in the dedup window (0 once it has drained).
+    pub dedup_keys: u64,
+    /// Bytes in the data cache.
+    pub cache_bytes: u64,
 }
 
 /// A registered segment that can't be served (M3-FR-18).
@@ -227,6 +240,8 @@ pub(crate) fn crash_point(point: &str) {
 pub struct Counters {
     pub unflushed_wal: AtomicU64,
     pub flushed_seq: AtomicU64,
+    /// Keys in the writer's dedup window.
+    pub dedup_keys: AtomicU64,
 }
 
 /// Storage handles plus a small runtime of their own, so sync code (the flusher, `open`) can wait on
@@ -234,6 +249,8 @@ pub struct Counters {
 pub struct Storage {
     pub store: Store,
     pub meta: Metastore,
+    /// Footers, index pages, postings and payload pages read back (counted in idle memory).
+    pub cache: Arc<Cache>,
     rt: StorageRuntime,
 }
 
@@ -261,6 +278,7 @@ impl Storage {
         Ok(Storage {
             store,
             meta,
+            cache: Arc::new(Cache::new(cfg.limits.cache_bytes)),
             rt: StorageRuntime(Some(rt)),
         })
     }
@@ -523,6 +541,7 @@ impl Ingest {
         let counters = Arc::new(Counters {
             unflushed_wal: AtomicU64::new(unflushed),
             flushed_seq: AtomicU64::new(flushed_seq),
+            dedup_keys: AtomicU64::new(dedup.len() as u64),
         });
         let flush_health = Arc::new(Mutex::new(FlushHealth::default()));
         let hub = Hub::new(cfg.hub_capacity);
@@ -753,6 +772,7 @@ impl Ingest {
         let damaged = self.damaged();
         let fb = self.feedback();
         let orphan_feedback = self.feedback_runs_missing().iter().map(|r| fb.items(r)).sum();
+        let cache_bytes = self.inner.storage.cache.bytes();
         let mem = self.inner.mem.read().unwrap();
         Health {
             ok: error.is_none() && fh.error.is_none() && damaged.is_empty(),
@@ -773,6 +793,8 @@ impl Ingest {
             corrupt_segments: damaged.iter().map(|d| d.id.clone()).collect(),
             damaged_segments: damaged,
             orphan_feedback,
+            dedup_keys: self.inner.counters.dedup_keys.load(Ordering::Relaxed),
+            cache_bytes,
         }
     }
 }

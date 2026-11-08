@@ -131,6 +131,8 @@ async fn healthz_has_every_contract_field() {
         "last_flush_at",
         "corrupt_segments",
         "orphan_feedback",
+        "cache_bytes",
+        "dedup_keys",
     ] {
         assert!(h.get(k).is_some(), "/healthz lacks {k}: {h}");
     }

@@ -191,7 +191,9 @@ have arrived with a score for the key, whatever the project and time (the index 
 ### 🟠 Health
 
 `GET /healthz` adds `damaged_segments: [{id, reason, since}]` (replaces `corrupt_segments`, which stays as an alias
-listing the ids), `unindexed_segments` (count without a sidecar), `orphan_feedback` (count), `cache_bytes`.
+listing the ids), `unindexed_segments` (count without a sidecar), `orphan_feedback` (count), `cache_bytes` (bytes in
+the data cache), `dedup_keys` (keys in the dedup window; `0` once it has drained). `memtable_bytes` is now the active
+memtable's estimated heap, the measure `--memtable` limits (M2: JSON bytes).
 
 ## UI routes
 

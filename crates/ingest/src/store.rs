@@ -6,12 +6,14 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use tracedb_model::attrs::{Attrs, promote};
+use serde_json::Value;
+use tracedb_model::attrs::{Attrs, Scalar, promote};
 use tracedb_model::{
     ChangeKind, Reason, Reject, RunEvent, RunHeader, RunId, RunState, RunView, Status, TraceId, TraceView, Ts, merge,
 };
 
-/// Rough per-run cost of the header and indexes, added to payload bytes for the memory budget.
+/// Rough per-run cost of the header and indexes, added to payload bytes (the M2 estimate; the limit now counts
+/// [`RunStore::bytes`], the heap).
 pub const HEADER_BYTES: u64 = 512;
 
 /// Position in the root list: newest `start_time` first, then `run_id`.
@@ -68,6 +70,7 @@ pub struct RunStore {
     by_trace: HashMap<TraceId, Vec<RunId>>,
     roots: HashMap<String, BTreeSet<IndexKey>>,
     children: HashMap<RunId, u32>,
+    /// Heap held by the runs' strings, JSON and attributes, and the per-run index entries ([`heap_of`]).
     bytes: u64,
     last_seq: u64,
     first_seq: u64,
@@ -83,9 +86,7 @@ impl RunStore {
     pub fn apply(&mut self, ev: &RunEvent) -> Result<Change, Reject> {
         let id = ev.fields.id.ok_or_else(|| Reject::new(Reason::MissingField, "id"))?;
         let mut slot = self.runs.remove(&id);
-        let before = slot
-            .as_ref()
-            .map(|s| (root_key(s), s.run.project.clone(), approx_bytes(s)));
+        let before = slot.as_ref().map(|s| (root_key(s), s.run.project.clone(), heap_of(s)));
         let kind = match merge(&mut slot, ev) {
             Ok(kind) => kind,
             Err(e) => {
@@ -117,7 +118,7 @@ impl RunStore {
         if let Some(k) = root_key(&st) {
             self.roots.entry(st.run.project.clone()).or_default().insert(k);
         }
-        self.bytes += approx_bytes(&st);
+        self.bytes += heap_of(&st);
         self.last_seq = self.last_seq.max(ev.event_seq);
         if self.first_seq == 0 {
             self.first_seq = ev.event_seq;
@@ -125,7 +126,11 @@ impl RunStore {
         self.oldest = Some(self.oldest.map_or(ev.received_at, |o| o.min(ev.received_at)));
 
         let header = Arc::new(RunHeader::from_state(&st, self.child_count(id)));
-        self.attrs.insert(id, promote(&st.run));
+        let attrs = promote(&st.run);
+        self.bytes += attrs_heap(&attrs);
+        if let Some(old) = self.attrs.insert(id, attrs) {
+            self.bytes -= attrs_heap(&old);
+        }
         self.runs.insert(id, st);
         Ok(Change {
             kind,
@@ -164,8 +169,13 @@ impl RunStore {
         self.runs.is_empty()
     }
 
+    /// Estimated heap of this memtable (the `--memtable` limit): the runs' contents plus its tables.
     pub fn bytes(&self) -> u64 {
-        self.bytes
+        fn table<K, V>(m: &HashMap<K, V>) -> u64 {
+            // Buckets (capacity is 7/8 of them) of one entry plus a control byte.
+            (m.capacity() as u64 * 8 / 7) * (size_of::<(K, V)>() as u64 + 1)
+        }
+        self.bytes + table(&self.runs) + table(&self.attrs) + table(&self.by_trace) + table(&self.children)
     }
 
     pub fn last_seq(&self) -> u64 {
@@ -289,6 +299,85 @@ fn root_key(st: &RunState) -> Option<IndexKey> {
     st.run.start_time.map(|t| (Reverse(t), st.run.run_id))
 }
 
-fn approx_bytes(st: &RunState) -> u64 {
-    HEADER_BYTES + st.payload_bytes()
+/// The allocator's block for `n` bytes (jemalloc's size classes: 16 B steps to 128, then four per doubling).
+fn alloc(n: usize) -> u64 {
+    match n {
+        0 => 0,
+        1..=128 => n.next_multiple_of(16) as u64,
+        _ => n.next_multiple_of(1 << ((n - 1).ilog2() - 2)) as u64,
+    }
+}
+
+/// Nodes of a B-tree map of `n` entries of `kv` bytes (11 per node, about 8 used).
+fn btree(n: usize, kv: usize) -> u64 {
+    let leaf = alloc(16 + 11 * kv);
+    match n {
+        0 => 0,
+        1..=11 => leaf,
+        _ => {
+            let leaves = n.div_ceil(8) as u64;
+            leaves * leaf + leaves.div_ceil(7) * alloc(16 + 11 * kv + 12 * 8)
+        }
+    }
+}
+
+fn str_heap(s: &str) -> u64 {
+    alloc(s.len())
+}
+
+fn opt_str(s: &Option<String>) -> u64 {
+    s.as_deref().map_or(0, str_heap)
+}
+
+pub fn value_heap(v: &Value) -> u64 {
+    match v {
+        Value::String(s) => alloc(s.capacity()),
+        Value::Array(a) => alloc(a.capacity() * size_of::<Value>()) + a.iter().map(value_heap).sum::<u64>(),
+        Value::Object(m) => map_heap(m),
+        _ => 0,
+    }
+}
+
+fn map_heap(m: &serde_json::Map<String, Value>) -> u64 {
+    btree(m.len(), size_of::<(String, Value)>())
+        + m.iter().map(|(k, v)| alloc(k.capacity()) + value_heap(v)).sum::<u64>()
+}
+
+fn attrs_heap(a: &Attrs) -> u64 {
+    btree(a.len(), size_of::<(String, Scalar)>())
+        + a.iter()
+            .map(|(k, v)| {
+                alloc(k.capacity())
+                    + match v {
+                        Scalar::Str(s) => alloc(s.capacity()),
+                        _ => 0,
+                    }
+            })
+            .sum::<u64>()
+}
+
+/// What a run's state holds on the heap, plus its share of the trace, root and child indexes.
+fn heap_of(st: &RunState) -> u64 {
+    let r = &st.run;
+    let strs = str_heap(&r.dotted_order)
+        + str_heap(&r.project)
+        + [&r.address, &r.thread_id, &r.name, &r.run_type_raw, &r.error, &r.model]
+            .into_iter()
+            .map(opt_str)
+            .sum::<u64>();
+    let tags = alloc(r.tags.capacity() * size_of::<String>()) + r.tags.iter().map(|t| str_heap(t)).sum::<u64>();
+    let json = map_heap(&r.metadata)
+        + map_heap(&r.extra)
+        + st.outputs_usage.as_ref().map_or(0, map_heap)
+        + r.inputs.as_ref().map_or(0, value_heap)
+        + r.outputs.as_ref().map_or(0, value_heap)
+        + r.events.as_ref().map_or(0, |e| {
+            alloc(e.capacity() * size_of::<Value>()) + e.iter().map(value_heap).sum::<u64>()
+        });
+    let other = btree(r.dropped.len(), size_of::<(String, u64)>())
+        + r.dropped.keys().map(|k| str_heap(k)).sum::<u64>()
+        + alloc(r.warnings.capacity() * size_of::<tracedb_model::Warning>());
+    // A trace's id list, a root key in its project's set.
+    const INDEXES: u64 = 2 * size_of::<RunId>() as u64 + 48;
+    strs + tags + json + other + INDEXES
 }

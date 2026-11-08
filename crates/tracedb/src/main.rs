@@ -6,6 +6,10 @@ use clap::{Parser, Subcommand};
 use tracedb::{ServeConfig, parse_size, serve};
 use tracedb_ingest::Limits;
 
+/// Returns freed memory to the OS (the system allocator kept ~1 GB after a load); tuned in `.cargo/config.toml`.
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Parser)]
 #[command(name = "tracedb", version, about = "Local trace store and viewer for AI agents")]
 struct Cli {
@@ -29,15 +33,21 @@ enum Cmd {
         /// The catalog: `sqlite://path` or `postgres://…` (password from the URL or `PGPASSWORD`, never logged).
         #[arg(long, env = "TRACEDB_METASTORE")]
         metastore: Option<String>,
-        /// Freeze and flush the in-memory batch at this size.
-        #[arg(long, default_value = "128MB", value_parser = parse_size)]
+        /// Freeze and flush the in-memory batch when its heap reaches this size (M2: 128MB, counted as JSON).
+        #[arg(long, default_value = "64MB", value_parser = parse_size)]
         memtable: u64,
-        /// …or when its oldest event is this old.
-        #[arg(long, default_value = "10m", value_parser = parse_duration_us)]
+        /// …or when its oldest event is this old (M2: 10m).
+        #[arg(long, default_value = "2m", value_parser = parse_duration_us)]
         flush_age: i64,
         /// How long an identical retry is recognized as a duplicate.
         #[arg(long, default_value = "10m", value_parser = parse_duration_us)]
         dedup_window: i64,
+        /// …remembering at most this many recent uploads (16 bytes each, plus the table).
+        #[arg(long, default_value_t = tracedb_ingest::dedup::DEFAULT_CAP)]
+        dedup_keys: usize,
+        /// Memory for file footers, index pages and payload pages read back (counted in idle memory).
+        #[arg(long, default_value = "32MB", value_parser = parse_size)]
+        cache: u64,
         /// M1 memory budget; no longer applies (data moves to disk).
         #[arg(long, hide = true)]
         max_memory: Option<String>,
@@ -86,8 +96,29 @@ fn parse_duration_us(s: &str) -> Result<i64, String> {
     Ok(n * us)
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// jemalloc's thread caches are off (`.cargo/config.toml`) except on the runtime's workers while they run: one
+/// hands its cache back each time it goes idle, so an idle server keeps no cached memory (research M3-R12).
+fn main() -> ExitCode {
+    fn tcache(on: bool) {
+        use tikv_jemalloc_ctl::{Access, AsName};
+        let _ = b"thread.tcache.enabled\0".name().write(on);
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        // Turning a thread's cache off hands its contents back; blocking-pool threads never have one.
+        .on_thread_unpark(|| tcache(true))
+        .on_thread_park(|| tcache(false))
+        .build();
+    match rt {
+        Ok(rt) => rt.block_on(run()),
+        Err(e) => {
+            eprintln!("tracedb: could not start: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> ExitCode {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -116,6 +147,8 @@ async fn main() -> ExitCode {
             memtable,
             flush_age,
             dedup_window,
+            dedup_keys,
+            cache,
             max_memory,
             max_runs,
             ui_dir,
@@ -133,6 +166,8 @@ async fn main() -> ExitCode {
                     memtable_bytes: memtable,
                     flush_age_us: flush_age,
                     dedup_window_us: dedup_window,
+                    dedup_keys,
+                    cache_bytes: cache,
                     ..Limits::default()
                 },
                 ui_dir,

@@ -172,6 +172,20 @@ fn field_stats_count_types_and_top_values() {
     assert!(w.stats.iter().any(|s| s.path == "tags" && s.ty == "list"));
 }
 
+#[test]
+fn stats_resume_from_their_full_listing() {
+    use tracedb_storage::segment::StatsBuilder;
+    let runs: Vec<RunState> = (1..=30).map(|n| state(n, 1, n % 4 != 0)).collect();
+    let add = |b: &mut StatsBuilder, rs: &[RunState]| rs.iter().for_each(|st| b.add_run(st, &promote(&st.run)));
+    let mut whole = StatsBuilder::default();
+    add(&mut whole, &runs);
+    let mut first = StatsBuilder::default();
+    add(&mut first, &runs[..12]);
+    let mut resumed = StatsBuilder::from_stats(&first.finish_all("s"));
+    add(&mut resumed, &runs[12..]);
+    assert_eq!(resumed.finish_all("s"), whole.finish_all("s"));
+}
+
 #[tokio::test]
 async fn store_is_write_once_and_readable_by_datafusion() {
     let dir = tempfile::tempdir().unwrap();

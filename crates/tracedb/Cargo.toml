@@ -41,6 +41,8 @@ thiserror.workspace = true
 tempfile.workspace = true
 zstd.workspace = true
 httparse.workspace = true
+tikv-jemallocator.workspace = true
+tikv-jemalloc-ctl.workspace = true
 datafusion.workspace = true
 
 [dev-dependencies]

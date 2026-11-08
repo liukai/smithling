@@ -89,8 +89,9 @@ async fn check(q: &Query, errors: &HashMap<&str, BTreeSet<RunId>>, pass: &str) -
     assert_eq!(got, errors["small"], "{pass}: small failing roots");
     let (got, big) = ids(q, &spec("big", r#"eq(status, "error")"#, None)).await;
     assert_eq!(got, errors["big"], "{pass}: big errors");
+    // Merged from the kept file rows of multi-version runs (D-023), or by reading their versions again.
     assert!(
-        big.stats.merge_rows >= 2 * (BIG as usize / 5),
+        big.stats.merge_rows >= 2 * (BIG as usize / 5) || big.stats.rows_merged >= BIG as usize / 5,
         "{pass}: {:?}",
         big.stats
     );
@@ -167,7 +168,11 @@ async fn late_updates_stay_in_their_project() {
     // "small" holds 31 versions in files; nothing of "big" may be read or merged for it.
     assert!(page.stats.rows_read <= 40, "read {:?}", page.stats);
     assert!(page.stats.merge_rows <= 8, "{:?}", page.stats);
-    assert!(page.stats.files_version_lookup > 0, "{:?}", page.stats);
+    assert!(
+        page.stats.files_version_lookup > 0 || page.stats.rows_merged > 0,
+        "{:?}",
+        page.stats
+    );
 
     // After a restart the map is rebuilt from the newest files (in the background).
     drop(q);

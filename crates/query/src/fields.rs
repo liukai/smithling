@@ -87,7 +87,7 @@ impl Scope<'_> {
 /// update under one lock, so the rows never come from files newer than the caller's pin.
 #[derive(Default)]
 pub struct VersionRows {
-    segments: Vec<Arc<SegmentMeta>>,
+    pub(crate) segments: Vec<Arc<SegmentMeta>>,
     known: HashSet<String>,
     /// Ids that joined while this memtable was being flushed: its file may not mark them `needs_merge` (the
     /// flusher reads the set once, at its start), so new files are searched for them until it's published.
@@ -97,11 +97,56 @@ pub struct VersionRows {
 
 #[derive(Clone, Default)]
 pub(crate) struct Rows {
-    ids: HashSet<RunId>,
-    /// Per run, its file rows merged.
-    pub(crate) merged: HashMap<RunId, (RunState, Attrs)>,
-    /// Per file, stats of its rows of multi-version runs, and those finished.
-    minus: HashMap<String, (StatsBuilder, Vec<FieldStat>)>,
+    /// Every multi-version run whose file rows are read (into `merged`, if it has any).
+    pub(crate) ids: HashSet<RunId>,
+    /// Per run, its file rows merged. Shared, so a copy of `Rows` made while a request holds it (`make_mut`)
+    /// doesn't copy every state, and boxed, so the table's spare slots are pointers (research M3-R12).
+    pub(crate) merged: HashMap<RunId, Arc<Kept>>,
+    /// Per file, stats of its rows of multi-version runs, every value listed (a builder resumes from them).
+    minus: HashMap<String, Arc<Vec<FieldStat>>>,
+}
+
+/// A multi-version run's file rows, merged. `metadata`, `extra` and `outputs_usage` are kept as JSON text (an
+/// object costs ~1 KB in memory, its text ~150 B): counts and aggregates read the fields derived from them and
+/// the attributes; a merge with newer versions restores them first ([`Kept::full`]).
+#[derive(Debug)]
+pub(crate) struct Kept {
+    /// Without `metadata`, `extra` and `outputs_usage`.
+    pub state: RunState,
+    pub attrs: Attrs,
+    json: Option<Box<str>>,
+}
+
+impl Kept {
+    fn new(mut state: RunState, attrs: Attrs) -> Kept {
+        let r = &mut state.run;
+        let maps = (
+            std::mem::take(&mut r.metadata),
+            std::mem::take(&mut r.extra),
+            state.outputs_usage.take(),
+        );
+        let json = (!maps.0.is_empty() || !maps.1.is_empty() || maps.2.is_some()).then(|| {
+            serde_json::to_string(&maps)
+                .expect("JSON maps serialize")
+                .into_boxed_str()
+        });
+        Kept { state, attrs, json }
+    }
+
+    /// The merged state as read from the files.
+    pub(crate) fn full(&self) -> (RunState, Attrs) {
+        let mut st = self.state.clone();
+        if let Some(j) = &self.json {
+            type Maps = (
+                tracedb_model::run::JsonMap,
+                tracedb_model::run::JsonMap,
+                Option<tracedb_model::run::JsonMap>,
+            );
+            let (m, e, u): Maps = serde_json::from_str(j).expect("written by Kept::new");
+            (st.run.metadata, st.run.extra, st.outputs_usage) = (m, e, u);
+        }
+        (st, self.attrs.clone())
+    }
 }
 
 impl VersionRows {
@@ -154,28 +199,30 @@ impl VersionRows {
         let rows = Arc::make_mut(&mut self.rows);
         rows.ids.extend(new_ids);
         let mut touched: HashMap<RunId, Vec<(RunState, Attrs)>> = HashMap::new();
-        let mut touched_files = HashSet::new();
+        let mut builders: HashMap<String, StatsBuilder> = HashMap::new();
         for (seg, row) in read {
-            rows.minus
-                .entry(seg.clone())
-                .or_default()
-                .0
+            builders
+                .entry(seg)
+                .or_insert_with_key(|seg| {
+                    rows.minus
+                        .get(seg)
+                        .map_or_else(Default::default, |s| StatsBuilder::from_stats(s))
+                })
                 .add_run(&row.state, &row.attrs);
-            touched_files.insert(seg);
             touched
                 .entry(row.state.run.run_id)
                 .or_default()
                 .push((row.state, row.attrs));
         }
-        for id in touched_files {
-            let (b, done) = rows.minus.get_mut(&id).expect("just added");
-            *done = b.clone().finish_all(&id);
+        for (id, b) in builders {
+            let done = b.finish_all(&id);
+            rows.minus.insert(id, Arc::new(done));
         }
         // Rows read later are from later files, so merging onto the kept state continues the same fold.
         for (id, mut vs) in touched {
-            vs.extend(rows.merged.remove(&id));
+            vs.extend(rows.merged.remove(&id).map(|k| k.full()));
             let m = merge_group(vs, true);
-            rows.merged.insert(id, (m.state, m.attrs));
+            rows.merged.insert(id, Arc::new(Kept::new(m.state, m.attrs)));
         }
         Ok(())
     }
@@ -244,14 +291,15 @@ impl Query {
                 add(st, f.attrs(&st.run.run_id));
             }
         }
-        for (id, (st, attrs)) in &cache.merged {
+        for (id, file) in &cache.merged {
+            let (st, attrs) = (&file.state, &file.attrs);
             if !versions.contains_key(id) && scope.run(st) {
                 stats.add_run(st, attrs);
             }
         }
         // Memtable versions are newer than every file row kept for this pin.
         for (id, mut vs) in versions {
-            vs.extend(cache.merged.get(&id).cloned());
+            vs.extend(cache.merged.get(&id).map(|f| f.full()));
             let m = merge_group(vs, true);
             if scope.run(&m.state) {
                 stats.add_run(&m.state, &m.attrs);
@@ -266,7 +314,7 @@ impl Query {
         let minus = counted
             .iter()
             .filter_map(|id| cache.minus.get(*id))
-            .flat_map(|(_, done)| done.iter().cloned())
+            .flat_map(|m| m.iter().cloned())
             .collect();
         let files = version
             .field_stats

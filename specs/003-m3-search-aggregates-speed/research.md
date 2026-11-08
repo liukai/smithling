@@ -276,7 +276,11 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   ([scan.rs:391](../../crates/query/src/scan.rs#L391)), and `Query::run` loads the whole trace to count children
   ([lib.rs:510](../../crates/query/src/lib.rs#L510)). **Decision**: carry `segment_id` out of `collect`, read
   payloads only from files that hold a version, and count children from the trace's header rows. M2's bench sent
-  one body 21× warm; M3's bench varies values and windows, n ≥ 100.
+  one body 21× warm; M3's bench varies values and windows, n ≥ 100. *Built (unit 12)*: one `run_id = …` scan gives
+  the versions; each version's file is the one of its flush (`min_seq ≤ first_seq ≤ max_seq`, trace bounds) whose
+  payload row holds the run, read by row number through the cache; children are counted from the rows naming the run
+  as parent (`crates/query/tests/run_lookup.rs`). 101 random runs + payload: p50 48.3 → 17.9 ms, p99 58.3 → 22.1 ms
+  (0.48M runs, 96 files); 113.2 → 26.1 / 130.2 → 33.2 ms with 244 files.
 - **Cache**: no data cache today, only DataFusion's metadata cache
   ([storage/lib.rs:7](../../crates/storage/src/lib.rs#L7), [D-013](../000-tracedb-master-plan/decisions.md#d-013)).
   **Decision**: a bounded memory `Cache` in `storage` (`moka` 0.12.16, in the offline registry) for Parquet footers,
@@ -296,11 +300,55 @@ part (R9); text index without word positions, SmithDB difference (c) (R1); M3 on
   is much larger. Today's defaults don't fit 200 MB.
   **Definition**: idle = no uploads for one flush age, memtable flushed, dedup drained; the median footprint over
   30 s.
-  **Proposed defaults (need the user, see plan)**: memtable 64 MB measured as heap; flush age 2 min; dedup as 16 B
-  fingerprints with a cap; cache 32 MB; jemalloc (`tikv-jemallocator` 0.7.0 is in the offline registry; mimalloc isn't) so freed memory goes
-  back to the OS.
-  **Unverified**: what the remaining ~170 MB of live heap is (no profiler run). A heap-profile spike is the first
-  task of unit 12.
+  **Defaults (settled 2026-11-06, built in unit 12, D-028)**: memtable 64 MB measured as heap; flush age 2 min;
+  dedup as 16 B fingerprints, at most 1M; cache 32 MB; jemalloc (`tikv-jemallocator` 0.7.0). All are flags.
+- **Heap-profile spike (T082, 2026-11-07)**: 3,000 seeded traces (481k runs, 532k versions, 95 files, 47k runs with
+  a late update in another file), restart, idle (flush age and dedup window 1 min); live heap by allocating function
+  from macOS `heap` (system allocator build), jemalloc's own counters, `vmmap` footprint.
+
+  | Live heap after the restart (M2 code, system malloc) | MB |
+  |---|---|
+  | D-023's kept merged file rows of the 47k multi-version runs (warmed at start): a 712 B `RunState` in a hash slot, a 640 B B-tree node each for `metadata` and the attributes, ~11 strings, ≈3.1 KB a run; plus 17 MB of per-file stats builders | ≈150 |
+  | D-024's project map (two hash tables of `(run, project)`) | 23 |
+  | dedup window (pruned only when an upload arrives, so never while idle) | 12 |
+  | flushed-ids filter, multi-version set, SQLite, Parquet footers, field stats | ≈20 |
+  | **live** / **footprint** (the allocator kept 353 MB freed, 63%) | **220** / **672** |
+
+  jemalloc with its defaults kept more (732 MB): on macOS it has no background purge thread and purges only on later
+  allocations, and idle threads' caches are never flushed.
+
+  | Allocator setting (same data, restart) | idle footprint | upload rate, `throughput.rs` |
+  |---|---|---|
+  | system malloc | 672 MB | — |
+  | jemalloc defaults | 732 MB | 26.8k ev/s |
+  | freed pages purged at once (`dirty_decay_ms:0,muzzy_decay_ms:0`) | 273 MB | 22.9k ev/s |
+  | … and no thread caches | 218 MB | 16.8k ev/s (misses SC-04) |
+  | … thread caches only on the runtime's threads, flushed when a worker parks | 222 MB | 24.9k ev/s |
+  | … and 8 arenas (built) | 211 MB | 29.6k ev/s |
+
+  **Decisions**: (1) the memtable limit counts `RunStore::bytes`, an estimate of its heap (strings, JSON and
+  attributes rounded to jemalloc's size classes, B-tree nodes, the tables' capacity), within 1–5% of jemalloc's count
+  for runs without payload, chat-like payloads, one large text and event lists (`crates/ingest/tests/memtable_heap.rs`);
+  a run's heap is ≈4× its JSON, so a 64 MB memtable holds about what 16 MB of JSON did and makes ≈2.5× M2's files
+  (244 vs 96 here). (2) jemalloc built with `tcache:false,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:8`
+  (`.cargo/config.toml`; `_RJEM_MALLOC_CONF` overrides), thread caches turned on for the runtime's threads and flushed
+  each time one parks. (3) Kept merged rows hold `metadata`, `extra` and `outputs_usage` as JSON text (restored only
+  to merge a newer version on top), shared (`Arc`), and per-file stats only finished; lists and single runs read them
+  instead of fetching versions again (D-029). (4) Project map generations of 458,752 runs, the older one a sorted
+  array: ≤ 20 MB. (5) Dedup keys as 16 B fingerprints, at most 1M (≈50 MB at full), pruned while idle.
+
+  | Idle footprint after the changes | |
+  |---|---|
+  | the spike's data (96 files), restart, no query | 194 MB |
+  | same uploads at the new defaults (244 files), restart, no query | 209 MB |
+  | `idle_memory.rs`: 3,000 traces at the defaults, a list, a search, a grouped query and a run, then idle | **234 MB after the load, 246 MB after a restart — over 200 MB** |
+
+  What's left (live ≈145 MB of jemalloc's 200 MB resident, plus ≈30 MB outside it: system malloc for zstd and SQLite,
+  code): the kept merged rows, ≈2.3 KB per multi-version run (113 MB here), and ≈0.1 MB per file (DataFusion's footer
+  cache, field stats). **Projected at 2M runs** (≈190k late-updated runs, ≈1,000 files at 64 MB heap memtables):
+  ≈450 MB kept rows + ≈100 MB per-file ≈ **0.6 GB idle**. Meeting 200 MB there needs the late updates merged into one
+  version (M4 compaction), a compact or on-disk store for the kept rows, or larger memtables (fewer files) — for the
+  user to decide; not hidden by a looser target.
 - **`tracedb bench`** `[--runs 2M] [--data DIR] [--json FILE]`:
   - Moves `bench_m2::run()` into `crates/tracedb/src/bench.rs`.
   - Loads through HTTP `/runs/batch` from 8 clients while a query loop runs (measures SC-04 too;

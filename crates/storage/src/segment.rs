@@ -29,6 +29,7 @@ use tracedb_model::{Op, PayloadSizes, RunEvent, RunFields, RunId, RunState, Sour
 
 use datafusion::parquet::arrow::ParquetRecordBatchStreamBuilder;
 
+use crate::cache::{Cache, CachedReader};
 use crate::fts::{self, Sidecar, TextRow};
 use crate::object::Ranged;
 use crate::{StorageError, Store};
@@ -717,6 +718,101 @@ pub fn decode_text(batch: &RecordBatch) -> Result<Vec<(RunId, Payload)>, Storage
         .collect()
 }
 
+/// The payload fields asked for of payload rows `rows` of `seg` (late materialization, M3-FR-12): the footer,
+/// page index and pages come through `cache`, and only the pages holding those rows are read. In row order:
+/// `(row, run_id, payload)`; a field not asked for is `None`.
+pub async fn read_payload_rows(
+    store: &Store,
+    cache: &Arc<Cache>,
+    seg: &SegmentMeta,
+    rows: &[u32],
+    inputs: bool,
+    outputs: bool,
+    events: bool,
+) -> Result<Vec<(u32, RunId, Payload)>, StorageError> {
+    use datafusion::parquet::arrow::ProjectionMask;
+    use datafusion::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection};
+    use futures_util::TryStreamExt;
+    let mut rows = rows.to_vec();
+    rows.sort_unstable();
+    rows.dedup();
+    if rows.is_empty() {
+        return Ok(vec![]);
+    }
+    let (meta, _) = cache.footer(store, &seg.payload_path).await?;
+    let total = meta.file_metadata().num_rows() as usize;
+    if rows.last().is_some_and(|&r| r as usize >= total) {
+        return Err(StorageError::Format(format!(
+            "payload row {} past the {total} rows of {}",
+            rows[rows.len() - 1],
+            seg.payload_path
+        )));
+    }
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for &r in &rows {
+        match ranges.last_mut() {
+            Some(last) if last.end == r as usize => last.end += 1,
+            _ => ranges.push(r as usize..r as usize + 1),
+        }
+    }
+    let arrow = ArrowReaderMetadata::try_new(meta.clone(), ArrowReaderOptions::new())?;
+    let reader = CachedReader {
+        store: store.clone(),
+        cache: cache.clone(),
+        path: seg.payload_path.clone(),
+        meta,
+    };
+    let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow);
+    let names = [
+        ("run_id", true),
+        ("inputs", inputs),
+        ("outputs", outputs),
+        ("events", events),
+    ];
+    let mask = ProjectionMask::columns(builder.parquet_schema(), names.iter().filter(|c| c.1).map(|c| c.0));
+    let batches: Vec<RecordBatch> = builder
+        .with_projection(mask)
+        .with_row_selection(RowSelection::from_consecutive_ranges(ranges.into_iter(), total))
+        .build()?
+        .try_collect()
+        .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    let mut at = rows.into_iter();
+    for batch in &batches {
+        let c = Cols { batch };
+        let ids = c.ids("run_id")?;
+        let opt = |name: &str| batch.column_by_name(name).map(Strs::of).transpose();
+        let (i, o, e) = (opt("inputs")?, opt("outputs")?, opt("events")?);
+        let parse = |s: &Option<Strs>, n: usize| {
+            s.as_ref()
+                .and_then(|s| s.get(n))
+                .map(serde_json::from_str::<Value>)
+                .transpose()
+        };
+        for n in 0..batch.num_rows() {
+            let row = at
+                .next()
+                .ok_or_else(|| StorageError::Format("more payload rows than asked for".into()))?;
+            let events = match parse(&e, n)? {
+                Some(Value::Array(a)) => Some(a),
+                Some(_) => return Err(StorageError::Format("events is not an array".into())),
+                None => None,
+            };
+            let id = uuid_at(ids, n).ok_or_else(|| StorageError::Format(format!("payload row {row} has no run_id")))?;
+            out.push((
+                row,
+                id,
+                Payload {
+                    inputs: parse(&i, n)?,
+                    outputs: parse(&o, n)?,
+                    events,
+                },
+            ));
+        }
+    }
+    Ok(out)
+}
+
 /// The text index sidecar of an existing segment, from its core and payload files (backfill of M2 files).
 pub fn sidecar_of(core: Bytes, payload: Bytes) -> Result<fts::Sidecar, StorageError> {
     use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -818,6 +914,36 @@ impl StatsBuilder {
 
     pub fn finish(self, segment_id: &str) -> Vec<FieldStat> {
         self.finish_top(segment_id, TOP_VALUES)
+    }
+
+    /// The builder that [`StatsBuilder::finish_all`] made `stats` from, so more runs can be added later
+    /// without keeping the builder.
+    pub fn from_stats(stats: &[FieldStat]) -> StatsBuilder {
+        let mut b = StatsBuilder::default();
+        for f in stats {
+            let ty = match f.ty.as_str() {
+                "string" => "string",
+                "number" => "number",
+                "bool" => "bool",
+                "unindexed" => "unindexed",
+                "list" => "list",
+                _ => {
+                    b.incomplete |= f.path == INCOMPLETE_PATH;
+                    continue;
+                }
+            };
+            let values = f
+                .top_values
+                .iter()
+                .map(|(v, n)| (json_text(v), (v.clone(), *n)))
+                .collect();
+            b.counts
+                .entry(ty)
+                .or_default()
+                .insert(f.path.clone(), (f.count, values));
+            b.paths += 1;
+        }
+        b
     }
 
     /// Like [`StatsBuilder::finish`], with every value listed.

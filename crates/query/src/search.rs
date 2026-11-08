@@ -19,9 +19,8 @@ use tracedb_model::text::{Text, phrase_in};
 use tracedb_model::{RunId, RunState, TraceId, Ts, present};
 use tracedb_storage::StorageError;
 use tracedb_storage::fts::TextField;
-use tracedb_storage::segment::{SegmentMeta, StoredRow, decode_text};
+use tracedb_storage::segment::{SegmentMeta, StoredRow};
 
-use crate::pushdown::id_lit;
 use crate::scan::{self, IN_CHUNK, Merged, Pinned, ScanStats, Scope, damaged_alone, merge_group};
 use crate::{Query, QueryError};
 
@@ -75,13 +74,6 @@ impl Need {
 
     fn any(self) -> bool {
         self.inputs || self.outputs
-    }
-
-    fn columns(self) -> Vec<&'static str> {
-        let mut c = vec!["run_id"];
-        c.extend(self.inputs.then_some("inputs"));
-        c.extend(self.outputs.then_some("outputs"));
-        c
     }
 }
 
@@ -457,7 +449,8 @@ fn mem_versions(q: &Query, ids: &HashSet<RunId>) -> Vec<(RunState, Attrs)> {
     out
 }
 
-/// Reads the `need`ed text of the rows that set it, file by file (a file holds one version of a run).
+/// Reads the `need`ed text of the rows that set it, file by file (a file holds one version of a run), only the
+/// pages holding those rows, through the cache.
 async fn attach_payload(
     q: &Query,
     rows: &mut [(&SegmentMeta, StoredRow)],
@@ -465,19 +458,19 @@ async fn attach_payload(
     stats: &mut ScanStats,
 ) -> Result<(), QueryError> {
     let bits = if need.inputs { present::INPUTS } else { 0 } | if need.outputs { present::OUTPUTS } else { 0 };
-    let mut by_file: HashMap<&str, (&SegmentMeta, Vec<RunId>)> = HashMap::new();
+    let mut by_file: HashMap<&str, (&SegmentMeta, Vec<u32>)> = HashMap::new();
     for (seg, r) in rows.iter() {
         if r.state.present & bits != 0 {
             by_file
                 .entry(&seg.id)
                 .or_insert_with(|| (*seg, Vec::new()))
                 .1
-                .push(r.state.run.run_id);
+                .push(r.payload_row);
         }
     }
     let reads: Vec<_> = by_file
         .into_values()
-        .map(|(seg, ids)| file_text(q, seg, ids, need))
+        .map(|(seg, at)| file_text(q, seg, at, need))
         .collect();
     let texts: Vec<HashMap<(String, RunId), InOut>> = futures_util::stream::iter(reads)
         .buffer_unordered(FILES)
@@ -504,34 +497,23 @@ type InOut = (Option<serde_json::Value>, Option<serde_json::Value>);
 async fn file_text(
     q: &Query,
     seg: &SegmentMeta,
-    ids: Vec<RunId>,
+    at: Vec<u32>,
     need: Need,
 ) -> Result<HashMap<(String, RunId), InOut>, QueryError> {
-    let mut out = HashMap::new();
-    for chunk in ids.chunks(IN_CHUNK) {
-        let read = async {
-            let url = q.ingest.storage().store.url(&seg.payload_path);
-            let df = q
-                .ctx
-                .read_parquet(url, ParquetReadOptions::default())
-                .await?
-                .filter(col("run_id").in_list(chunk.iter().map(|id| id_lit(*id)).collect(), false))?
-                .select_columns(&need.columns())?;
-            let mut got = Vec::new();
-            for b in df.collect().await? {
-                got.extend(decode_text(&b)?);
+    let (store, cache) = (&q.ingest.storage().store, &q.ingest.storage().cache);
+    match tracedb_storage::segment::read_payload_rows(store, cache, seg, &at, need.inputs, need.outputs, false).await {
+        Ok(got) => Ok(got
+            .into_iter()
+            .map(|(_, id, p)| ((seg.id.clone(), id), (p.inputs, p.outputs)))
+            .collect()),
+        // The file is now skipped (and reported); its versions are merged without their text.
+        Err(e) => {
+            let e = QueryError::from(e);
+            if damaged_alone(&q.ingest, seg, &e).await {
+                Ok(HashMap::new())
+            } else {
+                Err(e)
             }
-            Ok::<_, QueryError>(got)
-        };
-        match read.await {
-            Ok(got) => out.extend(
-                got.into_iter()
-                    .map(|(id, p)| ((seg.id.clone(), id), (p.inputs, p.outputs))),
-            ),
-            // The file is now skipped (and reported); its versions are merged without their text.
-            Err(e) if damaged_alone(&q.ingest, seg, &e).await => break,
-            Err(e) => return Err(e),
         }
     }
-    Ok(out)
 }

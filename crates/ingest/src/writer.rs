@@ -65,7 +65,12 @@ pub(crate) fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         };
         maybe_freeze(&mut wal, seq, &mut pending, &sh);
-        let Some(first) = first else { continue };
+        let Some(first) = first else {
+            // Idle: the window still drains.
+            dedup.prune(Ts::now());
+            sh.counters.dedup_keys.store(dedup.len() as u64, Ordering::Relaxed);
+            continue;
+        };
         let mut group = vec![first];
         let mut bytes = group[0].bytes;
         while bytes < GROUP_BYTES {
@@ -87,6 +92,7 @@ pub(crate) fn run(
         commit(group, &mut wal, &mut dedup, &mut pending, &mut seq, &sh);
         let added = wal.appended_bytes() - before;
         sh.counters.unflushed_wal.fetch_add(added, Ordering::Relaxed);
+        sh.counters.dedup_keys.store(dedup.len() as u64, Ordering::Relaxed);
         maybe_freeze(&mut wal, seq, &mut pending, &sh);
     }
 }

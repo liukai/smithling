@@ -1,21 +1,24 @@
 //! Recent runs' projects, so the flusher can file a late update that doesn't name its project (as the SDK
 //! sends them) under its run's project. A version filed under project `""` is read by every project's queries.
 //!
-//! Bounded: two generations of [`GENERATION`] runs; a run older than that is not found, and its update stays
-//! under `""`. Not persisted: a start rebuilds it from the replayed runs and the newest files (D-024).
+//! Bounded: the current generation (a hash map) and the one before (a sorted array, 20 B a run), each of up
+//! to [`GENERATION`] runs, ≈20 MB in all; a run older than that is not found, and its update stays under `""`.
+//! Not persisted: a start rebuilds it from the replayed runs and the newest files (D-024).
 
 use std::collections::HashMap;
 
 use tracedb_model::{RunId, RunState};
 
-pub const GENERATION: usize = 1 << 20;
+/// 7/8 of 2^19: a full generation's table has 2^19 buckets (D-028; M2 kept two of 1M, up to 88 MB).
+pub const GENERATION: usize = 458_752;
 
 #[derive(Debug)]
 pub struct Projects {
     names: Vec<String>,
     ids: HashMap<String, u32>,
     cur: HashMap<RunId, u32>,
-    prev: HashMap<RunId, u32>,
+    /// The generation before, sorted by run.
+    prev: Vec<(RunId, u32)>,
     generation: usize,
 }
 
@@ -31,36 +34,49 @@ impl Projects {
             names: Vec::new(),
             ids: HashMap::new(),
             cur: HashMap::new(),
-            prev: HashMap::new(),
+            prev: Vec::new(),
             generation: generation.max(1),
         }
+    }
+
+    fn known(&self, run: &RunId) -> bool {
+        self.cur.contains_key(run) || self.prev.binary_search_by_key(run, |e| e.0).is_ok()
     }
 
     /// Records the run's project unless one is known: the first version that names a project decides it
     /// (the merge rule keeps the first).
     pub fn note(&mut self, run: RunId, project: &str) {
-        if self.cur.contains_key(&run) || self.prev.contains_key(&run) {
+        if self.known(&run) {
             return;
         }
         let id = self.intern(project);
         if self.cur.len() >= self.generation {
-            self.prev = std::mem::take(&mut self.cur);
+            let mut prev: Vec<(RunId, u32)> = std::mem::take(&mut self.cur).into_iter().collect();
+            prev.sort_unstable_by_key(|e| e.0);
+            self.prev = prev;
         }
         self.cur.insert(run, id);
     }
 
     /// Fills in older runs (read back from files) without displacing anything noted since.
     pub fn backfill<'a>(&mut self, older: impl IntoIterator<Item = (RunId, &'a str)>) {
+        let mut add: Vec<(RunId, u32)> = Vec::new();
         for (run, project) in older {
-            if self.prev.len() >= self.generation {
+            if self.prev.len() + add.len() >= self.generation {
                 break;
             }
-            if self.cur.contains_key(&run) || self.prev.contains_key(&run) {
-                continue;
+            if !self.known(&run) {
+                let id = self.intern(project);
+                add.push((run, id));
             }
-            let id = self.intern(project);
-            self.prev.insert(run, id);
         }
+        // Within one batch the first wins, as across batches.
+        add.sort_by_key(|e| e.0);
+        add.dedup_by_key(|e| e.0);
+        // Exactly: doubling would leave up to a generation of spare slots.
+        self.prev.reserve_exact(add.len());
+        self.prev.extend(add);
+        self.prev.sort_by_key(|e| e.0);
     }
 
     fn intern(&mut self, project: &str) -> u32 {
@@ -85,8 +101,11 @@ impl Projects {
     }
 
     pub fn get(&self, run: &RunId) -> Option<&str> {
-        let id = self.cur.get(run).or_else(|| self.prev.get(run))?;
-        Some(&self.names[*id as usize])
+        let id = match self.cur.get(run) {
+            Some(id) => *id,
+            None => self.prev[self.prev.binary_search_by_key(run, |e| e.0).ok()?].1,
+        };
+        Some(&self.names[id as usize])
     }
 
     pub fn len(&self) -> usize {
@@ -95,6 +114,11 @@ impl Projects {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Memory held by both generations' tables.
+    pub fn heap_bytes(&self) -> usize {
+        self.cur.capacity() * 8 / 7 * (size_of::<(RunId, u32)>() + 1) + self.prev.capacity() * size_of::<(RunId, u32)>()
     }
 }
 
@@ -120,5 +144,30 @@ mod tests {
         assert_eq!(p.get(&id(1)), None);
         assert_eq!(p.get(&id(5)), Some("a"));
         assert!(p.len() <= 4);
+    }
+
+    #[test]
+    fn backfilled_runs_are_found_until_two_generations_pass() {
+        let mut p = Projects::new(3);
+        p.note(id(10), "live");
+        p.backfill([(id(1), "a"), (id(2), "b"), (id(10), "old"), (id(3), "c"), (id(4), "d")]);
+        assert_eq!(p.get(&id(10)), Some("live"), "a run noted since keeps its project");
+        assert_eq!((p.get(&id(1)), p.get(&id(3))), (Some("a"), Some("c")));
+        assert_eq!(p.get(&id(4)), None, "past a generation");
+        for n in 20..26 {
+            p.note(id(n), "new");
+        }
+        assert_eq!(p.get(&id(1)), None);
+        assert_eq!(p.get(&id(25)), Some("new"));
+    }
+
+    #[test]
+    fn two_full_generations_fit_in_about_20_mb() {
+        let mut p = Projects::default();
+        for n in 0..2 * GENERATION as u128 {
+            p.note(id(n), if n % 2 == 0 { "a" } else { "b" });
+        }
+        assert!(p.len() >= GENERATION);
+        assert!(p.heap_bytes() <= 21 << 20, "{} B", p.heap_bytes());
     }
 }

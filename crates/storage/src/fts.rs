@@ -18,10 +18,8 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt32Typ
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::parquet::arrow::ParquetRecordBatchStreamBuilder;
 use datafusion::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection};
-use datafusion::parquet::arrow::async_reader::AsyncFileReader;
 use datafusion::parquet::basic::{Compression, ZstdLevel};
-use datafusion::parquet::errors::{ParquetError, Result as PqResult};
-use datafusion::parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader};
+use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
 use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties};
 use datafusion::parquet::schema::types::ColumnPath;
@@ -31,6 +29,7 @@ use serde_json::Value;
 use tracedb_model::present;
 use tracedb_model::text;
 
+use crate::cache::{Cache, CachedReader};
 use crate::segment::{SegmentMeta, Version};
 use crate::{StorageError, Store};
 
@@ -42,8 +41,6 @@ pub const BLOCK: usize = 128;
 pub const ZONE_ROWS: usize = 256;
 /// Longer words are indexed (and looked up) by this many leading bytes: a superset, never a miss.
 pub const MAX_TERM_BYTES: usize = 64;
-/// First read of a dictionary: enough for its footer and page index in one request.
-const FOOTER_READ: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
@@ -124,13 +121,10 @@ pub trait TextIndex: Send + Sync {
     ) -> BoxFuture<'a, Result<RowSet, StorageError>>;
 }
 
-/// Dictionary footers kept by [`Fts`]; sidecars are write-once, so a cached footer never goes stale.
-const FOOTERS: usize = 1024;
-
-/// The Parquet dictionary + postings blob implementation, reading through a [`Store`].
+/// The Parquet dictionary + postings blob implementation, reading through a [`Store`] and the [`Cache`].
 pub struct Fts {
     store: Store,
-    footers: std::sync::Mutex<HashMap<String, Arc<ParquetMetaData>>>,
+    cache: Arc<Cache>,
 }
 
 /// What [`Fts::lookup_within`] found.
@@ -143,11 +137,13 @@ pub struct Lookup {
 }
 
 impl Fts {
+    /// With a cache of its own.
     pub fn new(store: Store) -> Fts {
-        Fts {
-            store,
-            footers: Default::default(),
-        }
+        Fts::with_cache(store, Arc::new(Cache::default()))
+    }
+
+    pub fn with_cache(store: Store, cache: Arc<Cache>) -> Fts {
+        Fts { store, cache }
     }
 
     /// [`TextIndex::lookup`], skipping words in more than `max_df` rows (their lists narrow little and cost
@@ -175,7 +171,7 @@ impl Fts {
             return Err(StorageError::NotIndexed("a text lookup needs at least one word".into()));
         }
         let dict = dict_path(stem);
-        let (meta, cached) = self.footer(&dict).await?;
+        let (meta, cached) = self.cache.footer(&self.store, &dict).await?;
         let none = Lookup {
             rows: Some(Vec::new()),
             cached,
@@ -183,8 +179,9 @@ impl Fts {
         let Some((row_groups, selection)) = zones(&meta, &words) else {
             return Ok(none);
         };
-        let reader = DictReader {
+        let reader = CachedReader {
             store: self.store.clone(),
+            cache: self.cache.clone(),
             path: dict,
             meta: meta.clone(),
         };
@@ -228,7 +225,7 @@ impl Fts {
         }
         lists.sort_by_key(|l| l.0);
         let ranges: Vec<Range<u64>> = lists.into_iter().map(|l| l.1).collect();
-        let bytes = self.store.get_ranges(&post_path(stem), &ranges).await?;
+        let bytes = self.cache.ranges(&self.store, &post_path(stem), &ranges).await?;
         let mut rows = decode_list(&bytes[0])?;
         for b in &bytes[1..] {
             if rows.is_empty() {
@@ -241,32 +238,6 @@ impl Fts {
             rows: Some(rows),
             cached,
         })
-    }
-
-    /// The dictionary's footer and page index, usually in one suffix read; true if it was cached.
-    async fn footer(&self, dict: &str) -> Result<(Arc<ParquetMetaData>, bool), StorageError> {
-        if let Some(m) = self.footers.lock().unwrap().get(dict) {
-            return Ok((m.clone(), true));
-        }
-        let (mut tail, size) = self.store.get_suffix(dict, FOOTER_READ).await?;
-        loop {
-            let mut r = ParquetMetaDataReader::new().with_page_index_policy(PageIndexPolicy::Optional);
-            match r.try_parse_sized(&tail, size) {
-                Ok(()) => {
-                    let meta = Arc::new(r.finish()?);
-                    let mut cache = self.footers.lock().unwrap();
-                    if cache.len() >= FOOTERS {
-                        cache.clear();
-                    }
-                    cache.insert(dict.to_string(), meta.clone());
-                    return Ok((meta, false));
-                }
-                Err(ParquetError::NeedMoreData(n)) if (n as u64) > tail.len() as u64 => {
-                    tail = self.store.get_suffix(dict, n as u64).await?.0;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
     }
 }
 
@@ -332,42 +303,6 @@ fn zones(meta: &ParquetMetaData, words: &[&str]) -> Option<(Vec<usize>, RowSelec
         }
     }
     (!groups.is_empty()).then(|| (groups, RowSelection::from_consecutive_ranges(ranges.into_iter(), base)))
-}
-
-/// Ranged reads of a dictionary whose footer is already parsed; a read's pages go out as one request.
-struct DictReader {
-    store: Store,
-    path: String,
-    meta: Arc<ParquetMetaData>,
-}
-
-impl AsyncFileReader for DictReader {
-    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, PqResult<Bytes>> {
-        async move {
-            let mut r = self.get_byte_ranges(vec![range]).await?;
-            Ok(r.pop().unwrap_or_default())
-        }
-        .boxed()
-    }
-
-    fn get_byte_ranges(&mut self, ranges: Vec<Range<u64>>) -> BoxFuture<'_, PqResult<Vec<Bytes>>> {
-        async move {
-            // The object store's own error, so `segment::parquet_damage` tells a failed read from damage.
-            self.store.get_ranges(&self.path, &ranges).await.map_err(|e| match e {
-                StorageError::Object(e) => ParquetError::External(Box::new(e)),
-                e => ParquetError::External(Box::new(e)),
-            })
-        }
-        .boxed()
-    }
-
-    fn get_metadata<'a>(
-        &'a mut self,
-        _options: Option<&'a ArrowReaderOptions>,
-    ) -> BoxFuture<'a, PqResult<Arc<ParquetMetaData>>> {
-        let meta = self.meta.clone();
-        async move { Ok(meta) }.boxed()
-    }
 }
 
 fn intersect(a: &[u32], b: &[u32]) -> Vec<u32> {

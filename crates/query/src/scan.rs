@@ -20,7 +20,7 @@ use tracedb_model::attrs::{Attrs, promote};
 use tracedb_model::filter::Side;
 use tracedb_model::text::{Text, phrase_in};
 use tracedb_model::{RunId, RunState, TraceId, merge_versions, present};
-use tracedb_storage::segment::{SegmentMeta, decode_core, decode_payload, start_key};
+use tracedb_storage::segment::{SegmentMeta, decode_core, start_key};
 use tracedb_storage::{Payload, StoredRow};
 
 use crate::QueryError;
@@ -138,6 +138,19 @@ pub struct Merged {
     pub attrs: Attrs,
     /// More than one version was merged.
     pub multi: bool,
+    /// Taken whole from the kept merged rows: `state` lacks `metadata`, `extra` and `outputs_usage` (see
+    /// [`Merged::shown`]).
+    pub(crate) kept: Option<Arc<crate::fields::Kept>>,
+}
+
+impl Merged {
+    /// The state as a result row shows it.
+    pub fn shown(&self) -> std::borrow::Cow<'_, RunState> {
+        match &self.kept {
+            Some(k) => std::borrow::Cow::Owned(k.full().0),
+            None => std::borrow::Cow::Borrowed(&self.state),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -160,6 +173,8 @@ pub struct ScanStats {
     pub payload_rows: usize,
     /// Files whose index footer was already in memory.
     pub cache_hits: usize,
+    /// Files a single run's payload was read from.
+    pub payload_files: usize,
     /// Files in scope without a text index.
     pub not_indexed: BTreeSet<String>,
     scanned: HashSet<String>,
@@ -173,6 +188,9 @@ pub struct Pinned {
     pub(crate) rows: Vec<(i64, RunState, Attrs)>,
     /// Taken by [`pin_text`].
     pub(crate) text: bool,
+    /// The merged file rows of every multi-version run, for exactly `version`'s files (D-023): read instead of
+    /// fetching their versions again.
+    pub(crate) kept: Option<Arc<crate::fields::Rows>>,
 }
 
 impl Pinned {
@@ -202,6 +220,19 @@ pub fn pin(ingest: &Ingest, scope: &Scope) -> Pinned {
 /// version, and theirs match none of the phrases.
 pub(crate) fn pin_text(ingest: &Ingest, scope: &Scope, searches: &[(&[String], Side)]) -> Pinned {
     pin_inner(ingest, scope, false, searches).0
+}
+
+/// [`pin_text`], plus the frozen memtable and the multi-version set taken with it (to bring the kept merged
+/// rows up to this pin).
+pub(crate) fn pin_for_kept(
+    ingest: &Ingest,
+    scope: &Scope,
+    searches: &[(&[String], Side)],
+) -> (Pinned, Option<Arc<RunStore>>, HashSet<RunId>) {
+    let (pinned, frozen, _) = pin_inner(ingest, scope, false, searches);
+    // The set only grows, so a copy taken now holds every run the pin marks.
+    let mv = ingest.multi_version().read().unwrap().clone();
+    (pinned, frozen, mv)
 }
 
 /// [`pin`], plus (if `multi`) the multi-version set and every memtable version of its runs whatever the scope,
@@ -278,6 +309,7 @@ fn pin_inner(
         version: mem.version.clone(),
         rows,
         text: !searches.is_empty(),
+        kept: None,
     };
     (pinned, mem.frozen.clone(), mv)
 }
@@ -644,17 +676,22 @@ pub async fn collect_pinned(
     stats.scanned.extend(files.iter().map(|s| s.id.clone()));
     stats.files_scanned = stats.scanned.len();
 
-    let row_filter = pushed.map(|p| p.or(col("needs_merge").eq(lit(true))));
+    // With the kept merged rows (D-023), multi-version runs come from them, not from their file rows.
+    let kept = pinned.kept.as_deref();
+    let row_filter = match (pushed, kept) {
+        (Some(p), None) => Some(p.or(col("needs_merge").eq(lit(true)))),
+        (p, _) => p,
+    };
     let filter = match (inner.df_filter(), row_filter) {
         (Some(a), Some(b)) => Some(a.and(b)),
         (a, b) => a.or(b),
     };
-    let rows = read_core(ctx, ingest, &files, filter).await?;
+    let mut rows = read_core(ctx, ingest, &files, filter).await?;
     stats.rows_read += rows.len();
 
     // Runs that may have several versions: marked in a file, created by an update, or in the multi-version set.
     let mvset = ingest.multi_version();
-    let multi_ids: HashSet<RunId> = {
+    let mut multi_ids: HashSet<RunId> = {
         let mv = mvset.read().unwrap();
         rows.iter()
             .map(|r| (&r.state, r.needs_merge))
@@ -663,7 +700,33 @@ pub async fn collect_pinned(
             .map(|(st, _)| st.run.run_id)
             .collect()
     };
-    // Fetch every version of those runs, from every file that may hold one (any project).
+    // Kept runs (D-023) in this window and project by their merged file rows; one with a memtable version here
+    // is merged with it below whatever its file rows say (they may lack the project or the start).
+    let mut in_window: Vec<RunId> = Vec::new();
+    if let Some(kept) = kept {
+        rows.retain(|r| !kept.ids.contains(&r.state.run.run_id));
+        for (id, k) in &kept.merged {
+            let st = &k.state;
+            if inner.row_in_scope(start_key(&st.run.dotted_order), st)
+                && scope.project.as_ref().is_none_or(|p| st.run.project == *p)
+            {
+                in_window.push(*id);
+            }
+        }
+        multi_ids.extend(&in_window);
+    }
+    // A run in this window may have memtable versions anywhere in the scope.
+    if scope.window.is_some() && !multi_ids.is_empty() {
+        fresh.extend(
+            pinned
+                .rows_in(scope)
+                .filter(|(st, _)| multi_ids.contains(&st.run.run_id)),
+        );
+    }
+    if let Some(kept) = kept {
+        multi_ids.retain(|id| !kept.ids.contains(id));
+    }
+    // Fetch every version of the others, from every file that may hold one (any project).
     let mut extra = Vec::new();
     if !multi_ids.is_empty() {
         let vfiles: Vec<&SegmentMeta> = all
@@ -676,13 +739,6 @@ pub async fn collect_pinned(
         stats.files_version_lookup = stats.looked_up.len();
         stats.rows_read += extra.len();
         stats.merge_rows += extra.len();
-        if scope.window.is_some() {
-            fresh.extend(
-                pinned
-                    .rows_in(scope)
-                    .filter(|(st, _)| multi_ids.contains(&st.run.run_id)),
-            );
-        }
     }
 
     let mut groups: HashMap<RunId, Vec<(RunState, Attrs)>> = HashMap::new();
@@ -692,8 +748,24 @@ pub async fn collect_pinned(
             groups.entry(st.run.run_id).or_default().push((st, attrs));
         }
     }
+    // Kept runs alone stay slim (no `metadata`/`extra`) until shown; merging needs them whole.
+    let mut alone: Vec<Arc<crate::fields::Kept>> = Vec::new();
+    if let Some(kept) = kept {
+        for (id, vs) in groups.iter_mut() {
+            if let Some(k) = kept.merged.get(id) {
+                vs.push(k.full());
+            }
+        }
+        alone.extend(
+            in_window
+                .iter()
+                .filter(|id| !groups.contains_key(id))
+                .map(|id| kept.merged[id].clone()),
+        );
+    }
+    stats.rows_merged += alone.len();
     // A run seen more than once is merged even if nothing marked it (e.g. a second start after a flush).
-    Ok(groups
+    let mut out: Vec<Merged> = groups
         .into_values()
         .map(|versions| {
             let multi = versions.len() > 1;
@@ -702,15 +774,27 @@ pub async fn collect_pinned(
             }
             merge_group(versions, multi)
         })
-        .filter(|m| inner.matches_key(start_key(&m.state.run.dotted_order)))
-        .collect())
+        .collect();
+    out.extend(alone.into_iter().map(|k| Merged {
+        state: k.state.clone(),
+        attrs: k.attrs.clone(),
+        multi: true,
+        kept: Some(k),
+    }));
+    out.retain(|m| inner.matches_key(start_key(&m.state.run.dotted_order)));
+    Ok(out)
 }
 
 /// Merges versions and their attributes: for each attribute root, the newest version that set it wins.
 pub(crate) fn merge_group(mut versions: Vec<(RunState, Attrs)>, multi: bool) -> Merged {
     if versions.len() == 1 {
         let (state, attrs) = versions.pop().expect("one version");
-        return Merged { state, attrs, multi };
+        return Merged {
+            state,
+            attrs,
+            multi,
+            kept: None,
+        };
     }
     versions.sort_by_key(|(st, _)| st.first_seq);
     let mut attrs = Attrs::new();
@@ -728,87 +812,204 @@ pub(crate) fn merge_group(mut versions: Vec<(RunState, Attrs)>, multi: bool) -> 
         }
     }
     let state = merge_versions(versions.into_iter().map(|(st, _)| st).collect()).expect("at least one version");
-    Merged { state, attrs, multi }
+    Merged {
+        state,
+        attrs,
+        multi,
+        kept: None,
+    }
 }
 
-/// The payload of one run: from the active/frozen memtable if it's there, else from payload files. For each
-/// field the newest version that set it wins (same rule as the merge).
-pub async fn payload(ctx: &SessionContext, ingest: &Ingest, run: RunId, scope: &Scope) -> Result<Payload, QueryError> {
-    let (version, mem_versions) = {
-        let mem = ingest.mem();
-        let mem = mem.read().unwrap();
-        let mut v: Vec<RunState> = Vec::new();
-        if let Some(f) = &mem.frozen {
-            v.extend(f.get(&run).cloned());
+/// One run's versions, for [`crate::Query::run`]: its memtable states (with payload) and its file rows (core
+/// only), from one pinned file set.
+pub(crate) struct RunVersions {
+    pub version: Arc<Version>,
+    mem: Vec<(RunState, Attrs)>,
+    files: Vec<StoredRow>,
+}
+
+/// Reads `run`'s versions: one `run_id = …` scan over every file (bloom filters skip most); `None` if it has none.
+pub(crate) async fn run_versions(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    run: RunId,
+    stats: &mut ScanStats,
+) -> Result<Option<RunVersions>, QueryError> {
+    let (version, mem) = {
+        let m = ingest.mem();
+        let m = m.read().unwrap();
+        let mut v = Vec::new();
+        for store in m.frozen.as_deref().into_iter().chain(std::iter::once(&m.active)) {
+            if let Some(st) = store.get(&run) {
+                v.push((
+                    st.clone(),
+                    store.attrs(&run).cloned().unwrap_or_else(|| promote(&st.run)),
+                ));
+            }
         }
-        v.extend(mem.active.get(&run).cloned());
-        (mem.version.clone(), v)
+        (m.version.clone(), v)
+    };
+    let files: Vec<&SegmentMeta> = version.segments.iter().map(|s| &**s).collect();
+    stats.files_total = stats.files_total.max(files.len());
+    let rows = read_core(ctx, ingest, &files, Some(col("run_id").eq(id_lit(run)))).await?;
+    stats.rows_read += rows.len();
+    if rows.is_empty() && mem.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(RunVersions {
+        version,
+        mem,
+        files: rows,
+    }))
+}
+
+impl RunVersions {
+    pub(crate) fn merged(&self) -> Merged {
+        let mut seen = HashSet::new();
+        let versions: Vec<(RunState, Attrs)> = self
+            .files
+            .iter()
+            .map(|r| (r.state.clone(), r.attrs.clone()))
+            .chain(self.mem.iter().map(|(st, a)| (st.without_payload(), a.clone())))
+            .filter(|(st, _)| seen.insert(st.first_seq))
+            .collect();
+        let multi = versions.len() > 1;
+        merge_group(versions, multi)
+    }
+
+    /// The payload fields asked for, each from the newest version that set it (the merge rule), read only
+    /// from the files that hold a version setting one of them.
+    pub(crate) async fn payload(
+        &self,
+        ingest: &Ingest,
+        run: RunId,
+        (inputs, outputs, events): (bool, bool, bool),
+        stats: &mut ScanStats,
+    ) -> Result<Payload, QueryError> {
+        let bits = [
+            (inputs, present::INPUTS),
+            (outputs, present::OUTPUTS),
+            (events, present::EVENTS),
+        ]
+        .iter()
+        .filter(|b| b.0)
+        .fold(0, |acc, b| acc | b.1);
+        // (first_seq, present bits, payload)
+        let mut versions: Vec<(u64, u32, Payload)> = self
+            .mem
+            .iter()
+            .map(|(st, _)| {
+                let r = &st.run;
+                let p = Payload {
+                    inputs: r.inputs.clone(),
+                    outputs: r.outputs.clone(),
+                    events: r.events.clone(),
+                };
+                (st.first_seq, st.present, p)
+            })
+            .collect();
+        let (store, cache) = (&ingest.storage().store, &ingest.storage().cache);
+        // A version is in a file of the flush that took its events (one file per project), told apart by run id.
+        let reads = self.files.iter().filter(|r| r.state.present & bits != 0).map(|row| {
+            let (seq, trace) = (row.state.first_seq, row.state.run.trace_id);
+            let candidates: Vec<&SegmentMeta> = self
+                .version
+                .segments
+                .iter()
+                .map(|s| &**s)
+                .filter(|s| s.min_seq <= seq && seq <= s.max_seq && s.min_trace_id <= trace && trace <= s.max_trace_id)
+                // A version that names its project is filed under it; a row number past a file's rows isn't in it.
+                .filter(|s| !row.state.project_set || s.project == row.state.run.project)
+                .filter(|s| (row.payload_row as u64) < s.row_count && !ingest.is_damaged(&s.id))
+                .collect();
+            async move {
+                let mut opened = 0;
+                for seg in candidates {
+                    opened += 1;
+                    let got = tracedb_storage::segment::read_payload_rows(
+                        store,
+                        cache,
+                        seg,
+                        &[row.payload_row],
+                        inputs,
+                        outputs,
+                        events,
+                    )
+                    .await;
+                    match got.map_err(QueryError::from) {
+                        Ok(got) => {
+                            if let Some((_, _, p)) = got.into_iter().find(|g| g.1 == run) {
+                                return Ok((opened, Some((row.state.first_seq, row.state.present, p))));
+                            }
+                        }
+                        Err(e) if damaged_alone(ingest, seg, &e).await => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok::<_, QueryError>((opened, None))
+            }
+        });
+        for r in futures_util::future::join_all(reads).await {
+            let (opened, v) = r?;
+            stats.payload_files += opened;
+            stats.payload_rows += v.is_some() as usize;
+            versions.extend(v);
+        }
+        versions.sort_by_key(|v| v.0);
+        let mut out = Payload::default();
+        for (_, bits, p) in versions {
+            if bits & present::INPUTS != 0 {
+                out.inputs = p.inputs;
+            }
+            if bits & present::OUTPUTS != 0 {
+                out.outputs = p.outputs;
+            }
+            if bits & present::EVENTS != 0 {
+                out.events = p.events;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// How many runs name `parent` as theirs, from the memtables and the `trace`'s file rows that do (not the
+/// whole trace).
+pub(crate) async fn child_count(
+    ctx: &SessionContext,
+    ingest: &Ingest,
+    trace: TraceId,
+    parent: RunId,
+    stats: &mut ScanStats,
+) -> Result<u32, QueryError> {
+    let (version, mut ids) = {
+        let m = ingest.mem();
+        let m = m.read().unwrap();
+        let mut ids: HashSet<RunId> = HashSet::new();
+        for store in m.frozen.as_deref().into_iter().chain(std::iter::once(&m.active)) {
+            ids.extend(
+                store
+                    .trace_run_ids(&trace)
+                    .iter()
+                    .filter(|id| store.get(id).is_some_and(|st| st.run.parent_run_id == Some(parent))),
+            );
+        }
+        (m.version.clone(), ids)
+    };
+    let scope = Scope {
+        trace_id: Some(trace),
+        ..Scope::default()
     };
     let files: Vec<&SegmentMeta> = version
         .segments
         .iter()
         .map(|s| &**s)
-        .filter(|s| scope.file_in_scope(s))
+        .filter(|s| scope.file_may_hold_versions(s))
         .collect();
-    // (first_seq, present bits, payload)
-    let mut versions: Vec<(u64, u32, Payload)> = mem_versions
-        .into_iter()
-        .map(|st| {
-            (
-                st.first_seq,
-                st.present,
-                Payload {
-                    inputs: st.run.inputs,
-                    outputs: st.run.outputs,
-                    events: st.run.events,
-                },
-            )
-        })
-        .collect();
-    // A file holds at most one version of a run (one memtable each), so core and payload rows pair up per
-    // file. Bloom filters on run_id let most files answer "not here" from metadata alone.
-    let reads = files.iter().map(|seg| async move {
-        let core = read_core(ctx, ingest, &[*seg], Some(col("run_id").eq(id_lit(run)))).await?;
-        let Some(row) = core.into_iter().next() else {
-            return Ok::<_, QueryError>(None);
-        };
-        let read = async {
-            let store = &ingest.storage().store;
-            let df = ctx
-                .read_parquet(store.url(&seg.payload_path), ParquetReadOptions::default())
-                .await?
-                .filter(col("run_id").eq(id_lit(run)))?;
-            let mut p = Payload::default();
-            for b in df.collect().await? {
-                if let Some((_, got)) = decode_payload(&b)?.into_iter().next() {
-                    p = got;
-                }
-            }
-            Ok::<_, QueryError>(p)
-        };
-        match read.await {
-            Ok(p) => Ok(Some((row.state.first_seq, row.state.present, p))),
-            Err(e) if damaged_alone(ingest, seg, &e).await => Ok(None),
-            Err(e) => Err(e),
-        }
-    });
-    for r in futures_util::future::join_all(reads).await {
-        if let Some(v) = r? {
-            versions.push(v);
-        }
-    }
-    versions.sort_by_key(|v| v.0);
-    let mut out = Payload::default();
-    for (_, bits, p) in versions {
-        if bits & present::INPUTS != 0 {
-            out.inputs = p.inputs;
-        }
-        if bits & present::OUTPUTS != 0 {
-            out.outputs = p.outputs;
-        }
-        if bits & present::EVENTS != 0 {
-            out.events = p.events;
-        }
-    }
-    Ok(out)
+    let filter = col("trace_id")
+        .eq(id_lit(trace))
+        .and(col("parent_run_id").eq(id_lit(parent)));
+    let rows = read_core(ctx, ingest, &files, Some(filter)).await?;
+    stats.rows_read += rows.len();
+    ids.extend(rows.iter().map(|r| r.state.run.run_id));
+    Ok(ids.len() as u32)
 }
