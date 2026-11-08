@@ -73,7 +73,7 @@ segments and DataFusion.
 | 7 | [ingest/src/store.rs](../../crates/ingest/src/store.rs) | Indexes, keyset paging | 15 min |
 | 8 | [tracedb/src/routes/tail.rs](../../crates/server/src/routes/tail.rs) | **Critical.** Live fan-out and coalescing | 15 min |
 | 9 | [langsmith_map.rs](../../crates/server/src/langsmith_map.rs), [routes/ingest.rs](../../crates/server/src/routes/ingest.rs) | Wire-format translation (skim) | 10 min |
-| 10 | [ui/src/live.ts](../../ui/src/live.ts), [RunsList.tsx](../../ui/src/RunsList.tsx) | How the browser stays in sync | 10 min |
+| 10 | [ui/src/live.ts](../../ui/src/live.ts), `RunsList.tsx` (removed in M2; `git show m1:ui/src/RunsList.tsx`) | How the browser stays in sync | 10 min |
 
 Skip on the first pass: `validate.rs` (limits), `seed.rs`, `routes/ui.rs`, `cursor.rs` (34 lines, obvious),
 `build.rs`.

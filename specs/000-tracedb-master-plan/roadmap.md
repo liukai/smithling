@@ -227,6 +227,7 @@ is already cloud-ready (constitution V), so the work is between processes.
 | Compaction pool out of process; safe orphan sweep | Direct: compaction never slows ingest or breaks a query |
 | Ownership epochs, fencing, handoff, routing | Direct: one writer per shard, always |
 | Cluster page; split-mode demo, crash points, bench in CI | Durable: keeps the end state true |
+| README and crate descriptions: the tagline gains its second half ("…locally, or scale out when you need to") | Direct: the project says what it now does |
 
 **Delivers**: the cloud split (master Scope, D-036); constitution Architecture Constraints; backlog R-6.
 
@@ -324,6 +325,7 @@ picked up.
 | I-3 | **Reorder run, root and tree conditions by cost** | fixed order: run filter, then root, then tree (in candidate chunks) | tree queries dominate latency |
 | I-4 | **Query-result cache** for repeated identical queries (dashboards, live views re-asking) | the cache holds file pieces (footers, pages), not answers | repeated queries show in profiles |
 | I-5 | **Benchmark Vortex against Parquet** on the 2M-run data (SmithDB's file format; `vortex-datafusion` 0.93 fits DataFusion 55 / `object_store` 0.13) | Parquet only; no format trait (D-035) | run lookup or payload reads miss targets in D3-1 |
+| I-6 | **Bound attribute promotion for wide JSON**: give `metadata` a leaf budget like `inputs` / `outputs` (64), and past any budget store one "not indexed" marker per root instead of one per key | `metadata` has no leaf budget, and every leaf past the 64-leaf budget of `inputs` / `outputs` still adds a `null` entry with its full path (`model/src/attrs.rs`), so `attrs` grows with the width of the JSON | runs with very wide metadata or outputs show up, or core files grow faster than expected |
 
 ### Scale, scalability and failure modes (to think through, added 2026-11-08)
 
@@ -343,7 +345,7 @@ Not designed yet; a checklist of basic ideas to start from.
 
 - *One node*: the single writer and one frozen memtable cap ingest; file count caps queries until compaction (M4).
   Measure the ceilings first (the D3-1 bench) before splitting anything.
-- *Scale out* (the SmithDB shape, design-notes §2): stateless query nodes over S3 + Postgres; ingest partitioned by
+- *Scale out* (the SmithDB shape, design-notes §2; now planned as [M5](#m5-disaggregated-trace-database)): stateless query nodes over S3 + Postgres; ingest partitioned by
   project (each partition its own writer and WAL); compaction as separate workers; a cache tier (SSD) with sticky
   routing so a project's queries hit warm nodes.
 - *Catalog*: one Postgres row per segment; compaction keeps the row count bounded.

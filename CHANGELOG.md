@@ -38,8 +38,12 @@ Milestones, key decisions and changes someone would look up later, newest first.
   `columnar_tour` and `columnar_json`), [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) (the storage engine,
   part by part).
 - UI: a Scenarios page with the SmithDB post's questions, one click each.
+- UI: a new look (navy header, sky-blue accents) across the views, charts and JSON viewer.
+- A draft spec for **M5: disaggregated trace database** (ingest, read workers and compaction as separate services
+  over shared storage); the agents milestone becomes M6
+  ([D-036](specs/000-tracedb-master-plan/decisions.md#d-036)).
 - Roadmap backlog: ideas not yet in the system (typed columns for hot JSON paths, cost-based condition order,
-  result cache, a Vortex benchmark) and a scale / failure-modes checklist.
+  result cache, a Vortex benchmark, bounded attribute promotion) and a scale / failure-modes checklist.
 - `LICENSE` (MIT), `SECURITY.md`, this changelog.
 
 ---
