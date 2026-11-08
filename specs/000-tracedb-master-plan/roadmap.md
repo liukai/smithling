@@ -264,7 +264,7 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 
 | # | Item | Why not done | Done when |
 |---|---|---|---|
-| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job; table recorded in M3 research |
+| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Finish the parked branch `wip/m3-bench-three-rows` (three text-search rows; idle row measured on the server and reported "waived (M4)" instead of failing `--check` — without it CI's full bench always fails); then `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
 | D3-2 | **Idle memory ≤ 200 MB** (SC-05, T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
 | D3-3 | **Cloud CI job's first real run** (T122), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
 | D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
