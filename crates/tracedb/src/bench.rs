@@ -38,6 +38,8 @@ pub const REFERENCE_MS: f64 = 80.0;
 const LOAD_TARGET: f64 = 20_000.0;
 const DISK_TARGET_PCT: f64 = 50.0;
 const IDLE_TARGET_MB: f64 = 200.0;
+/// SC-05 is waived for M3 until M4 compaction (roadmap 2026-11-07, D-028): reported, never failed.
+const IDLE_WAIVED: &str = "M4";
 
 #[derive(clap::Parser, Clone, Debug)]
 #[command(name = "tracedb bench")]
@@ -479,29 +481,38 @@ fn list(rng: &mut Rng, d: &Data) -> Probe {
     probe(Req::Post("/api/query", body), matches.then_some("runs"))
 }
 
-fn text_search(rng: &mut Rng, d: &Data) -> Probe {
-    let word = rng.pick(&WORDS);
-    let kind = rng.below(5);
-    let filter = match kind {
-        0 => r#"search("429 Too Many Requests")"#.to_string(),
-        1 => format!(r#"search("{word}")"#),
-        2 => r#"search(error, "httperror")"#.to_string(),
-        3 => format!(
-            r#"and(search(outputs, "rate limit"), eq(name, "{}"))"#,
-            rng.pick(&NAMES)
-        ),
-        _ => format!(
-            r#"and(search("{word}"), eq(metadata.prompt_version, "{}"))"#,
-            rng.pick(&["v6", "v7"])
-        ),
-    };
+fn search(d: &Data, rng: &mut Rng, filter: String, nonempty: bool) -> Probe {
     probe(
         Req::Post(
             "/api/query",
             json!({"project": PROJECT, "time": d.window(rng), "filter": filter}),
         ),
-        matches!(kind, 1 | 4).then_some("runs"),
+        nonempty.then_some("runs"),
     )
+}
+
+/// The planted phrase: a handful of runs in a window.
+fn rare_phrase(rng: &mut Rng, d: &Data) -> Probe {
+    search(d, rng, r#"search("429 Too Many Requests")"#.into(), false)
+}
+
+/// One shape per row, so its p99 rule measures the tail, not a mix: only the word and the window vary.
+fn common_word(rng: &mut Rng, d: &Data) -> Probe {
+    let word = rng.pick(&WORDS);
+    search(d, rng, format!(r#"search("{word}")"#), true)
+}
+
+fn search_filter(rng: &mut Rng, d: &Data) -> Probe {
+    let f = format!(
+        r#"and(search("{}"), eq(metadata.prompt_version, "{}"))"#,
+        rng.pick(&WORDS),
+        rng.pick(&["v6", "v7"])
+    );
+    search(d, rng, f, true)
+}
+
+fn text_search(rng: &mut Rng, d: &Data) -> Probe {
+    [rare_phrase, common_word, search_filter][rng.below(3) as usize](rng, d)
 }
 
 fn grouped(rng: &mut Rng, d: &Data) -> Probe {
@@ -606,11 +617,25 @@ fn specs(d: Data, samples: usize) -> Vec<Spec> {
             Box::new(move |r| list(r, &d)),
         ),
         spec(
-            "text search",
+            "text search: rare phrase",
             500.0,
             samples,
             |v| v["runs"].is_array(),
-            Box::new(move |r| text_search(r, &d)),
+            Box::new(move |r| rare_phrase(r, &d)),
+        ),
+        spec(
+            "text search: common word",
+            500.0,
+            samples,
+            |v| v["runs"].is_array(),
+            Box::new(move |r| common_word(r, &d)),
+        ),
+        spec(
+            "text search: search + filter",
+            500.0,
+            samples,
+            |v| v["runs"].is_array(),
+            Box::new(move |r| search_filter(r, &d)),
         ),
         spec(
             "grouped",
@@ -946,6 +971,7 @@ struct Report {
     load: Value,
     rows: Vec<Row>,
     disk: Value,
+    /// The server's own idle footprint: `None` while it shares the bench process (`idle.process_mb` beside it).
     idle_mb: Option<f64>,
     idle: Value,
     pass: bool,
@@ -1079,7 +1105,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
         samples.extend(rss_mb());
     }
     samples.sort_by(f64::total_cmp);
-    let idle_mb = (!samples.is_empty()).then(|| pct(&samples, 0.5));
+    let process_mb = (!samples.is_empty()).then(|| pct(&samples, 0.5));
     let (disk_bytes, index_bytes) = dir_bytes(&dir);
     let health = ingest.health();
     let _ = own.stop.send(());
@@ -1102,8 +1128,7 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
     let pct_raw = |b: u64| b as f64 * 100.0 / info.raw_bytes.max(1) as f64;
     let disk_pct = pct_raw(disk_bytes);
     let disk_pass = disk_pct <= DISK_TARGET_PCT;
-    let idle_pass = flushed && idle_mb.is_some_and(|m| m <= IDLE_TARGET_MB);
-    let pass = load_pass && disk_pass && idle_pass && rows.iter().all(|r| r.pass);
+    let pass = load_pass && disk_pass && rows.iter().all(|r| r.pass);
     let report = Report {
         runs,
         raw_bytes: info.raw_bytes,
@@ -1119,9 +1144,9 @@ async fn bench(a: &BenchArgs, out: &mut impl Write, err: &mut impl Write) -> any
         rows,
         disk: json!({"bytes": disk_bytes, "index_bytes": index_bytes, "files_bytes": disk_bytes - index_bytes,
                      "pct_of_raw": disk_pct, "target_pct": DISK_TARGET_PCT, "pass": disk_pass}),
-        idle_mb,
-        idle: json!({"mb": idle_mb, "target_mb": IDLE_TARGET_MB, "flushed": flushed, "secs": a.idle_secs,
-                     "pass": idle_pass}),
+        idle_mb: None,
+        idle: json!({"mb": null, "process_mb": process_mb, "target_mb": IDLE_TARGET_MB, "flushed": flushed,
+                     "secs": a.idle_secs, "waived": IDLE_WAIVED, "pass": null}),
         pass,
     };
     if let Some(path) = &a.json {
@@ -1194,13 +1219,13 @@ fn print(
     )?;
     writeln!(
         out,
-        "  {:<16}{:>10}{:>10}{:>10}{:>10}   result",
+        "  {:<30}{:>10}{:>10}{:>10}{:>10}   result",
         "query", "p50", "p99", "target", "budget"
     )?;
     for row in &rep.rows {
         writeln!(
             out,
-            "  {:<16}{:>10}{:>10}{:>10}{:>10}   {}",
+            "  {:<30}{:>10}{:>10}{:>10}{:>10}   {}",
             row.query,
             ms(row.p50_ms),
             ms(row.p99_ms),
@@ -1215,28 +1240,29 @@ fn print(
     );
     let raw = rep.raw_bytes.max(1) as f64;
     let disk_pass = rep.disk["pass"] == true;
-    writeln!(
-        out,
-        "  disk            files {:.1}% + index {:.1}% = {:.1}% of raw{:<16} target ≤ {}%  {}",
+    let disk = format!(
+        "files {:.1}% + index {:.1}% = {:.1}% of raw",
         (total - idx) as f64 * 100.0 / raw,
         idx as f64 * 100.0 / raw,
         total as f64 * 100.0 / raw,
-        "",
+    );
+    writeln!(
+        out,
+        "  disk            {disk:<56} target ≤ {}%  {}",
         num(DISK_TARGET_PCT),
         mark(disk_pass)
     )?;
-    let idle_pass = rep.idle["pass"] == true;
     let flushed = rep.idle["flushed"] == true;
-    let idle = match rep.idle_mb {
-        Some(mb) if flushed => format!("{mb:.0} MB RSS (median over {} s)", a.idle_secs.max(1)),
-        Some(mb) => format!("{mb:.0} MB RSS (memtable not flushed by age)"),
-        None => "unavailable (no /proc and ps failed)".into(),
+    // Server in-process: only the whole process's RSS, an upper bound. Kept within the 56-column text field.
+    let idle = match rep.idle["process_mb"].as_f64() {
+        Some(mb) if flushed => format!("process {mb:.0} MB RSS over {} s (upper bound)", a.idle_secs.max(1)),
+        Some(mb) => format!("process {mb:.0} MB RSS (upper bound), not flushed by age"),
+        None => "unavailable (server in-process, RSS not readable)".into(),
     };
     writeln!(
         out,
-        "  idle memory     {idle:<56} target ≤ {} MB  {}",
+        "  idle memory     {idle:<56} target ≤ {} MB  WAIVED ({IDLE_WAIVED})",
         num(IDLE_TARGET_MB),
-        mark(idle_pass)
     )?;
 
     let mut failed = Vec::new();
@@ -1268,17 +1294,18 @@ fn print(
             num(DISK_TARGET_PCT)
         ));
     }
-    if !idle_pass {
-        failed.push(format!(
-            "FAIL idle memory: {idle} (target ≤ {} MB)",
-            num(IDLE_TARGET_MB)
-        ));
-    }
-    let total_rows = rep.rows.len() + 3;
+    let total_rows = rep.rows.len() + 2;
     if failed.is_empty() {
-        writeln!(out, "all {total_rows} rows pass")?;
+        writeln!(
+            out,
+            "all {total_rows} rows pass (idle memory waived until {IDLE_WAIVED})"
+        )?;
     } else {
-        writeln!(out, "{} of {total_rows} rows failed:", failed.len())?;
+        writeln!(
+            out,
+            "{} of {total_rows} rows failed (idle memory waived until {IDLE_WAIVED}):",
+            failed.len()
+        )?;
         for f in failed {
             writeln!(out, "{f}")?;
         }

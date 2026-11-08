@@ -33,27 +33,35 @@ llm_call     1,112    0.0%        4.1 s     $4.12    │  1,050   0.0%        3.
 total        4,210    1.3%        …         $4.12    12 runs had no price
 ```
 
-## `tracedb bench` output (illustrative)
+## `tracedb bench` output (illustrative; the layout is the code's)
 
 ```
-tracedb bench — 2,000,000 runs, 4.9 GB raw JSON, calibration r = 1.00 (reference)
-  load            23,410 events/s while querying                    target ≥ 20,000      PASS
-  query               p50       p99      target   budget   result
-  trace tree         6.1 ms    7.1 ms    50 ms    50 ms    PASS
-  run + payload     18.0 ms   31.0 ms    50 ms    50 ms    PASS
-  filtered list     61.0 ms  128.0 ms   100 ms   100 ms    PASS
-  text search        …         …        500 ms   500 ms    …
-  grouped            …         …          1 s      1 s     …
-  first estimate     …         …          1 s      1 s     …
-  suggestions        3.0 ms    4.2 ms   200 ms   200 ms    PASS
-  disk               files 19.3% + index 12.1% = 31.4% of raw     target ≤ 50%      PASS
-  idle memory        182 MB (median over 30 s)                    target ≤ 200 MB   PASS
+tracedb bench — 2,000,000 runs, 4.9 GB raw JSON, calibration r = 1.00 (runner 80 ms, reference 80 ms)
+  load            23,410 events/s while querying (2,904 queries alongside) target ≥ 20,000  budget ≥ 20,000  PASS
+  query                                p50       p99    target    budget   result
+  trace tree                        6.1 ms    7.1 ms     50 ms     50 ms   PASS
+  run + payload                    18.0 ms   31.0 ms     50 ms     50 ms   PASS
+  filtered list                    61.0 ms  128.0 ms    100 ms    100 ms   PASS
+  text search: rare phrase               …         …    500 ms    500 ms   …
+  text search: common word               …         …    500 ms    500 ms   …
+  text search: search + filter           …         …    500 ms    500 ms   …
+  grouped                                …         …   1000 ms   1000 ms   …
+  first estimate                         …         …   1000 ms   1000 ms   …
+  suggestions                       3.0 ms    4.2 ms    200 ms    200 ms   PASS
+  disk            files 19.3% + index 12.1% = 31.4% of raw                 target ≤ 50%  PASS
+  idle memory     process 240 MB RSS over 30 s (upper bound)               target ≤ 200 MB  WAIVED (M4)
 ```
 
 - A p99 over 5× its p50 fails, whatever the budget.
-- `--json` writes `{runs, raw_bytes, r, rows: [{query, p50_ms, p99_ms, target_ms, budget_ms, pass}], disk, idle_mb}`.
-- Exit codes: 0 = all pass; 1 = a row failed (the failing rows are printed last, naming the query, the target and
-  the measured value); 2 = setup error.
+- Text search is three rows, each held to its own median and p99: a rare phrase (the planted
+  `429 Too Many Requests`), a common word, and a search combined with a filter.
+- Idle memory is waived for M3 (SC-05, roadmap 2026-11-07, D-028): reported, never failed. The server runs inside
+  the bench process, so its own footprint can't be told apart: `idle_mb` is `null` and `idle.process_mb` is the
+  process's RSS, an upper bound (`tests/idle_memory.rs` measures a separate `serve`).
+- `--json` writes `{runs, raw_bytes, r, rows: [{query, p50_ms, p99_ms, target_ms, budget_ms, pass}], disk, idle_mb,
+  idle: {process_mb, waived, …}}`.
+- Exit codes: 0 = every row passes (idle memory waived); 1 = a row failed (the failing rows are printed last,
+  naming the query, the target and the measured value); 2 = setup error.
 
 ## `tracedb demo` output (illustrative; counts are fixed by the generator)
 

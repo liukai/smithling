@@ -91,9 +91,10 @@ its run). Exit code 0 when every check passes; 1 naming expected vs actual other
 ```
 
 **Speed.** `tracedb bench` loads a reference volume (2M runs by default, `--smoke` for 200k) into its own server
-while querying it, then prints P50/P99 per query type (trace, run, filtered list, text search, grouped, first
-estimate, suggestions), load rate, disk use and idle memory against the targets. With `--check` it exits 1 naming
-any row that misses its budget; on a shared machine the targets are scaled by a short calibration run. CI runs
+while querying it, then prints P50/P99 per query type (trace, run, filtered list, text search in three rows: rare
+phrase, common word, search + filter; then grouped, first estimate, suggestions), load rate and disk use against
+the targets. Idle memory is reported but not checked: the 200 MB target is waived until M4. With `--check` it exits 1
+naming any row that misses its budget; on a shared machine the targets are scaled by a short calibration run. CI runs
 `--smoke --check` on every PR and the full run on `main` and nightly.
 
 ```bash
@@ -150,7 +151,8 @@ demo table matches the local one.
 - **Not verified yet**:
   - the UI (search, Stats, charts, Compare, "N new") is covered by component tests but hasn't been checked in a
     real browser;
-  - idle memory (≤ 200 MB) is measured only on Linux CI;
+  - idle memory: the ≤ 200 MB target is waived until M4 (compaction); `tracedb bench` reports it as `WAIVED (M4)`
+    with its own process's RSS, an upper bound, and never fails on it;
   - the full 2M-run bench hasn't had a clean pass on the reference laptop yet;
   - the cloud job (S3 + Postgres) hasn't had its first M3 run.
 

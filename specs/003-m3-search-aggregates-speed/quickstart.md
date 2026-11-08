@@ -76,15 +76,16 @@ The SDK's read API (`list_runs`) is not part of M3; find run ids in the UI or wi
 
 ```bash
 ./target/release/tracedb bench --smoke              # 200k runs, ~2 min: the PR gate
-./target/release/tracedb bench --runs 2000000 --json /tmp/bench.json --check   # full; every row PASS; exit 0
+./target/release/tracedb bench --runs 2000000 --json /tmp/bench.json --check   # full; every checked row PASS; exit 0
 ```
 Expect:
-- every row PASS: trace and run ≤ 50 ms; list ≤ 100 ms; text ≤ 500 ms; grouped ≤ 1 s; first estimate ≤ 1 s;
-  suggestions ≤ 200 ms;
+- every row PASS: trace and run ≤ 50 ms; list ≤ 100 ms; text ≤ 500 ms (three rows: rare phrase, common word,
+  search + filter); grouped ≤ 1 s; first estimate ≤ 1 s; suggestions ≤ 200 ms;
 - every p99 ≤ 5× its p50;
 - load ≥ 20,000 events/s while querying;
 - disk (files + index) ≤ 50% of raw;
-- idle memory ≤ 200 MB.
+- idle memory is reported, not checked: the line ends `WAIVED (M4)` (≤ 200 MB waived until M4, D-028) and shows
+  the bench process's RSS, an upper bound, since the server runs inside it.
 
 To see the gate fail: `TRACEDB_BENCH_SLEEP_MS=200 tracedb bench --smoke --check` (test-only hook) → exit 1 naming the
 query, target and measured value.

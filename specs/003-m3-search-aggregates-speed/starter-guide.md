@@ -169,7 +169,7 @@ sidecar layout ([fts.rs:112](../../crates/storage/src/fts.rs#L112)).
 | 11 | 🟢 | [ingest/src/feedback.rs](../../crates/ingest/src/feedback.rs) | Feedback store and index; why it has no WAL record | 10 min |
 | 12 | 🟢 | [ui/src/stats/StatsPanel.tsx](../../ui/src/stats/StatsPanel.tsx), [query/SearchBox.tsx](../../ui/src/query/SearchBox.tsx) | Stats tab, charts, click-through | 15 min |
 
-Skip on the first pass: `bench.rs` (1,299 lines, mostly generator and table printing), `clean.rs` column plumbing
+Skip on the first pass: `bench.rs` (1,326 lines, mostly generator and table printing), `clean.rs` column plumbing
 (`Cols`, `Light`), `multipart.rs`'s `Parser` state machine, `scenario.rs`.
 
 ## 4. Walkthrough: one run, from a multipart upload to batch a vs b
@@ -565,24 +565,25 @@ cargo test -p tracedb-ingest --test writer     # a second start for a flushed ru
 
 ## 8. Rough edges found while writing it
 
-From reading the code and the task list; nothing was run. None are fixed.
+From reading the code and the task list; nothing was run. None were fixed then; the bench's idle and text-search
+rows were updated afterwards (below).
 
 - **Idle memory is over target, by decision.** 234–246 MB idle at ~0.5M runs, ≈0.6 GB projected at 2M: merged
   copies of late-updated runs and per-file state, which M4 compaction removes. SC-05 is waived for M3 (roadmap
-  2026-11-07, [D-028](../000-tracedb-master-plan/decisions.md#d-028)). The code still gates on 200 MB, so the
-  [idle-memory test](../../crates/tracedb/tests/idle_memory.rs#L13) is red and `tracedb bench --check` fails its idle
-  row ([bench.rs:40](../../crates/tracedb/src/bench.rs#L40), [bench.rs:1105](../../crates/tracedb/src/bench.rs#L1105)),
-  including CI's full run on `main`.
+  2026-11-07, [D-028](../000-tracedb-master-plan/decisions.md#d-028)). `tracedb bench` reports the idle row as
+  `WAIVED (M4)` and leaves it out of `--check` ([bench.rs:42](../../crates/tracedb/src/bench.rs#L42), [bench.rs:1131](../../crates/tracedb/src/bench.rs#L1131)); the
+  `#[ignore]`d [idle-memory test](../../crates/tracedb/tests/idle_memory.rs#L13) still holds a separate `serve` to
+  200 MB, so it is red when run.
 - **The bench's idle number isn't the server's.** It is the bench process's RSS
-  ([bench.rs:874](../../crates/tracedb/src/bench.rs#L874)), and that process also ran the 8 load clients and the
-  timing client ([bench.rs:905](../../crates/tracedb/src/bench.rs#L905)); the idle-memory test measures a separate
-  `serve` process.
+  ([bench.rs:899](../../crates/tracedb/src/bench.rs#L899)), and that process also ran the 8 load clients and the
+  timing client ([bench.rs:930](../../crates/tracedb/src/bench.rs#L930)), so the bench prints it as an upper bound (`idle.process_mb`) and
+  leaves `idle_mb` `null` ([bench.rs:1147](../../crates/tracedb/src/bench.rs#L1147)); the idle-memory test measures a separate `serve` process.
 - **The full 2M bench hasn't passed yet.** Earlier runs on a busy machine missed run + payload, filtered list,
   text-search p99 and load (tasks T109); it is being rerun on a quiet machine.
-- **Text search is still one bench row.** The 2026-11-07 decision benches it as three rows (rare phrase, common
-  word, search + filter), each held to its own median and p99; the committed bench mixes five kinds of search in
-  one row ([bench.rs:482-497](../../crates/tracedb/src/bench.rs#L482), [bench.rs:609](../../crates/tracedb/src/bench.rs#L609)),
-  so a slow common word shows up as the row's p99. The split is in the working tree, not committed.
+- **Text search is three bench rows (split after this guide was first written).** Rare phrase, common word,
+  search + filter, each held to its own median and p99 ([bench.rs:495-512](../../crates/tracedb/src/bench.rs#L495),
+  [bench.rs:620](../../crates/tracedb/src/bench.rs#L620)); the query loop that runs alongside the load still mixes all three
+  (`text_search`, [bench.rs:514](../../crates/tracedb/src/bench.rs#L514)).
 - **CI has never run.** There is no git remote, so the `cloud` job (S3 + Postgres, [ci.yml:79](../../.github/workflows/ci.yml#L79)),
   both bench jobs and the rest exist only as YAML. "Same results on cloud storage" is still unproven.
 - **The no-outbound check has never run under strace.** [no-outbound.sh](../../scripts/no-outbound.sh#L7) is Linux

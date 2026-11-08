@@ -60,13 +60,19 @@ fn json_has_every_row_and_the_calibration() {
             "trace tree",
             "run + payload",
             "filtered list",
-            "text search",
+            "text search: rare phrase",
+            "text search: common word",
+            "text search: search + filter",
             "grouped",
             "first estimate",
             "suggestions"
         ]
     );
     for row in rows {
+        if row["query"].as_str().unwrap().starts_with("text search") {
+            assert_eq!(row["target_ms"], 500.0, "{row}");
+            assert_eq!(row["n"], 5, "{row}");
+        }
         for k in ["p50_ms", "p99_ms", "target_ms", "budget_ms"] {
             assert!(row[k].as_f64().is_some(), "{k} in {row}");
         }
@@ -75,12 +81,32 @@ fn json_has_every_row_and_the_calibration() {
         assert!((b - t * r).abs() < 1e-6, "{row}");
     }
     assert!(v["disk"]["pct_of_raw"].as_f64().is_some(), "{v}");
-    // `null` where the footprint can't be read (no `/proc`, `ps` not allowed); the idle row then fails.
-    assert!(v["idle_mb"].as_f64().is_some() || v["idle"]["pass"] == false, "{v}");
+    // The server shares the bench process, so its own footprint can't be told apart: `null`, the process's RSS
+    // (an upper bound, `null` where `ps` isn't allowed) beside it; SC-05 is waived for M3, so the row never fails.
+    assert!(v["idle_mb"].is_null(), "{v}");
+    assert_eq!(v["idle"]["waived"], "M4", "{v}");
+    assert!(v["idle"]["pass"].is_null(), "{v}");
+    let strict = v["load"]["pass"] == true && v["disk"]["pass"] == true && rows.iter().all(|r| r["pass"] == true);
+    assert_eq!(v["pass"], strict, "{v}");
     assert!(v["load"]["events_per_s"].as_f64().unwrap() > 0.0, "{v}");
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("calibration r = "), "{out}");
     assert!(out.contains("trace tree") && out.contains("suggestions"), "{out}");
+    let idle = out
+        .lines()
+        .find(|l| l.contains("idle memory"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(idle.contains("WAIVED (M4)"), "{idle}");
+    let target_col = |name: &str| {
+        let l = out
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("{out}"));
+        l[..l.find(" target ").unwrap_or_else(|| panic!("{l}"))].chars().count()
+    };
+    assert_eq!(target_col("load"), target_col("disk"), "{out}");
+    assert_eq!(target_col("load"), target_col("idle memory"), "{out}");
+    assert!(!out.contains("FAIL idle memory"), "{out}");
 }
 
 #[test]
@@ -106,6 +132,7 @@ fn check_fails_on_a_slipped_target_naming_query_target_and_value() {
         .and_then(|t| t.parse().ok())
         .unwrap_or_else(|| panic!("no measured p50 in {line}"));
     assert!(p50 >= 200.0, "{line}");
+    assert!(!all.contains("FAIL idle memory"), "{all}");
     let v: Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
     assert_eq!(v["rows"][0]["pass"], false, "{v}");
     assert!(v["rows"][0]["p50_ms"].as_f64().unwrap() >= 200.0, "{v}");
