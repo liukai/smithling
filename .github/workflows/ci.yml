@@ -4,17 +4,29 @@ on:
   push:
     branches: [main, master]
   pull_request:
-  schedule:
-    - cron: "17 3 * * *"
+  # The full 2M-run bench is started by hand ("Run workflow") until its deferral (roadmap D3-1) is re-evaluated.
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Code or spec changes come with a CHANGELOG.md entry; label a PR `skip-changelog` for changes nobody would look up.
+  changelog:
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/check-changelog.sh "origin/${{ github.base_ref }}"
+
   # The UI is built and tested on its own; Rust jobs embed its output (M2-FR-25).
   ui:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +44,6 @@ jobs:
 
   # The server builds and tests without Node; the UI is a placeholder page here.
   rust-no-node:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -179,7 +190,7 @@ jobs:
           path: bench.json
 
   bench-full:
-    if: github.event_name == 'push' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     # One 2M run at a time; a newer push waits rather than cancelling the one being measured.
     concurrency:
       group: bench-full

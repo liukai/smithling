@@ -302,13 +302,16 @@ def main():
     suffix = "" if mode == "json" else f"-{mode}"
     out = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / f"sdk-{langsmith.__version__}{suffix}"
     out.mkdir(parents=True, exist_ok=True)
+    # Recorded tracebacks hold this checkout's absolute path; fixtures are published, so replace it.
+    root = str(Path(__file__).resolve().parent.parent) + "/"
+    scrub = lambda text: text.replace(root, "/work/tracedb/")
     with open(out / "requests.jsonl", "w") as f:
         for r in REQUESTS:
-            f.write(json.dumps(r, sort_keys=True) + "\n")
+            f.write(scrub(json.dumps(r, sort_keys=True)) + "\n")
     runs = expected_runs(REQUESTS)
-    (out / "expected-runs.json").write_text(json.dumps(runs, indent=2, sort_keys=True) + "\n")
+    (out / "expected-runs.json").write_text(scrub(json.dumps(runs, indent=2, sort_keys=True)) + "\n")
     feedback = expected_feedback(REQUESTS)
-    (out / "expected-feedback.json").write_text(json.dumps(feedback, indent=2, sort_keys=True) + "\n")
+    (out / "expected-feedback.json").write_text(scrub(json.dumps(feedback, indent=2, sort_keys=True)) + "\n")
     print(f"langsmith {langsmith.__version__} ({mode}): {len(REQUESTS)} requests, {len(runs)} runs, "
           f"{len(feedback)} feedback → {out}")
     print("paths:", sorted({(r["method"], r["path"].split("?")[0]) for r in REQUESTS}))

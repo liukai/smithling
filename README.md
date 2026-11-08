@@ -4,6 +4,9 @@ A local trace store and viewer for AI agents. Point an unmodified LangSmith-SDK 
 `@traceable`) at it, watch its traces live in your browser, and query them. Everything stays in one folder on your
 machine (or, in cloud mode, in S3-compatible storage and Postgres).
 
+An independent open-source project modeled on the design LangChain described for SmithDB; not affiliated with or
+endorsed by LangChain. LangSmith is LangChain's trademark; tracedb speaks its SDK's upload protocol.
+
 Status: **M3, "search, aggregates and speed"**: built and passed locally; performance work (the full 2M-run bench,
 idle memory) deferred until before M4. Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
 New to the project? [STARTER_GUIDE.md](STARTER_GUIDE.md) explains the problem, the architecture and how each
@@ -99,7 +102,8 @@ while querying it, then prints P50/P99 per query type (trace, run, filtered list
 phrase, common word, search + filter; then grouped, first estimate, suggestions), load rate and disk use against
 the targets. Idle memory is reported but not checked: the 200 MB target is waived until M4. With `--check` it exits 1
 naming any row that misses its budget; on a shared machine the targets are scaled by a short calibration run. CI runs
-`--smoke --check` on every PR and the full run on `main` and nightly.
+`--smoke --check` on every PR; the full run is started by hand ("Run workflow") until it's re-evaluated
+(roadmap D3-1).
 
 ```bash
 ./target/release/tracedb bench --smoke --check
@@ -194,3 +198,11 @@ cargo test --release -p tracedb --test crash --test restart --test throughput --
 
 For UI work, `tracedb serve --ui-dir ui/dist` serves the UI from disk, so only the UI needs rebuilding. Design docs
 live in `specs/`.
+
+Changes are recorded in [CHANGELOG.md](CHANGELOG.md) (milestones are tagged `m1`, `m2`, `m3`); notes for coding
+agents are in [AGENTS.md](AGENTS.md).
+
+## License and security
+
+[MIT](LICENSE). tracedb is a local, single-user tool with no login: read [SECURITY.md](SECURITY.md) before exposing
+it beyond `127.0.0.1`.
