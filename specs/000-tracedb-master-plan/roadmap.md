@@ -52,7 +52,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 
 **STATE as of 2026-11-07** (verified at `22ca7c8` by `cargo test --workspace` 301 passed, `npm test` 245, clippy `-D warnings`, crash harness, `tracedb demo --seed 7` 10/10, and the M3 quickstart run end to end):
 M2 is **built, passed locally**. M3 is **built, passed locally** on branch `003-m3-search-aggregates-speed` (14 plan
-units committed; 124/128 tasks): text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates,
+units committed; 125/128 tasks): text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates,
 time series, distribution and batch comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive
 estimates; SDK multipart + zstd on defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI;
 `tracedb demo` checks M2 + M3; `tracedb bench` built. **Deferred by decision** (end-to-end first, performance later):
@@ -72,7 +72,7 @@ remote so CI (incl. cloud and the nightly bench) runs. 3) **Before M4: re-evalua
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
-| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 124/128 | demo 10/10 + quickstart (see STATE) |
+| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 125/128 | demo 10/10 + quickstart (see STATE) |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
 
