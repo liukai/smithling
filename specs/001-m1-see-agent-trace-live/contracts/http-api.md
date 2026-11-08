@@ -1,6 +1,7 @@
 # HTTP API contract (M1 subset)
 
-This is a subset of the [master contract](../../000-tracedb-master-plan/contracts/http-api.md), and the shapes match it.
+M1's part of the API, cut from the [master contract](../../000-tracedb-master-plan/contracts/http-api.md) (a planning
+draft, now retired; the milestone contracts are the source of truth).
 
 ## Ingest
 | Method + path | Notes |

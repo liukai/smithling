@@ -392,6 +392,8 @@ impl Metastore {
             )));
         }
         self.upsert_dedup(&mut tx, dedup).await?;
+        // Always keeps this flush's row, even when it's older than the window. That was for start rebuilding the
+        // multi-version set, which start no longer does; harmless, kept for now.
         sqlx::query(self.sql("DELETE FROM dedup_keys WHERE newest_at < ? AND flushed_seq < ?"))
             .bind(forget_before)
             .bind(dedup.flushed_seq as i64)

@@ -93,11 +93,11 @@ the developer goes home. Some root runs show `running` for 40+ minutes and flip 
 
 ### Morning: triage (Stories 2–5)
 
-**"What failed?"** Filter: last 12 h, `batch=2026-11-05-a`, root runs only, `status=error` → **14 runs**.
+**"What failed?"** Filter: last 7 days, `batch=2026-11-05-a`, root runs only, `status=error` → **14 runs**.
 **"Did anything fail quietly?"** Root runs that succeeded but have *any* errored step → **23 more**.
 
 ```
-Runs  [ last 12h ] [ tag: batch=2026-11-05-a ] [ root only ] [ any step errored ]     23 results
+Runs  [ last 7d  ] [ tag: batch=2026-11-05-a ] [ root only ] [ any step errored ]     23 results
 ──────────────────────────────────────────────────────────────────────────────────────────────
  status  name           start     latency  tokens   cost    task_id
  ok      research_task  02:14:07  41m 3s   48,210   $0.11   t-117

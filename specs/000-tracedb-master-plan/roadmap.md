@@ -50,11 +50,12 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-07: **The full 2M-run quiet bench (T109) moves to the backlog** (D3-1): not practical on this machine; the bench code, its three search rows and the waived idle row ship in M3, and the nightly CI job runs the full bench once a remote exists ([D-032](decisions.md#d-032)).
 - 2026-11-07 (priority): **A working end-to-end version comes first; performance is not a concern for now.** Speed targets, the 2M bench and memory (D3-1, D3-2, the parked branch `wip/m3-bench-three-rows`, *superseded by `ea6af31`, which merged the three-row bench*) are deferred, not dropped. **Re-evaluate before M4 starts** (or once the end-to-end version is in use): resume or re-scope D3-1/D3-2 then ([D-033](decisions.md#d-033)).
 - 2026-11-08: **The `tracedb` crate is split** into `tracedb-server` (production surface), `tracedb-tools` (seed, demo, bench, CLI query) and the `tracedb` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `tracedb_server::testkit` ([D-034](decisions.md#d-034)).
+- 2026-11-08: **Interfaces stay as built** ([D-035](decisions.md#d-035)): only `TextIndex` is a trait; catalog, cache and segment format stay concrete types until a second implementation is needed. Don't add traits yet.
 
 **STATE as of 2026-11-08** (verified on branch `refactor/split-tracedb-crates` at `4acfcdf` by `cargo test --workspace`
 303 passed / 0 failed / 7 ignored, clippy `-D warnings`, `cargo fmt --check` and `tracedb demo --seed 7` 10/10; `npm test` and the
 crash harness were last run at `22ca7c8` on 2026-11-07 and not re-run):
-M2 is **built, passed locally**. M3 is **built, passed locally** and on `master` (`ac69c4e`; 14 plan units; 125/128 tasks):
+M2 is **built, passed locally**. M3 is **built, passed locally** and on `master` (`ac69c4e`; 14 plan units; 123/128 tasks (T121, T124 unchecked to re-evaluate later)):
 text search over inputs, outputs and errors (31 hits, all `fetch_url`); aggregates, time series, distribution and batch
 comparison (`fetch_url` 14.0% / 31 s vs 2.0% / 9 s; $4.12 vs $4.07); progressive estimates; SDK multipart + zstd on
 defaults; feedback stored, filtered and averaged; Stats/charts/Compare UI; `tracedb demo` checks M2 + M3 (also with
@@ -76,7 +77,7 @@ bench) runs; the user looks at the UI in a browser (D3-4). 3) **Before M4: re-ev
 |---|---|---|---|---|
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
-| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 125/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
+| M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 123/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | M4 Follow-through | — | not started | — | — |
 | M5 Zero instrumentation + agents | — | not started | — | — |
 
@@ -272,12 +273,14 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 |---|---|---|---|
 | D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Bench code done (three text-search rows; idle row reported "waived (M4)", merged in `ea6af31`); `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
 | D3-2 | **Idle memory ≤ 200 MB** (QR-006 (M3 SC-05), T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
-| D3-3 | **Cloud CI job's first real run** (T122), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
+| D3-3 | **Cloud CI job's first real run** (T122, and the S3/Postgres storage tests T121), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
 | D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
-| D3-5 | **No-outbound check under strace** | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
+| D3-5 | **No-outbound check under strace** (T124) | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
 | D3-6 | Chart metric and chosen group kept in the URL | Not in the URL contract | A shared link reopens the same chart metric and group |
 | D3-7 | Aggregate over a search stops early / cancels | The whole search runs before any estimate; closing the stream doesn't stop it | Estimate within 1 s with a search filter; cancel frees the scan |
 | D3-8 | ~~`tracedb demo --url` against a default `serve` fails "checks across memtable and files"~~ **Done 2026-11-07**: `/healthz` reports `memtable_limit_bytes`; `demo --url` sizes its load from it (10/10 against a default serve in ~5 s) | — | — |
+| D3-9 | Unreadable text-index sidecar is reported and rebuilt | A *missing* sidecar is counted in `/healthz` (`unindexed_segments`) and backfilled; an *unreadable* one only logs a warning and the file is scanned on every search, never counted or rewritten (`ingest/src/backfill.rs`, `query/src/search.rs`) | An unreadable sidecar shows in `/healthz` and backfill writes a new one |
+| D3-10 | *(low priority)* Drop the special case that keeps the newest flush's `dedup_keys` row | The row was kept so start could rebuild the multi-version set from saved run ids; D-025 removed that use, so the row is now kept for no reason (one small row, harmless). Kept as is for now, with a code comment | The cleanup deletes every row older than the dedup window, with a test; or the comment is updated if a new use appears |
 
 ## History
 

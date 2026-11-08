@@ -20,7 +20,8 @@ each get the simplest v0 implementation, with the SmithDB/cloud version as a dro
 *As built (M3)*: only `TextIndex` is a Rust trait. `ObjectStore` is the `object_store` crate's trait, wrapped by
 storage's `Store`; `Metastore` (SQLite or Postgres through sqlx) and `Cache` ([D-028](decisions.md#d-028)) are concrete
 structs; there is no `SegmentFormat` trait (Parquet is written and read directly). The three services are crates, not
-traits, and compaction is M4 (not built).
+traits, and compaction is M4 (not built). Kept this way on purpose until a second implementation is needed
+([D-035](decisions.md#d-035)).
 
 ## Technical Context
 

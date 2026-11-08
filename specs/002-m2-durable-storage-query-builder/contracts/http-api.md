@@ -1,7 +1,6 @@
 # HTTP API contract (M2)
 
-Extends the [M1 contract](../../001-m1-see-agent-trace-live/contracts/http-api.md). Shapes match the
-[master contract](../../000-tracedb-master-plan/contracts/http-api.md) where it defines them.
+Extends the [M1 contract](../../001-m1-see-agent-trace-live/contracts/http-api.md).
 
 ## Ingest: changes from M1
 

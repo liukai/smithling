@@ -1,8 +1,7 @@
 # HTTP API contract (M3)
 
 Only what M3 adds or changes. Everything else is the [M2 contract](../../002-m2-durable-storage-query-builder/contracts/http-api.md)
-(which extends M1's). Shapes match the [master contract](../../000-tracedb-master-plan/contracts/http-api.md) where it
-defines them; data shapes are in [data-model.md](../data-model.md).
+(which extends M1's). Data shapes are in [data-model.md](../data-model.md).
 
 **Delta key**: 🟢 New · 🟠 Improved · ⚪ Existing (as in [spec.md](../spec.md)).
 
