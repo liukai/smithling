@@ -94,8 +94,9 @@ flowchart TB
     M2["M2: keep millions on disk, find anything<br/>(heavy payloads, tree questions)"]:::new
     M3["M3: search the text, add it up, fast<br/>(odd questions)"]:::new
     M4["M4: follow-through<br/>(threads, export, compaction)"]:::plan
-    M5["M5: agents debugging agents"]:::plan
-    P --> M1 --> M2 --> M3 --> M4 --> M5
+    M5["M5: disaggregated<br/>(separate ingest, read, compaction)"]:::plan
+    M6["M6: agents debugging agents"]:::plan
+    P --> M1 --> M2 --> M3 --> M4 --> M5 --> M6
     classDef new fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
     classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
     classDef plan fill:#e3f2fd,stroke:#1565c0,color:#1b1b1b,stroke-dasharray: 4 3
@@ -107,7 +108,8 @@ flowchart TB
 | **M2** Durable storage + query builder | keep 2M runs on disk and build any filter by clicking | built, passed locally |
 | **M3** Search, aggregates, speed | search payload text, group and chart, compare batches | built, passed locally; performance work deferred |
 | **M4** Follow-through | threads, export, feedback writes, "what stands out", compaction | planned |
-| **M5** Zero instrumentation + agents | import Claude Code sessions; agent tools over MCP | planned |
+| **M5** Disaggregated trace database | run ingest, read workers and compaction as separate services over shared storage | spec drafted |
+| **M6** Zero instrumentation + agents | import Claude Code sessions; agent tools over MCP | planned |
 
 Live status always lives in the [roadmap](specs/000-tracedb-master-plan/roadmap.md).
 
@@ -129,7 +131,7 @@ flowchart TB
     subgraph R["Read path"]
         direction LR
         G["Query<br/>catalog, prune, scan, merge"] --> H["Browser UI · CLI<br/>you debug the agent"]
-        G -.-> I["Agent tools over MCP<br/>an agent debugs it (M5)"]:::plan
+        G -.-> I["Agent tools over MCP<br/>an agent debugs it (M6)"]:::plan
     end
     W --> R
     classDef plan fill:#e3f2fd,stroke:#1565c0,color:#1b1b1b,stroke-dasharray: 4 3
@@ -137,7 +139,7 @@ flowchart TB
 
 Dashed boxes are not built yet. Today the flusher's files (listed in the catalog: SQLite / Postgres) go straight to
 the read path, unmerged; compaction ([M4](#m4-follow-through-found-it--fixed-it-and-prevented-it)) closes that gap.
-Agent tools ([M5](#m5-zero-instrumentation--agents-agents-debugging-agents)) let an AI agent read the same traces you
+Agent tools ([M6](#m6-zero-instrumentation--agents-agents-debugging-agents)) let an AI agent read the same traces you
 read in the UI.
 
 Everything runs in **one process**. The storage layout is designed so the data files can sit on S3 and the catalog
@@ -470,7 +472,7 @@ Open questions for the M4 spec: what triggers each step (file count, share of sp
 "final enough", how a late update to an already-compacted day is handled, and re-sizing the tiers to M2's real
 numbers (a flush already holds minutes of data, not seconds).
 
-### M5: zero instrumentation + agents ("agents debugging agents")
+### M6: zero instrumentation + agents ("agents debugging agents")
 
 - **Claude Code importer**: import local session history and use every triage feature on it, with no instrumentation.
 - **Agent tools + `tracedb mcp`**: outline, error path, payload slices, failure clusters, diffs and annotations,

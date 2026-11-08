@@ -145,7 +145,7 @@ numbers, and when a non-goal is lifted. A "cannot" here is a promise, not an ove
   random seed, sent through `/runs/batch` like an agent).
 - **Cannot**: `query`, `tail`, `stats`, `export`, `import`, `demo`, `bench`, `mcp`; run as a background service or
   daemon; migrate or repair a data folder.
-- **Later**: `query`, `seed --scenario`, `demo` (M2); `stats`, `bench` (M3); `export` (M4); `import`, `mcp` (M5).
+- **Later**: `query`, `seed --scenario`, `demo` (M2); `stats`, `bench` (M3); `export` (M4); `import`, `mcp` (M6).
 
 ## 4. Key flows
 

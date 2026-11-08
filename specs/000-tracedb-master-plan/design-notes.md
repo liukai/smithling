@@ -259,8 +259,8 @@ A static SPA embedded in the binary (`rust-embed`) at `http://localhost:7070`:
 
 ## 11. Milestones
 
-*Superseded*: the phases of record are in [roadmap.md](roadmap.md#phases) (M3 = search, aggregates, multipart; OTLP and
-the cloud split are backlog, outside v0). The original table, kept for history:
+*Superseded*: the phases of record are in [roadmap.md](roadmap.md#phases) (M3 = search, aggregates, multipart; OTLP is
+backlog; the cloud split is M5, D-036; the original M5 below is now M6). The original table, kept for history:
 
 UI first: every milestone ships its browser view and is demoed in the browser (spec.md FR-025). curl/CLI demos are secondary.
 

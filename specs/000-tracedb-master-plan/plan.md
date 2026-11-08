@@ -120,8 +120,9 @@ Each phase ends with a browser demo and its automated checks. Status of record: 
 | **M2 Durable storage + filtering** | Flush to segments, metastore, DataFusion scans with pruning, merge-on-read, filter DSL, cursor paging, field catalog; UI **query builder** (panel ↔ text, chips), field browser with suggestions, Samples + Table views, click-to-filter, shareable URLs (S3) | `tracedb seed` → 14 failing roots and 23 quiet failures found in the browser |
 | **M3 Core demo** | LangSmith `/runs/multipart` + feedback parts; payload split + late materialization; progressive query; text search (per-segment index, D-026; planned as scan + bloom); stats; Time series + Distribution views with comparison overlay; `bench` (S1, S4, S5) | `tracedb demo` passes steps 1–9 + QR-004/005 timings; unmodified LangGraph agent traces in. *As run*: demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | **M4 Follow-through** | Compaction tiers; threads; export; feedback write from the UI; find-what-stands-out (S6, S7, S9, S12) | demo steps 10, 11, 13 pass; late `end` correct before and after compaction |
-| **M5 Zero-instrumentation + agents** | Claude Code importer; agent tools: outline, error path, sliced payloads, clusters, diff, annotate (S10, S11) | agent names the 429 cause with 31 cited runs |
-| **Backlog** | Delete + retention (B1), Vortex `SegmentFormat`, ~~custom `TextIndex`~~ (built in M3, D-026), OTLP ingest, cloud deployment split | — |
+| **M5 Disaggregated trace database** | Ingest, read workers and compaction as separate services over shared storage and catalog: per-shard durable log, coverage, leases, fencing; cluster page ([spec](../005-m5-disaggregated-trace-db/spec.md), D-036) | `tracedb demo` passes against 1 writer + 2 readers + 1 compactor with identical counts; crash points green |
+| **M6 Zero-instrumentation + agents** | Claude Code importer; agent tools: outline, error path, sliced payloads, clusters, diff, annotate (S10, S11) | agent names the 429 cause with 31 cited runs |
+| **Backlog** | Delete + retention (B1), Vortex `SegmentFormat`, ~~custom `TextIndex`~~ (built in M3, D-026), OTLP ingest | — |
 
 Cross-cutting from M1: crash test, zero-outbound check, P50/P99 bench harness, MinIO + Postgres CI job from M2.
 

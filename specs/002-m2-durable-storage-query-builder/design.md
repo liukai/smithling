@@ -140,7 +140,7 @@ the crate split after M3, `tracedb` is three crates: `server` (HTTP layer), `too
 
 #### 10. CLI
 - **Can**: `tracedb serve --storage … --metastore … --ui-dir …`; `tracedb demo` (M2 checks); `tracedb query '<filter>'`.
-- **Cannot**: `bench`, `tail`, `import` (M3, M5). (M3 built `bench`; `demo` runs the M2 and M3 checks by default.)
+- **Cannot**: `bench`, `tail`, `import` (M3, M6). (M3 built `bench`; `demo` runs the M2 and M3 checks by default.)
 
 ## 4. Key flows
 

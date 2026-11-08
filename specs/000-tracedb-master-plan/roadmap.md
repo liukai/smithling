@@ -8,7 +8,7 @@
 **Goal / Done when**: `tracedb demo` passes every scenario check and the speed targets (spec.md SC-001–SC-010) on a laptop
 with ~2M runs, and an unmodified LangGraph agent traces into it.
 
-**Scope**: spec.md Stories 1–7 and 9–12. Not in scope: backlog B1 (delete/retention), Vortex, OTLP, the cloud split. (The custom search index left this list when M3 built it, D-026.)
+**Scope**: spec.md Stories 1–7 and 9–12. Not in scope: backlog B1 (delete/retention), Vortex, OTLP. (The custom search index left this list when M3 built it, D-026; the cloud split left it as M5, D-036.)
 
 **Stakes**: low (local, reversible). Nothing ships outside this machine.
 
@@ -51,6 +51,7 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-07 (priority): **A working end-to-end version comes first; performance is not a concern for now.** Speed targets, the 2M bench and memory (D3-1, D3-2, the parked branch `wip/m3-bench-three-rows`, *superseded by `ea6af31`, which merged the three-row bench*) are deferred, not dropped. **Re-evaluate before M4 starts** (or once the end-to-end version is in use): resume or re-scope D3-1/D3-2 then ([D-033](decisions.md#d-033)).
 - 2026-11-08: **The `tracedb` crate is split** into `tracedb-server` (production surface), `tracedb-tools` (seed, demo, bench, CLI query) and the `tracedb` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `tracedb_server::testkit` ([D-034](decisions.md#d-034)).
 - 2026-11-08: **Interfaces stay as built** ([D-035](decisions.md#d-035)): only `TextIndex` is a trait; catalog, cache and segment format stay concrete types until a second implementation is needed. Don't add traits yet.
+- 2026-11-08: **New milestone M5 — Disaggregated trace database**, after M4 compaction and before the agents milestone (now **M6**): ingestion, read workers and compaction as separate services over shared storage and catalog, one binary ([D-036](decisions.md#d-036); spec `specs/005-m5-disaggregated-trace-db/`, folder `004-` reserved for M4). Spec and plan only for now; no implementation.
 
 **STATE as of 2026-11-08** (verified on branch `refactor/split-tracedb-crates` at `4acfcdf` by `cargo test --workspace`
 303 passed / 0 failed / 7 ignored, clippy `-D warnings`, `cargo fmt --check` and `tracedb demo --seed 7` 10/10; `npm test` and the
@@ -79,7 +80,8 @@ bench) runs; the user looks at the UI in a browser (D3-4). 3) **Before M4: re-ev
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
 | M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 123/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | M4 Follow-through | — | not started | — | — |
-| M5 Zero instrumentation + agents | — | not started | — | — |
+| M5 Disaggregated trace database | [`005-m5-disaggregated-trace-db`](../005-m5-disaggregated-trace-db/spec.md) | spec drafted (3 open questions) | — | — |
+| M6 Zero instrumentation + agents | — | not started | — | — |
 
 "Tasks done" counts `[X]` in each phase's `tasks.md`. A phase is **done** only when its exit check passes, not when its PRs merge.
 
@@ -200,7 +202,35 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 **Delivers**: FR-016, FR-017, FR-020, FR-032.
 
-### M5: Zero instrumentation + agents
+### M5: Disaggregated trace database
+
+> Details of record: [`specs/005-m5-disaggregated-trace-db/`](../005-m5-disaggregated-trace-db/spec.md); code check of the design note: [review.md](../005-m5-disaggregated-trace-db/review.md).
+
+**Goal and why**: run ingestion, read serving and compaction as separate services that scale on their own, over shared
+durable storage. Multi-day agent traces and M6's read-heavy agent investigation outgrow one process; the storage layout
+is already cloud-ready (constitution V), so the work is between processes.
+
+**End state** (capability first; *Example* = the scenario we prove it with):
+- As an **operator**, I can run ingest, read and compaction services from the one binary against shared storage and catalog, and get the same answers as one-process mode.
+  - *Example*: 1 writer, 2 readers, 1 compactor; `tracedb demo` passes with identical counts.
+- As an operator, I can add or restart read workers without touching ingestion; each replays the durable log and reports its lag.
+- As an **agent developer**, I see acknowledged steps on any reader within seconds, never twice and never missing across flushes and compactions.
+- As an operator, I can hand a shard to a new writer; the old one is fenced out.
+- As a **maintainer**, I can trust it: CI runs the split demo, the new crash points and the scaling bench.
+
+**Work needed → how it gets us there**:
+| Work | Contribution |
+|---|---|
+| Per-shard durable log, positions, retention; ack contract | Direct: readers replay; acknowledged writes survive the promised failures |
+| Per-shard coverage + pinned snapshots + leases in the catalog | Direct: no missed or doubled runs across flush and compaction |
+| Read workers (own tail, bootstrap, lag, wait-for-position) | Direct: independent read scaling |
+| Compaction pool out of process; safe orphan sweep | Direct: compaction never slows ingest or breaks a query |
+| Ownership epochs, fencing, handoff, routing | Direct: one writer per shard, always |
+| Cluster page; split-mode demo, crash points, bench in CI | Durable: keeps the end state true |
+
+**Delivers**: the cloud split (master Scope, D-036); constitution Architecture Constraints; backlog R-6.
+
+### M6: Zero instrumentation + agents
 
 **Goal and why**: reach the second audience (Claude Code users) and the long-term goal: agents debugging agents.
 
@@ -229,7 +259,7 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 | FR-008–010, 012, 013 | M2 | built, verified locally |
 | FR-011, 014, 015 | M3 | built, verified locally |
 | FR-016, 017, 020 | M4 | |
-| FR-021, 028 | M5 | |
+| FR-021, 028 | M6 | |
 | FR-022–027 | M1 → M3 (grows each phase) | built through M3, verified locally; browser check open (D3-4) |
 | FR-029–031 | M2 (builder, Samples, Table) → M3 (charts, compare) | built, verified locally |
 | FR-032 | M4 | |
@@ -289,3 +319,4 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 - 2026-11-06: M2 built and passed locally (83/83 tasks; `c7595c6`).
 - 2026-11-07: M3 built and passed locally (125/128 tasks; `001d878`); three-row text-search bench, idle row waived, and `demo --url` fix (D3-8) merged to `master` at `ac69c4e`.
 - 2026-11-08: `crates/tracedb` split into `crates/server`, `crates/tools` and the binary (`028bd38`, D-034); newcomer starter guide and README layout (`4acfcdf`). On branch `refactor/split-tracedb-crates`, not yet on `master`.
+- 2026-11-08: M5 Disaggregated trace database inserted after M4; agents milestone renumbered M6 (D-036). Spec drafted in `specs/005-m5-disaggregated-trace-db/`.
