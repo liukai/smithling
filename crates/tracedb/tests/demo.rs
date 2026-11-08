@@ -115,6 +115,81 @@ async fn a_changed_planted_number_exits_1_naming_expected_and_actual() {
     assert!(out.contains("1 of 5 checks failed"), "{out}");
 }
 
+/// A `tracedb serve` child on a temporary folder and a free port, killed on drop.
+struct Serve {
+    child: std::process::Child,
+    url: String,
+    _dir: tempfile::TempDir,
+}
+
+impl Serve {
+    fn start(extra: &[&str]) -> Serve {
+        use std::io::{BufRead, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
+            .args(["serve", "--data", dir.path().to_str().unwrap(), "--port", "0"])
+            .args(extra)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut serve = Serve {
+            child,
+            url: String::new(),
+            _dir: dir,
+        };
+        let mut line = String::new();
+        BufReader::new(stdout).read_line(&mut line).unwrap();
+        serve.url = line
+            .split_whitespace()
+            .find(|w| w.starts_with("http://"))
+            .unwrap_or_else(|| panic!("no url in {line:?}"))
+            .to_string();
+        serve
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `serve` with its default settings (a 64 MB heap memtable): `demo --url` sizes its background load from the
+/// limit in `/healthz`, so every check passes without `--memtable` on either side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_every_check_against_a_default_serve() {
+    let serve = Serve::start(&[]);
+    let url = serve.url.clone();
+    let health: serde_json::Value = reqwest::get(format!("{url}/healthz"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["memtable_limit_bytes"], 64 * 1024 * 1024, "{health}");
+    let (code, out, err) = tokio::task::spawn_blocking(move || demo(&["--url", &url, "--seed", "7"]))
+        .await
+        .unwrap();
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+    for r in M2_ROWS {
+        assert!(out.contains(r), "missing {r:?} in\n{out}");
+    }
+    assert!(out.trim_end().ends_with("all 10 checks passed"), "{out}");
+}
+
+/// A server memtable over 256 MB would make the demo build and send gigabytes: refused before any upload.
+#[test]
+fn refuses_a_server_memtable_over_256mb() {
+    let serve = Serve::start(&["--memtable", "512MB"]);
+    let (code, out, err) = demo(&["--url", &serve.url, "--seed", "7"]);
+    assert_eq!(code, 1, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(err.contains("memtable limit is 512 MB"), "{err}");
+    assert!(out.is_empty(), "{out}");
+}
+
 #[test]
 fn a_failed_check_names_expected_and_actual() {
     let checks = [

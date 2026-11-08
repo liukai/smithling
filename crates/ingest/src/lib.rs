@@ -194,6 +194,8 @@ pub struct Health {
     /// Runs in the active and frozen memtables.
     pub runs: usize,
     pub memtable_bytes: u64,
+    /// The `--memtable` limit `memtable_bytes` is held to (estimated heap).
+    pub memtable_limit_bytes: u64,
     pub frozen: bool,
     pub unflushed_wal_bytes: u64,
     pub segments: usize,
@@ -449,6 +451,7 @@ struct Inner {
     stop: Arc<std::sync::atomic::AtomicBool>,
     permits: Arc<Semaphore>,
     queue_events: usize,
+    memtable_limit: u64,
     mem: Arc<RwLock<Mem>>,
     mvset: Arc<RwLock<HashSet<RunId>>>,
     projects: Arc<RwLock<projects::Projects>>,
@@ -605,6 +608,7 @@ impl Ingest {
             stop,
             permits: Arc::new(Semaphore::new(cfg.queue_events)),
             queue_events: cfg.queue_events,
+            memtable_limit: cfg.limits.memtable_bytes,
             mem,
             mvset,
             projects,
@@ -782,6 +786,7 @@ impl Ingest {
             flush_error: fh.error,
             runs: mem.active.len() + mem.frozen.as_ref().map_or(0, |f| f.len()),
             memtable_bytes: mem.active.bytes(),
+            memtable_limit_bytes: self.inner.memtable_limit,
             frozen: mem.frozen.is_some(),
             unflushed_wal_bytes: self.inner.counters.unflushed_wal.load(Ordering::Relaxed),
             segments: mem.version.segments.len(),

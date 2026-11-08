@@ -87,7 +87,7 @@ its run). Exit code 0 when every check passes; 1 naming expected vs actual other
 
 ```bash
 ./target/release/tracedb demo --seed 7                 # M2 and M3 checks; --checks m2 (or m3) for one set
-./target/release/tracedb demo --url http://localhost:7070 --memtable 64MB   # into a running server (pass its --memtable)
+./target/release/tracedb demo --url http://localhost:7070   # into a running server (sized from its /healthz)
 ```
 
 **Speed.** `tracedb bench` loads a reference volume (2M runs by default, `--smoke` for 200k) into its own server

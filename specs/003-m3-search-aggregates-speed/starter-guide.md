@@ -149,7 +149,7 @@ flowchart TB
 
 No new crate; each still uses only the ones below it. `query` reads feedback through the read-only
 `FeedbackLookup` trait ([feedback.rs:221](../../crates/ingest/src/feedback.rs#L221)), the way it reads memtables
-through `Ingest::mem()` ([ingest/lib.rs:681](../../crates/ingest/src/lib.rs#L681)). Only `storage` knows the
+through `Ingest::mem()` ([ingest/lib.rs:685](../../crates/ingest/src/lib.rs#L685)). Only `storage` knows the
 sidecar layout ([fts.rs:112](../../crates/storage/src/fts.rs#L112)).
 
 ## 3. Suggested reading order (about 3½ hours)
@@ -220,7 +220,7 @@ sequenceDiagram
 | The body is decoded as it arrives; raw and decoded bytes are each capped at 50 MB (`413`), zstd windows over 16 MB refused | `parse` [multipart.rs:327-364](../../crates/tracedb/src/routes/multipart.rs#L327), `Unzstd` [multipart.rs:288](../../crates/tracedb/src/routes/multipart.rs#L288), [multipart.rs:28](../../crates/tracedb/src/routes/multipart.rs#L28) |
 | Part names → kind: `post.<id>`, `post.<id>.<field>`, `attachment.…`, `feedback.<id>`, unknown; attachments and unknown parts are drained, not buffered | `kind` [multipart.rs:39](../../crates/tracedb/src/routes/multipart.rs#L39), `keep` [multipart.rs:56](../../crates/tracedb/src/routes/multipart.rs#L56) |
 | Assemble per `(op, id)`: field parts win over the base's same key, whatever the order; posts before patches, as a JSON batch | `assemble` [multipart.rs:372-428](../../crates/tracedb/src/routes/multipart.rs#L372) |
-| Feedback parts first (idempotent by id), then the items through the same mapping and writer as `/runs/batch` | [multipart.rs:451-456](../../crates/tracedb/src/routes/multipart.rs#L451) → `accept_items` [routes/ingest.rs:118](../../crates/tracedb/src/routes/ingest.rs#L118) → `Ingest::accept` [ingest/lib.rs:625](../../crates/ingest/src/lib.rs#L625) |
+| Feedback parts first (idempotent by id), then the items through the same mapping and writer as `/runs/batch` | [multipart.rs:451-456](../../crates/tracedb/src/routes/multipart.rs#L451) → `accept_items` [routes/ingest.rs:118](../../crates/tracedb/src/routes/ingest.rs#L118) → `Ingest::accept` [ingest/lib.rs:629](../../crates/ingest/src/lib.rs#L629) |
 | `202`: writer rejections, then per-part rejections (`attachment_not_stored`, `unknown_part`, `bad_feedback`) | [multipart.rs:457-464](../../crates/tracedb/src/routes/multipart.rs#L457) |
 
 From the writer on it is M2's Scene 1 ([M2 guide](../002-m2-durable-storage-query-builder/starter-guide.md#-scene-1-the-start-arrives-as-m1-plus-one-check)),
@@ -255,15 +255,15 @@ The demo sends one `correctness` score before any run exists ([scenario.rs:203](
 | One catalog transaction (`ON CONFLICT (id) DO UPDATE`), committed before the reply; no WAL record ([D-027](../000-tracedb-master-plan/decisions.md#d-027)) | `put` [feedback.rs:366](../../crates/ingest/src/feedback.rs#L366) → `commit` [feedback.rs:327](../../crates/ingest/src/feedback.rs#L327) → [metastore.rs:421](../../crates/storage/src/metastore.rs#L421) |
 | Then the in-memory index `run_id → (key, score)`; a replaced id moves | `FeedbackIndex::insert` [feedback.rs:195](../../crates/ingest/src/feedback.rs#L195) |
 | `PATCH /feedback/{id}` replaces the given fields | [routes/ingest.rs:77](../../crates/tracedb/src/routes/ingest.rs#L77) → `patch` [feedback.rs:381](../../crates/ingest/src/feedback.rs#L381) |
-| Orphan = its run is in neither memtable nor the flushed-ids filter; listed by `GET /api/feedback?orphaned=true` and counted in `/healthz` | `feedback_runs_missing` [ingest/lib.rs:756](../../crates/ingest/src/lib.rs#L756), [routes/feedback.rs:71-76](../../crates/tracedb/src/routes/feedback.rs#L71), [ingest/lib.rs:774](../../crates/ingest/src/lib.rs#L774) |
+| Orphan = its run is in neither memtable nor the flushed-ids filter; listed by `GET /api/feedback?orphaned=true` and counted in `/healthz` | `feedback_runs_missing` [ingest/lib.rs:760](../../crates/ingest/src/lib.rs#L760), [routes/feedback.rs:71-76](../../crates/tracedb/src/routes/feedback.rs#L71), [ingest/lib.rs:778](../../crates/ingest/src/lib.rs#L778) |
 | Attach: nothing moves. The join is at read time, so it matches once the run is visible | `admits` [query/lib.rs:270](../../crates/query/src/lib.rs#L270) → [eval.rs:68](../../crates/model/src/filter/eval.rs#L68) |
 | `feedback.<key>` is the mean of the run's scores for that key | `mean` [feedback.rs:235](../../crates/ingest/src/feedback.rs#L235) |
-| Index rebuilt at start from the table | `FeedbackStore::load` [feedback.rs:343](../../crates/ingest/src/feedback.rs#L343) ← [ingest/lib.rs:539](../../crates/ingest/src/lib.rs#L539) |
+| Index rebuilt at start from the table | `FeedbackStore::load` [feedback.rs:343](../../crates/ingest/src/feedback.rs#L343) ← [ingest/lib.rs:542](../../crates/ingest/src/lib.rs#L542) |
 
 ### 🟢 Scene 4: search finds it
 
 `search("429 Too Many Requests")` inside `and(or(batch a, batch b), …)` → 31 runs, all `fetch_url`
-([demo.rs:479-495](../../crates/tracedb/src/demo.rs#L479)).
+([demo.rs:509-525](../../crates/tracedb/src/demo.rs#L509)).
 
 ```mermaid
 flowchart TB
@@ -309,13 +309,13 @@ search under `or`/`not`, `matching` reads the files, checks the other conditions
 (new objects, then `fts_path` in one update; a crash between leaves an orphan). Never needed for correct results.
 `backfill::run` [backfill.rs:18](../../crates/ingest/src/backfill.rs#L18), `one` [backfill.rs:64](../../crates/ingest/src/backfill.rs#L64)
 → `sidecar_of` [segment.rs:817](../../crates/storage/src/segment.rs#L817), `set_fts` [metastore.rs:405](../../crates/storage/src/metastore.rs#L405),
-`Version::with_fts` [memtable.rs:41](../../crates/ingest/src/memtable.rs#L41); spawned at [ingest/lib.rs:589-599](../../crates/ingest/src/lib.rs#L589).
-`/healthz` counts `unindexed_segments` ([ingest/lib.rs:788](../../crates/ingest/src/lib.rs#L788)).
+`Version::with_fts` [memtable.rs:41](../../crates/ingest/src/memtable.rs#L41); spawned at [ingest/lib.rs:592-602](../../crates/ingest/src/lib.rs#L592).
+`/healthz` counts `unindexed_segments` ([ingest/lib.rs:793](../../crates/ingest/src/lib.rs#L793)).
 
 ### 🟢 Scene 5: group batch a by name
 
 `by name | count, error_rate, p95(latency), sum(cost)` over `has(tags, "batch=2026-11-05-a")`
-([demo.rs:463](../../crates/tracedb/src/demo.rs#L463), [demo.rs:497-511](../../crates/tracedb/src/demo.rs#L497)).
+([demo.rs:493](../../crates/tracedb/src/demo.rs#L493), [demo.rs:527-541](../../crates/tracedb/src/demo.rs#L527)).
 
 ```mermaid
 flowchart TB
@@ -394,7 +394,7 @@ flowchart TB
 | Compared series: each side counts from its own first run (filter) or window start (shift); same bucket count | `axes` [series.rs:109](../../crates/query/src/aggregate/series.rs#L109), [mod.rs:765-776](../../crates/query/src/aggregate/mod.rs#L765) |
 
 `fetch_url`: 14.0% → 2.0%, p95 31 s → 9 s; batch b costs $4.07 ([scenario.rs:38-40](../../crates/tracedb/src/scenario.rs#L38),
-checked at [demo.rs:513-553](../../crates/tracedb/src/demo.rs#L513)).
+checked at [demo.rs:543-583](../../crates/tracedb/src/demo.rs#L543)).
 
 ### 🟢 Scene 8: the UI (search box, Stats tab, charts)
 
@@ -413,20 +413,20 @@ checked at [demo.rs:513-553](../../crates/tracedb/src/demo.rs#L513)).
 
 | Step | Code |
 |---|---|
-| `--checks m2,m3` (default both); its own server with a 4 MB memtable unless `--url` | [demo.rs:35-37](../../crates/tracedb/src/demo.rs#L35), [demo.rs:119-169](../../crates/tracedb/src/demo.rs#L119) |
+| `--checks m2,m3` (default both); its own server with a 4 MB memtable unless `--url`, where the background load is sized from the server's `memtable_limit_bytes` in `/healthz` | [demo.rs:38-44](../../crates/tracedb/src/demo.rs#L38), [demo.rs:126-196](../../crates/tracedb/src/demo.rs#L126), `memtable_limit` [scenario.rs:706](../../crates/tracedb/src/scenario.rs#L706) |
 | Scenario: batch a re-planted, batch b, feedback (one sent before its run), background | `generate` [scenario.rs:185](../../crates/tracedb/src/scenario.rs#L185), constants [scenario.rs:19-41](../../crates/tracedb/src/scenario.rs#L19) |
 | Load: early feedback, starts, other feedback, background until the starts are in files after two flushes, then late updates | `load` [scenario.rs:611-688](../../crates/tracedb/src/scenario.rs#L611) |
-| Five M3 checks over the real HTTP API: 31 text hits, 14.0% / 31 s, $4.12 (12 no price), a vs b side by side + overlaid, feedback filter + average | `m3_checks` [demo.rs:465-647](../../crates/tracedb/src/demo.rs#L465) |
-| Pass/fail table, exit 0 / 1 / 2 | `report` [demo.rs:92](../../crates/tracedb/src/demo.rs#L92) |
+| Five M3 checks over the real HTTP API: 31 text hits, 14.0% / 31 s, $4.12 (12 no price), a vs b side by side + overlaid, feedback filter + average | `m3_checks` [demo.rs:495-677](../../crates/tracedb/src/demo.rs#L495) |
+| Pass/fail table, exit 0 / 1 / 2 | `report` [demo.rs:99](../../crates/tracedb/src/demo.rs#L99) |
 
 ### 🟢 Scene 10: `tracedb bench` and calibration
 
 | Step | Code |
 |---|---|
-| 2M runs (200k with `--smoke`) into its own in-process server through `/runs/batch` from 8 clients, a query loop alongside; one run in ten finishes late | `BenchArgs` [bench.rs:44](../../crates/tracedb/src/bench.rs#L44), `load` [bench.rs:350](../../crates/tracedb/src/bench.rs#L350), `start` [bench.rs:905](../../crates/tracedb/src/bench.rs#L905) |
-| Seven rows: trace tree, run + payload, filtered list, text search (one row mixing the rare phrase, common words, an error-only word and search + filter), grouped, first estimate, suggestions; ≥ 100 timed requests each after 10 warm-ups; a wrong answer fails the row | `specs` [bench.rs:573](../../crates/tracedb/src/bench.rs#L573), `text_search` [bench.rs:482](../../crates/tracedb/src/bench.rs#L482), `measure` [bench.rs:728](../../crates/tracedb/src/bench.rs#L728) |
-| **Calibration**: decode the shipped Parquet file 20× and sort its text, best of three, before and after; r = runner / 80 ms, clamped to [1, 3] | `calibrate` [bench.rs:806](../../crates/tracedb/src/bench.rs#L806), `reference_workload` [bench.rs:784](../../crates/tracedb/src/bench.rs#L784), `ratio` [bench.rs:779](../../crates/tracedb/src/bench.rs#L779), [bench.rs:1089](../../crates/tracedb/src/bench.rs#L1089) |
-| Verdict: p50 ≤ target × r and p99 ≤ 5 × p50; load ≥ 20k events/s ÷ r; disk ≤ 50% of raw; idle ≤ 200 MB | `judge` [bench.rs:767](../../crates/tracedb/src/bench.rs#L767), `verdict` [bench.rs:717](../../crates/tracedb/src/bench.rs#L717), [bench.rs:1099-1106](../../crates/tracedb/src/bench.rs#L1099) |
+| 2M runs (200k with `--smoke`) into its own in-process server through `/runs/batch` from 8 clients, a query loop alongside; one run in ten finishes late | `BenchArgs` [bench.rs:46](../../crates/tracedb/src/bench.rs#L46), `load` [bench.rs:352](../../crates/tracedb/src/bench.rs#L352), `start` [bench.rs:930](../../crates/tracedb/src/bench.rs#L930) |
+| Nine rows: trace tree, run + payload, filtered list, three text-search rows, one query shape each (the planted rare phrase; a common word; a common word + `prompt_version`), grouped, first estimate, suggestions; ≥ 100 timed requests each after 10 warm-ups; a wrong answer fails the row | `specs` [bench.rs:584](../../crates/tracedb/src/bench.rs#L584), `rare_phrase` [bench.rs:495](../../crates/tracedb/src/bench.rs#L495), `common_word` [bench.rs:500](../../crates/tracedb/src/bench.rs#L500), `search_filter` [bench.rs:505](../../crates/tracedb/src/bench.rs#L505), `measure` [bench.rs:753](../../crates/tracedb/src/bench.rs#L753) |
+| **Calibration**: decode the shipped Parquet file 20× and sort its text, best of three, before and after; r = runner / 80 ms, clamped to [1, 3] | `calibrate` [bench.rs:831](../../crates/tracedb/src/bench.rs#L831), `reference_workload` [bench.rs:809](../../crates/tracedb/src/bench.rs#L809), `ratio` [bench.rs:804](../../crates/tracedb/src/bench.rs#L804), [bench.rs:1115](../../crates/tracedb/src/bench.rs#L1115) |
+| Verdict: p50 ≤ target × r and p99 ≤ 5 × p50; load ≥ 20k events/s ÷ r; disk ≤ 50% of raw; idle memory reported, waived until M4 (not in the verdict) | `judge` [bench.rs:792](../../crates/tracedb/src/bench.rs#L792), `verdict` [bench.rs:742](../../crates/tracedb/src/bench.rs#L742), [bench.rs:1125-1131](../../crates/tracedb/src/bench.rs#L1125) |
 | CI: `--smoke --check` on PRs, full 2M on `main` and nightly | [ci.yml:154-169](../../.github/workflows/ci.yml#L154), [ci.yml:181-200](../../.github/workflows/ci.yml#L181) |
 
 ### 🟠 Scene 11: memory defaults and jemalloc
@@ -440,7 +440,7 @@ checked at [demo.rs:513-553](../../crates/tracedb/src/demo.rs#L513)).
 | Flags `--memtable`, `--flush-age`, `--dedup-keys`, `--cache` (M2 values still settable) | [main.rs:36-50](../../crates/tracedb/src/main.rs#L36) |
 | jemalloc as the global allocator; no thread caches, freed pages purged at once, 8 arenas | [main.rs:10-11](../../crates/tracedb/src/main.rs#L10), [.cargo/config.toml:4](../../.cargo/config.toml#L4) |
 | Runtime workers turn their cache on while running and hand it back when they park | [main.rs:101-111](../../crates/tracedb/src/main.rs#L101) |
-| `/healthz` shows `dedup_keys`, `cache_bytes` | [ingest/lib.rs:796-797](../../crates/ingest/src/lib.rs#L796) |
+| `/healthz` shows `dedup_keys`, `cache_bytes` | [ingest/lib.rs:801-802](../../crates/ingest/src/lib.rs#L801) |
 
 All of this is [D-028](../000-tracedb-master-plan/decisions.md#d-028). Idle memory is still over its target; see §8.
 
@@ -451,8 +451,8 @@ All of this is [D-028](../000-tracedb-master-plan/decisions.md#d-028). Idle memo
 | Start: a missing file, or one whose footers don't read, is left out and listed with a reason | [recover.rs:98-135](../../crates/ingest/src/recover.rs#L98) → `inspect_all` [segment.rs:1096](../../crates/storage/src/segment.rs#L1096) |
 | While serving: a failed read probes each file's footers; if none look bad and the error is a decoding one, each file is read alone; bad ones are marked and the read retried without them | `read_core` [scan.rs:391-417](../../crates/query/src/scan.rs#L391), `probe` [scan.rs:362](../../crates/query/src/scan.rs#L362), `damage_of` [scan.rs:318](../../crates/query/src/scan.rs#L318) |
 | Single-file readers (search, clean side, payload text) use the same test | `damaged_alone` [scan.rs:349](../../crates/query/src/scan.rs#L349) ← [search.rs:272](../../crates/query/src/search.rs#L272), [clean.rs:150](../../crates/query/src/aggregate/clean.rs#L150), [search.rs:512](../../crates/query/src/search.rs#L512) |
-| Marked once: a new `Version` without the file, so later reads don't see it | `mark_damaged` [ingest/lib.rs:709-728](../../crates/ingest/src/lib.rs#L709), `Version::without` [memtable.rs:54](../../crates/ingest/src/memtable.rs#L54) |
-| Reported: `skipped_files` warning on lists and aggregates in scope; `/healthz` `ok: false` with `damaged_segments` | [query/lib.rs:613-616](../../crates/query/src/lib.rs#L613), [aggregate/mod.rs:816-824](../../crates/query/src/aggregate/mod.rs#L816), [ingest/lib.rs:778](../../crates/ingest/src/lib.rs#L778) |
+| Marked once: a new `Version` without the file, so later reads don't see it | `mark_damaged` [ingest/lib.rs:713-732](../../crates/ingest/src/lib.rs#L713), `Version::without` [memtable.rs:54](../../crates/ingest/src/memtable.rs#L54) |
+| Reported: `skipped_files` warning on lists and aggregates in scope; `/healthz` `ok: false` with `damaged_segments` | [query/lib.rs:613-616](../../crates/query/src/lib.rs#L613), [aggregate/mod.rs:816-824](../../crates/query/src/aggregate/mod.rs#L816), [ingest/lib.rs:782](../../crates/ingest/src/lib.rs#L782) |
 
 This closes the first two M2 rough edges (a corrupt or vanished file gave `500`s while `/healthz` said `ok`).
 
@@ -516,7 +516,7 @@ the demo's checks, not from a run. Port 7070 assumed.
 tracedb demo --seed 7                      # M2 + M3 checks: 31 hits, 14.0% / 31 s, $4.12 (12 no price), a vs b, feedback
 
 tracedb serve --data /tmp/m3 &
-tracedb demo --url http://localhost:7070 --seed 7 --memtable 64MB
+tracedb demo --url http://localhost:7070 --seed 7
 ls /tmp/m3/data/*/*/ | grep fts            # a .fts.dict.parquet and .fts.post next to each new file
 tracedb query --project overnight-eval --search '429 Too Many Requests'
 tracedb query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' \
@@ -613,7 +613,7 @@ rows were updated afterwards (below).
   [backfill.rs:28](../../crates/ingest/src/backfill.rs#L28), [backfill.rs:57](../../crates/ingest/src/backfill.rs#L57)).
   It is still searched by reading it.
 - **`/healthz` walks every feedback run id on each call** to count orphans
-  ([ingest/lib.rs:774](../../crates/ingest/src/lib.rs#L774) → [lib.rs:756-767](../../crates/ingest/src/lib.rs#L756)),
+  ([ingest/lib.rs:778](../../crates/ingest/src/lib.rs#L778) → [lib.rs:760-771](../../crates/ingest/src/lib.rs#L760)),
   taking the memtable lock. Fine at demo scale; unmeasured with many feedback items.
 - **Stale text.** `tracedb demo --help` still says "run the M2 checks" ([main.rs:78](../../crates/tracedb/src/main.rs#L78)),
   and [quickstart.md](quickstart.md) still ends with "Last verified: not yet (M3 not built)" (task T126 open).

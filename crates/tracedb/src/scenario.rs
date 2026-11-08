@@ -702,6 +702,14 @@ async fn feedback(http: &reqwest::Client, url: &str, body: &Value) -> Result<(),
     Ok(())
 }
 
+/// The server's memtable limit from `/healthz` (`None` from a server that doesn't report one).
+pub async fn memtable_limit(url: &str) -> Result<Option<u64>, SeedError> {
+    let h = health(&reqwest::Client::new(), url)
+        .await
+        .map_err(|e| SeedError::Unreachable(url.into(), e))?;
+    Ok(h["memtable_limit_bytes"].as_u64())
+}
+
 async fn health(http: &reqwest::Client, url: &str) -> Result<Value, String> {
     get(http, &format!("{url}/healthz")).await
 }

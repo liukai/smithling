@@ -13,6 +13,12 @@ use crate::scenario::{self, Loaded, PROJECT, Scenario};
 use crate::seed::SeedError;
 use crate::{ServeConfig, app, parse_size};
 
+/// The demo's own server's memtable: small, so a few MB of background load forces the flushes it needs.
+const DEMO_MEMTABLE: u64 = 4 * MB;
+/// With `--url`, the largest server memtable the demo sizes its background load for (it builds up to 3×).
+const MAX_URL_MEMTABLE: u64 = 256 * MB;
+const MB: u64 = 1024 * 1024;
+
 #[derive(clap::Args, Debug)]
 pub struct DemoArgs {
     #[arg(long, default_value_t = 7)]
@@ -29,9 +35,10 @@ pub struct DemoArgs {
     /// As `serve --metastore`.
     #[arg(long)]
     pub metastore: Option<String>,
-    /// The demo server's memtable size; the background volume is three of these (match the server's with `--url`).
-    #[arg(long, default_value = "4MB", value_parser = parse_size)]
-    pub memtable: u64,
+    /// The demo server's memtable size (default 4MB); the background volume is up to three of these. With `--url`
+    /// the server's own limit from `/healthz` is used; this only for a server that doesn't report one.
+    #[arg(long, value_parser = parse_size)]
+    pub memtable: Option<u64>,
     /// Which checks to run: `m2`, `m3` or both.
     #[arg(long, default_value = "m2,m3", value_parser = parse_checks)]
     pub checks: CheckSet,
@@ -132,7 +139,27 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         (None, Some(u)) => u.trim_end_matches('/').to_string(),
         (None, None) => unreachable!("either --url or the demo's own server"),
     };
-    let s = scenario::generate(a.seed, tracedb_model::Ts::now().0, a.memtable);
+    let memtable = match &own {
+        Some(_) => a.memtable.unwrap_or(DEMO_MEMTABLE),
+        None => match scenario::memtable_limit(&url).await {
+            Ok(limit) => limit.or(a.memtable).unwrap_or(DEMO_MEMTABLE),
+            Err(e) => {
+                let _ = writeln!(err, "tracedb demo: {e}");
+                return 2;
+            }
+        },
+    };
+    if own.is_none() && memtable > MAX_URL_MEMTABLE {
+        let _ = writeln!(
+            err,
+            "tracedb demo: the server's memtable limit is {} MB; the demo would build and send up to three of them, so \
+             it stops above {} MB (run `serve` with a smaller --memtable)",
+            memtable / MB,
+            MAX_URL_MEMTABLE / MB
+        );
+        return 1;
+    }
+    let s = scenario::generate(a.seed, tracedb_model::Ts::now().0, memtable);
     let loaded = match scenario::load(&url, &s).await {
         Ok(l) => l,
         Err(e @ SeedError::Unreachable(..)) => {
@@ -197,7 +224,7 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
         storage: a.storage.clone(),
         metastore: a.metastore.clone(),
         limits: Limits {
-            memtable_bytes: a.memtable,
+            memtable_bytes: a.memtable.unwrap_or(DEMO_MEMTABLE),
             ..Limits::default()
         },
         ui_dir: None,
@@ -367,7 +394,10 @@ async fn m2_checks(api: &Api, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check
         })
         .count();
     let across = match (loaded.in_files, across) {
-        (false, _) => "no (starts never reached files; with --url, pass the server's --memtable)".to_string(),
+        (false, _) => {
+            "no (starts never reached files; a server that doesn't report memtable_limit_bytes needs --memtable)"
+                .to_string()
+        }
         (true, 0) => "no".to_string(),
         (true, _) => "yes".to_string(),
     };

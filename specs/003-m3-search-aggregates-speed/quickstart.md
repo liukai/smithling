@@ -32,7 +32,7 @@ Exit code 0. Change a planted number in a scratch build: the check fails naming 
 ## 🟢 2. Triage in the browser (SC-01, SC-02, SC-09) — units 10–11 · *needs a browser*
 
 ```bash
-./target/release/tracedb serve --data /tmp/m3 --memtable 4MB &   # the demo's memtable: else the across-files row fails
+./target/release/tracedb serve --data /tmp/m3 &   # default settings; the demo reads the memtable limit from /healthz
 ./target/release/tracedb demo --url http://localhost:7070 --seed 7
 ```
 Open http://localhost:7070 and time yourself (SC-09: under 5 minutes, by clicking):
@@ -150,7 +150,7 @@ a live Table view → its row shows the new values.
 | Step | Result | Numbers seen |
 |---|---|---|
 | 1. `demo --seed 7` | passed | all 10 checks ✓, exit 0; 408 traces, 10 flushes, ~3 s; 31 text hits (9 ms); 14.0% / 31 s; $4.12 (12 no price); 14.0% → 2.0%, 31 s → 9 s; feedback 2 runs. Fail path (exit 1, expected vs actual): `cargo test -p tracedb --test demo` 6/6 |
-| 2. Triage (SC-01, SC-02, SC-09) | passed after a fix, through the API/CLI; UI not checked in a browser (D3-4) | Fix: `serve` needs `--memtable 4MB` (default 64MB → "checks across memtable and files" ✗). Then `demo --url` 10/10. API: search 31, all `fetch_url`, excerpt `HTTPError: 429 Too Many Requests` (11–32); `fetch_url` 300 runs, 42 errors, 0.14, p95 31000 ms, total 4.12e12 pico, 12 no price; 42 errored samples; series 41 × 5-min buckets, no single spike (doc fixed); dist bin 29.0–31.6 s = 33; compare 0.14/31000 vs 0.02/9000, series + `compare.side_b`; `feedback.correctness` in fields, 2 runs; `/` serves the built UI. SC-09: all six questions as API calls in 0.22 s — a script timing, not a real user timing |
+| 2. Triage (SC-01, SC-02, SC-09) | passed after a fix, through the API/CLI; UI not checked in a browser (D3-4) | Default `serve` (64MB) failed "checks across memtable and files" (D3-8); fixed 2026-11-07: `demo --url` sizes its load from `memtable_limit_bytes` in `/healthz`, 10/10 against a default `serve` (~5 s, release); the `--memtable 4MB` workaround is gone. API: search 31, all `fetch_url`, excerpt `HTTPError: 429 Too Many Requests` (11–32); `fetch_url` 300 runs, 42 errors, 0.14, p95 31000 ms, total 4.12e12 pico, 12 no price; 42 errored samples; series 41 × 5-min buckets, no single spike (doc fixed); dist bin 29.0–31.6 s = 33; compare 0.14/31000 vs 0.02/9000, series + `compare.side_b`; `feedback.correctness` in fields, 2 runs; `/` serves the built UI. SC-09: all six questions as API calls in 0.22 s — a script timing, not a real user timing |
 | 3. SDK defaults (SC-08) | passed after a doc fix | `/info` → `{"m":true,"z":true}`; `research_agent.py` (langsmith 0.14.17, no override) → 9 runs in `default`; feedback via SDK → id returned, `query 'gt(feedback.helpful, 0.5)'` → 1 run (the root); unknown run id → `orphaned` count 1. Fixes: prerequisites install `examples/requirements.txt` (needs langgraph); the server logs no accepted requests, so the "log shows multipart + zstd" line is replaced. `--test contract` 1/1, `--test multipart` 12/12 |
 | 4. Speed table | moved to backlog (D3-1) | not run (not even `--smoke`) |
 | 5. Search and aggregates (terminal) | passed after a fix | search 31 / `["fetch_url"]`; aggregate 300 / 0.14 / 31000; jq precedence fixed so `.totals.cost_pico` prints 4120000000000 (was `null`); stream → one `result` event; `query --group-by name … --compare` → `fetch_url` 14.0% 31.0 s │ 2.0% 9.0 s, exit 0 |
