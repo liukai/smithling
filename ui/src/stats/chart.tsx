@@ -2,10 +2,10 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 import type { AggGroup } from "../api";
 
 /** Categorical slots in fixed order (validated light palette); groups past them and `(other)` are grey. */
-export const SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
-export const REST_COLOR = "#9a9a96";
+export const SERIES_COLORS = ["#006ddd", "#d85522", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#7e65ae", "#e34948"];
+export const REST_COLOR = "#8b9cad";
 /** Side a and side b of a comparison, in tables and charts. */
-export const SIDE_COLORS = { a: "#2a78d6", b: "#eb6834" } as const;
+export const SIDE_COLORS = { a: "#006ddd", b: "#d85522" } as const;
 export type Side = "a" | "b";
 
 export const colorOf = (g: AggGroup | undefined, i: number) =>

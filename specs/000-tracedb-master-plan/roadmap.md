@@ -312,6 +312,55 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 | D3-9 | Unreadable text-index sidecar is reported and rebuilt | A *missing* sidecar is counted in `/healthz` (`unindexed_segments`) and backfilled; an *unreadable* one only logs a warning and the file is scanned on every search, never counted or rewritten (`ingest/src/backfill.rs`, `query/src/search.rs`) | An unreadable sidecar shows in `/healthz` and backfill writes a new one |
 | D3-10 | *(low priority)* Drop the special case that keeps the newest flush's `dedup_keys` row | The row was kept so start could rebuild the multi-version set from saved run ids; D-025 removed that use, so the row is now kept for no reason (one small row, harmless). Kept as is for now, with a code comment | The cleanup deletes every row older than the dedup window, with a test; or the comment is updated if a new use appears |
 
+### Ideas not in the system (added 2026-11-08)
+
+Not scheduled. Each names what's missing today and what would trigger the work; details go in a phase spec if
+picked up.
+
+| # | Idea | Today | Pick up when |
+|---|---|---|---|
+| I-1 | **Shred hot JSON paths into typed columns** (the Parquet Variant / ClickHouse JSON idea): the most-used `metadata.*` and output keys get their own column; the rest stays in `attrs` | promoted leaves live in one JSON text column (D-012); filters on them read the whole column (5.5 MB vs 211 KB for typed columns in a 1M-row test) and statistics can't skip anything | metadata filters show up as slow in the bench, or data moves to S3 |
+| I-2 | **Cost-based condition order**: use the catalog's field stats (counts, top values) to run the most selective condition first, in the scan and in the evaluator | DataFusion orders pushed conditions by column size (`reorder_filters`); tracedb's evaluator keeps the written order (except `search` last) | filters with several conditions miss their targets |
+| I-3 | **Reorder run, root and tree conditions by cost** | fixed order: run filter, then root, then tree (in candidate chunks) | tree queries dominate latency |
+| I-4 | **Query-result cache** for repeated identical queries (dashboards, live views re-asking) | the cache holds file pieces (footers, pages), not answers | repeated queries show in profiles |
+| I-5 | **Benchmark Vortex against Parquet** on the 2M-run data (SmithDB's file format; `vortex-datafusion` 0.93 fits DataFusion 55 / `object_store` 0.13) | Parquet only; no format trait (D-035) | run lookup or payload reads miss targets in D3-1 |
+
+### Scale, scalability and failure modes (to think through, added 2026-11-08)
+
+Not designed yet; a checklist of basic ideas to start from.
+
+**Scale**: what grows, and what grows with it.
+
+| Grows | Pressure it puts on |
+|---|---|
+| runs per day, late updates | memtable, WAL, file count (until compaction), multi-version set memory |
+| payload size (MB prompts) | payload files, text index, upload body limits |
+| projects | files per flush (one segment per project), catalog rows |
+| days kept | catalog size, footer reads per query; retention (B1) bounds it |
+| concurrent users and live views | query CPU, re-queries per change, SSE connections |
+
+**Scalability**: how far one process goes, and what splits first.
+
+- *One node*: the single writer and one frozen memtable cap ingest; file count caps queries until compaction (M4).
+  Measure the ceilings first (the D3-1 bench) before splitting anything.
+- *Scale out* (the SmithDB shape, design-notes §2): stateless query nodes over S3 + Postgres; ingest partitioned by
+  project (each partition its own writer and WAL); compaction as separate workers; a cache tier (SSD) with sticky
+  routing so a project's queries hit warm nodes.
+- *Catalog*: one Postgres row per segment; compaction keeps the row count bounded.
+
+**Failure modes**: what can go wrong, and the first answer.
+
+| Failure | Today | First idea |
+|---|---|---|
+| disk full | writes fail; health turns false, uploads refused | a disk-space watermark that triggers `429` before the WAL write fails |
+| WAL or data file corrupt | torn WAL tail cut on replay; damaged data files skipped and named (M3) | checksums on every file read path; a repair / re-index command |
+| S3 slow or down (cloud) | flush retries with backoff (200 ms → 30 s), keeping the frozen memtable; data stays in the WAL; uploads get `429` once the next memtable fills | alert on unflushed-WAL growth; a read path that tolerates slow S3 (timeouts, hedged reads) |
+| catalog (Postgres) unavailable | the flush commit retries the same way; queries keep serving from the in-memory file list (D-020) | report it in `/healthz`; decide how long to keep accepting uploads |
+| crash mid-flush / mid-compaction | orphans deleted on start (flush); compaction not built | same rule for compaction: files first, one catalog transaction, orphans swept |
+| memory pressure | memtable cap + `429`; idle memory over target until M4 | memory budget across memtable, cache, multi-version set; shed live views first |
+| huge or malformed uploads | per-field and body caps, per-item rejection | per-project quotas |
+| clock skew in client timestamps | order by arrival `seq`, not client time | flag runs whose times are far off |
+
 ## History
 
 - 2026-11-05: product spec, primer, design notes, constitution v1.0.0, plan + Phase 1 artifacts written; the original SPEC.md and REQUIREMENTS.md were folded in and deleted.
