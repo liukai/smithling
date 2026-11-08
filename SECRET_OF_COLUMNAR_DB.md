@@ -141,7 +141,128 @@ separate file and are read only for the rows on screen.
 
 ---
 
-## 5. Live coding: see it on your laptop
+## 5. One query through one file, on paper
+
+Before the real numbers, here is one query traced through one Parquet file by hand, so each of the five ideas shows
+up where it does its work. The numbers are illustrative; section 6 measures the real ones.
+
+### The file and the query
+
+`runs.parquet`: 1,000,000 runs in time order, 10 columns, 16 row groups of ~64k rows, each column chunk cut into
+pages of a few thousand rows. The first half of the runs is batch `a`, the second half batch `b`.
+
+> **Show the run id and output of every failed run in the newest 25% of the time range, from batch b, slower than
+> 30 s, on prompt v7.**
+
+```sql
+SELECT run_id, output FROM runs
+WHERE start_ms >= T75 AND status = 'error' AND batch = 'b' AND latency_ms > 30000 AND prompt_version = 'v7'
+```
+
+Five conditions (SmithDB's "narrow it down" plus "look inside the JSON"), and a big column (`output`) in the answer.
+
+```mermaid
+flowchart TB
+    A["① Projection: which columns at all? 7 of 10"]
+    B["③ Footer statistics: which row groups? 5 of 16"]
+    C["③ Page index: which pages inside them?"]
+    D["② Decode filter pages, compare encoded values"]
+    E["④ One bitmask per condition, AND them"]
+    F["⑤ Fetch run_id + output only for surviving rows"]
+    A --> B --> C --> D --> E --> F
+```
+
+### ① Projection: never touch what the query doesn't name
+
+The query names `start_ms`, `status`, `batch`, `latency_ms`, `prompt_version` (filters) and `run_id`, `output`
+(answer). `name`, `tokens` and `status_code` are **never read**. And the two answer columns aren't read yet either;
+they wait for step ⑤.
+
+### ③ Footer statistics: skip row groups without opening them
+
+The reader fetches the footer (a few KB) and looks at each row group's min/max for the filter columns:
+
+| Row group | `start_ms` min … max | `batch` min … max | Can it match? |
+|---|---|---|---|
+| 1–8 | oldest half | `a` … `a` | **no**: `batch = 'b'` is impossible |
+| 9–11 | middle | `b` … `b` | **no**: max `start_ms` < T75 |
+| 12 | … T75 falls inside … | `b` … `b` | maybe |
+| 13–16 | newest | `b` … `b` | maybe |
+
+Two conditions, judged from statistics alone, drop **11 of 16 row groups**. No data page of them is read. (This only
+works because the data is in time order: each row group covers a narrow slice of time and a single batch.)
+
+### ③ Page index: skip pages inside a row group
+
+Row group 12 straddles the cutoff. Its page index has a min/max per page of `start_ms`, so the pages entirely before
+T75 are skipped too. What's left: the newest ~25% of rows, ~250k of 1M.
+
+### ② Decode the filter pages, comparing encoded values
+
+Each surviving page of the five filter columns is decoded, but often **not into strings**:
+
+| Column | Stored as | The condition becomes |
+|---|---|---|
+| `status` | dictionary `{0: ok, 1: error}` + RLE runs of codes | `code == 1`; a run of 900 `ok`s is rejected in one step |
+| `batch` | one RLE run of `b` covering the whole page | **true for the whole page**, decided once |
+| `prompt_version` | dictionary `{0: v6, 1: v7}`, bit-packed codes | `code == 1` on 1-bit values |
+| `latency_ms` | dictionary codes or plain integers (whichever is smaller) | integer compare over an array |
+| `start_ms` | dictionary codes or plain integers | integer compare (only on the cutoff page) |
+
+The strings `"error"`, `"b"`, `"v7"` are each looked up **once per dictionary**, not once per row.
+
+### ④ One bitmask per condition, then AND
+
+Each condition produces a bitmask over the rows of the page, computed over a whole array at a time. For 16 rows:
+
+```text
+row               0123456789abcdef
+start_ms ≥ T75    1111111111111111      (page fully after the cutoff)
+status = error    0000100000010000
+batch = b         1111111111111111      (one RLE run: whole page)
+latency > 30 s    0000100000010000
+prompt = v7       0100110001000010
+AND               0000100000000000  → row 4
+```
+
+**Order matters.** The engine evaluates the cheapest, most selective condition first (here `status`: 5% pass) and
+decodes the next column only where the mask still has 1s. So most of `latency_ms` and `prompt_version` is never
+decoded at all (DataFusion's `pushdown_filters` + `reorder_filters`, both on in tracedb).
+
+### ⑤ Late materialization: fetch the big column last
+
+Only now are `run_id` and `output` read, and only the pages that contain a surviving row. ~2,000 matching rows out
+of a million means the 11 MB `output` column is touched in a handful of pages, not in full. In tracedb this step
+goes one further: `output` lives in a separate payload file, read only when you open a run.
+
+### What was touched
+
+| Step | Read |
+|---|---|
+| ① | 7 of 10 columns considered; 3 never touched |
+| ③ | the footer; 5 of 16 row groups kept; pages before the cutoff dropped |
+| ② ④ | `status` for the kept pages, then the other filter columns only where `status` matched |
+| ⑤ | the pages of `run_id` and `output` holding the ~2,000 answers |
+
+A row store without indexes reads all 1,000,000 records, every field. With an index on `status` it fetches the
+50,000 error rows whole (all ten fields, including `output`) and checks the other four conditions on each. Section 6
+measures both.
+
+### The seven questions, idea by idea
+
+| SmithDB question | Leans on | Note |
+|---|---|---|
+| 1. Show me this one (trace / run) | ③ min/max on `trace_id` + bloom filters, ⑤ payload by row | files sorted by trace, so a trace is a few contiguous rows |
+| 2. Narrow it down | ③ statistics, ② encoded compares, ④ AND of masks | the walk above |
+| 3. Find the text | ① projection of the text column; statistics can't help | tracedb adds a per-file **inverted index** (M3) to pick candidate rows first |
+| 4. Look inside the JSON | ① one `attrs` column, superset text match, exact check after | promoted values live in one JSON column (see backlog I-1: typed columns) |
+| 5. Think in trees | ③ ④ for the failing steps, then a second pass by `trace_id` for their roots | two scans joined on `trace_id` |
+| 6. Rebuild the conversation | ③ on `thread_id`, sort by time | threads are planned for M4 |
+| 7. Add it up | ① two or three columns, ④ aggregates over arrays | no row of `output` is ever read |
+
+---
+
+## 6. Live coding: see it on your laptop
 
 [`crates/tools/examples/columnar_tour.rs`](crates/tools/examples/columnar_tour.rs) generates 1,000,000 synthetic agent
 runs (10 columns, ~5% errors, about 20 runs per second in time order) and stores them three ways:
@@ -204,7 +325,7 @@ What to notice (idea 2):
 - **`batch` costs almost nothing** (2.4 KB for a million rows): it's `a` for the first half and `b` for the second,
   so RLE stores two runs.
 - **Integers shrink from 8 bytes to ~2–3** because sequential and small values compress well.
-- **`output` is half the file**: free text is the one thing that stays big. Keep that in mind for step 7.
+- **`output` is half the file**: free text is the one thing that stays big. Keep that in mind for the experiments below.
 - **The two indexes are small here (+0.4 MB, +13% write time)** because they're minimal: a *sparse* time index and a
   status index that only lists the 5% of rows that failed. See "Is it fair?" below for what real indexes cost.
 
@@ -323,7 +444,7 @@ Edit `generate()` in the example and re-run:
 
 ---
 
-## 6. tracedb, live: one trace spread over files and memory
+## 7. tracedb, live: one trace spread over files and memory
 
 The tour above is a single sealed file. tracedb is harder: data keeps arriving, a run's **start and end arrive
 minutes apart**, and a single trace ends up spread over **many Parquet files and the in-memory table** at once. Here
@@ -405,7 +526,7 @@ These numbers come from a deliberately tiny memtable; real flushes are 64 MB, so
 
 ---
 
-## 7. How tracedb uses all this
+## 8. How tracedb uses all this
 
 | Idea | In tracedb |
 |---|---|
