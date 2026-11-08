@@ -4,7 +4,10 @@ A local trace store and viewer for AI agents. Point an unmodified LangSmith-SDK 
 `@traceable`) at it, watch its traces live in your browser, and query them. Everything stays in one folder on your
 machine (or, in cloud mode, in S3-compatible storage and Postgres).
 
-Status: **M3, "search, aggregates and speed"** (being finished). Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
+Status: **M3, "search, aggregates and speed"**: built and passed locally; performance work (the full 2M-run bench,
+idle memory) deferred until before M4. Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
+New to the project? [STARTER_GUIDE.md](STARTER_GUIDE.md) explains the problem, the architecture and how each
+milestone built on the last.
 
 ## Run it
 
@@ -155,6 +158,28 @@ demo table matches the local one.
     with its own process's RSS, an upper bound, and never fails on it;
   - the full 2M-run bench hasn't had a clean pass on the reference laptop yet;
   - the cloud job (S3 + Postgres) hasn't had its first M3 run.
+
+## Code layout
+
+| Crate | Holds |
+|---|---|
+| `crates/model` (`tracedb-model`) | runs, events, the merge rule, the filter language, cost |
+| `crates/ingest` (`tracedb-ingest`) | the writer, WAL, memtables, flusher, recovery, feedback store, text-index backfill |
+| `crates/storage` (`tracedb-storage`) | Parquet data files, text index, catalog (SQLite / Postgres), object store, cache |
+| `crates/query` (`tracedb-query`) | scans, merge-on-read, filters, search, aggregates, live views |
+| `crates/server` (`tracedb-server`) | the HTTP API, LangSmith upload mapping and the embedded UI: what `serve` runs |
+| `crates/tools` (`tracedb-tools`) | `seed`, `query`, `demo`, `bench` and the scenario data; the server never depends on it |
+| `crates/tracedb` (`tracedb`) | the binary: parses the command and calls the server or the tools |
+
+The tools are in the binary by default. For a serve-only binary:
+
+```bash
+cargo build --release -p tracedb --no-default-features   # only `tracedb serve`
+```
+
+Integration tests live with the crate they test. Tests that start the real binary (crash, restart, idle memory,
+the CLI tools) are in `crates/tracedb/tests`; the in-process test server is `tracedb_server::testkit` (feature
+`testkit`).
 
 ## Develop
 
