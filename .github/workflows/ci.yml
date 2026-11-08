@@ -74,7 +74,8 @@ jobs:
           curl -sf localhost:7171/ | grep -q '<div id="root">'
           docker rm -f tdb
 
-  # Same checks on S3 (MinIO) and Postgres in local containers (M2 SC-08). Credentials are random per run and masked.
+  # Same checks on S3 (MinIO) and Postgres in local containers (M2 SC-08, M3 SC-07). Credentials are random per run
+  # and masked.
   cloud:
     needs: ui
     runs-on: ubuntu-latest
@@ -86,6 +87,22 @@ jobs:
       TRACEDB_TEST_REQUIRE_CLOUD: "1"
     steps:
       - uses: actions/checkout@v4
+      # Names the path of any duplicate key (a second `run:` slipped into a step once) before the slow steps.
+      - name: no duplicate keys in workflow and compose YAML
+        run: |
+          ruby -rpsych -e '
+            def walk(n, at)
+              if n.is_a?(Psych::Nodes::Mapping)
+                keys = n.children.each_slice(2).map { |k, _| k.respond_to?(:value) ? k.value : k.to_s }
+                dups = keys.select { |k| keys.count(k) > 1 }.uniq
+                abort "#{at}: duplicate keys #{dups.join(", ")}" unless dups.empty?
+                n.children.each_slice(2) { |k, v| walk(v, "#{at}.#{k.respond_to?(:value) ? k.value : k}") }
+              else
+                Array(n.children).each_with_index { |c, i| walk(c, "#{at}[#{i}]") }
+              end
+            end
+            (Dir[".github/workflows/*.yml"] + Dir["ci/*.yml"]).each { |f| walk(Psych.parse_stream(File.read(f)), f) }
+          '
       - uses: actions/download-artifact@v4
         with:
           name: ui-dist
@@ -105,10 +122,10 @@ jobs:
         run: |
           docker compose -f ci/cloud.yml up -d --wait minio postgres
           docker compose -f ci/cloud.yml run --rm bucket
-      - name: storage trait tests (S3, Postgres)
+      - name: storage trait tests (S3, Postgres; incl. sidecar range reads, catalog v2, feedback table)
         shell: bash
         run: cargo test -p tracedb-storage --test traits
-      - name: demo checks (local storage, then S3 + Postgres)
+      - name: demo checks, M2 + M3 (local storage, then S3 + Postgres)
         shell: bash
         run: |
           cargo run --release -p tracedb -- demo --seed 7 | tee demo-local.txt
@@ -118,7 +135,15 @@ jobs:
         run: |
           table() { grep -v '^tracedb demo' "$1" | sed -E 's/ +[0-9]+ ms$//'; }
           diff <(table demo-local.txt) <(table demo-cloud.txt)
-      - name: crash harness (S3 + Postgres)
+      - name: sidecars in the bucket, feedback in Postgres
+        shell: bash
+        run: |
+          docker compose -f ci/cloud.yml run --rm -T --entrypoint /bin/sh bucket -c \
+            'mc alias set local http://minio:9000 "$MC_ACCESS_KEY" "$MC_SECRET_KEY" >/dev/null && mc ls -r local/tracedb/ci/' \
+            | grep 'fts\.post$' >/dev/null || { echo "no text index sidecars under s3://tracedb/ci"; exit 1; }
+          n=$(docker compose -f ci/cloud.yml exec -T postgres psql -U tracedb -d tracedb -tAc 'SELECT count(*) FROM feedback')
+          test "$n" = 2 || { echo "feedback rows in Postgres: $n, expected 2"; exit 1; }
+      - name: crash harness (S3 + Postgres; incl. after_fts_put)
         run: cargo test --release -p tracedb --test crash -- --ignored --nocapture
       - name: container logs
         if: failure()

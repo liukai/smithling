@@ -28,6 +28,8 @@ pub const PROMPT_V7: usize = 912;
 pub const V7_429: usize = 19;
 /// In `outputs.body` and `error` of the 429 steps only.
 pub const PHRASE: &str = "429 Too Many Requests";
+/// Runs holding the phrase: every 429 `fetch_url` step (all in batch a).
+pub const PHRASE_RUNS: usize = FAILING_ROOTS + QUIET_429;
 pub const FETCH_URL_RUNS: usize = 300;
 pub const BATCH_A_FETCH_ERRORS: usize = 42;
 pub const BATCH_A_FETCH_P95_MS: u64 = 31_000;
@@ -602,9 +604,10 @@ pub struct Loaded {
     pub in_files: bool,
 }
 
-/// Sends both batches' starts, then background (one trace per upload, pausing while a memtable is being written)
-/// until those starts are in files after at least two flushes, then the late updates, which land in the
-/// memtable. Stopping early keeps the memtable from filling (and flushing the updates) before the checks.
+/// Sends the feedback marked `before_run`, both batches' starts, the other feedback, then background (one trace
+/// per upload, pausing while a memtable is being written) until those starts are in files after at least two
+/// flushes, then the late updates, which land in the memtable. Stopping early keeps the memtable from filling
+/// (and flushing the updates) before the checks.
 pub async fn load(url: &str, s: &Scenario) -> Result<Loaded, SeedError> {
     let http = reqwest::Client::new();
     let start = health(&http, url)
@@ -629,8 +632,14 @@ pub async fn load(url: &str, s: &Scenario) -> Result<Loaded, SeedError> {
             "this tracedb already holds {existing} runs tagged {BATCH_TAG}; use an empty data folder"
         )));
     }
+    for f in s.feedback.iter().filter(|f| f.before_run) {
+        feedback(&http, url, &f.body).await?;
+    }
     for chunk in s.posts.chunks(100) {
         batch(&http, url, json!({"post": chunk})).await?;
+    }
+    for f in s.feedback.iter().filter(|f| !f.before_run) {
+        feedback(&http, url, &f.body).await?;
     }
     let last = s.posts.last().expect("the batch has runs")["id"]
         .as_str()
@@ -676,6 +685,21 @@ pub async fn load(url: &str, s: &Scenario) -> Result<Loaded, SeedError> {
         flushed_seq: h["flushed_seq"].as_u64().unwrap_or(0),
         in_files,
     })
+}
+
+async fn feedback(http: &reqwest::Client, url: &str, body: &Value) -> Result<(), SeedError> {
+    let r = http
+        .post(format!("{url}/feedback"))
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| SeedError::Upload(format!("POST /feedback: {e}")))?;
+    let status = r.status();
+    if !status.is_success() {
+        let text = r.text().await.unwrap_or_default();
+        return Err(SeedError::Upload(format!("POST /feedback: {status}: {text}")));
+    }
+    Ok(())
 }
 
 async fn health(http: &reqwest::Client, url: &str) -> Result<Value, String> {

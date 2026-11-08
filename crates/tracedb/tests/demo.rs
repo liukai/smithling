@@ -1,7 +1,11 @@
 //! `tracedb demo` (contracts/cli.md): the overnight-eval scenario on its own server, a pass/fail table, exit 1
 //! naming expected vs actual, 2 when `--url` isn't reachable.
 
+mod common;
+
+use serde_json::json;
 use tracedb::demo::{Check, report};
+use tracedb::scenario;
 
 fn demo(args: &[&str]) -> (i32, String, String) {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_tracedb"))
@@ -16,22 +20,99 @@ fn demo(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+const M2_ROWS: [&str; 6] = [
+    "✓ 14 failing roots",
+    "✓ 23 quiet failures",
+    "✓ prompt_version top values",
+    "v6 928 · v7 912",
+    "✓ v7 ∧ status_code = 429",
+    "✓ checks across memtable and files",
+];
+
+const M3_ROWS: [&str; 5] = [
+    "31 text hits, all fetch_url",
+    "fetch_url error rate / p95 (batch a)",
+    "batch a cost",
+    "batch a vs b",
+    "feedback filter and average",
+];
+
+fn row<'a>(out: &'a str, name: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.contains(name))
+        .unwrap_or_else(|| panic!("no {name:?} row in\n{out}"))
+}
+
 #[test]
-fn passes_every_m2_check_on_its_own_server() {
+fn passes_every_m2_and_m3_check_on_its_own_server() {
+    let (code, out, err) = demo(&["--seed", "7", "--memtable", "1MB"]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(out.starts_with("tracedb demo — M2 + M3 checks  (seed 7, "), "{out}");
+    for r in M2_ROWS {
+        assert!(out.contains(r), "missing {r:?} in\n{out}");
+    }
+    for (name, actual) in [
+        ("31 text hits, all fetch_url", "31"),
+        ("fetch_url error rate / p95 (batch a)", "14.0% / 31 s"),
+        ("batch a cost", "$4.12 (12 no price)"),
+        ("batch a vs b", "14.0% → 2.0%, 31 s → 9 s, side by side + overlaid"),
+        (
+            "feedback filter and average",
+            "2 runs · avg 0.00 (1 sent before its run)",
+        ),
+    ] {
+        let line = row(&out, name);
+        assert!(line.trim_start().starts_with(&format!("✓ {name}")), "{line}");
+        assert!(line.contains(actual), "{name}: want {actual:?} in {line:?}");
+    }
+    for name in ["31 text hits", "error rate / p95", "batch a vs b", "feedback filter"] {
+        assert!(
+            row(&out, name).trim_end().ends_with(" ms"),
+            "{name} has a timing:\n{out}"
+        );
+    }
+    assert!(out.trim_end().ends_with("all 10 checks passed"), "{out}");
+}
+
+#[test]
+fn checks_m2_runs_only_the_m2_rows() {
     let (code, out, err) = demo(&["--seed", "7", "--memtable", "1MB", "--checks", "m2"]);
     assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
     assert!(out.starts_with("tracedb demo — M2 checks  (seed 7, "), "{out}");
-    for row in [
-        "✓ 14 failing roots",
-        "✓ 23 quiet failures",
-        "✓ prompt_version top values",
-        "v6 928 · v7 912",
-        "✓ v7 ∧ status_code = 429",
-        "✓ checks across memtable and files",
-    ] {
-        assert!(out.contains(row), "missing {row:?} in\n{out}");
+    for r in M2_ROWS {
+        assert!(out.contains(r), "missing {r:?} in\n{out}");
+    }
+    for name in M3_ROWS {
+        assert!(!out.contains(name), "unexpected {name:?} in\n{out}");
     }
     assert!(out.trim_end().ends_with("all 5 checks passed"), "{out}");
+}
+
+/// A planted number changed under the demo (one more batch run with the phrase, not a fetch_url): exit 1 naming
+/// expected vs actual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_changed_planted_number_exits_1_naming_expected_and_actual() {
+    const MB: u64 = 1024 * 1024;
+    let server = common::start_with(|c| c.limits.memtable_bytes = MB).await;
+    let mut extra = common::ls_root(1, scenario::PROJECT, 0);
+    extra["name"] = json!("web_probe");
+    extra["tags"] = json!([scenario::BATCH_B_TAG]);
+    extra["error"] = json!(format!("HTTPError: {}", scenario::PHRASE));
+    common::post_batch(&server, vec![extra], vec![]).await;
+    let url = server.url("");
+    let (code, out, err) = tokio::task::spawn_blocking(move || {
+        demo(&["--url", &url, "--seed", "7", "--memtable", "1MB", "--checks", "m3"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, 1, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(out.starts_with("tracedb demo — M3 checks  (seed 7, "), "{out}");
+    assert!(row(&out, "31 text hits").contains("✗"), "{out}");
+    assert!(
+        out.contains("31 text hits, all fetch_url: expected 31, got 32 (not all fetch_url)"),
+        "{out}"
+    );
+    assert!(out.contains("1 of 5 checks failed"), "{out}");
 }
 
 #[test]
@@ -58,6 +139,8 @@ fn unreachable_url_exits_2() {
 
 #[test]
 fn unknown_check_set_is_a_usage_error() {
-    let (code, _, err) = demo(&["--checks", "m9"]);
-    assert_eq!(code, 1, "{err}");
+    for bad in ["m9", "m2,m9", ""] {
+        let (code, _, err) = demo(&["--checks", bad]);
+        assert_eq!(code, 1, "{bad:?}: {err}");
+    }
 }

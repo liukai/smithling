@@ -1,4 +1,4 @@
-//! `tracedb demo`: loads the overnight-eval scenario and checks the M2 numbers through the real read API
+//! `tracedb demo`: loads the overnight-eval scenario and checks the M2 and M3 numbers through the real read API
 //! (contracts/cli.md). Without `--url` it runs its own server on a temporary folder (or `--data`).
 
 use std::io::Write;
@@ -32,8 +32,37 @@ pub struct DemoArgs {
     /// The demo server's memtable size; the background volume is three of these (match the server's with `--url`).
     #[arg(long, default_value = "4MB", value_parser = parse_size)]
     pub memtable: u64,
-    #[arg(long, default_value = "m2", value_parser = ["m2"])]
-    pub checks: String,
+    /// Which checks to run: `m2`, `m3` or both.
+    #[arg(long, default_value = "m2,m3", value_parser = parse_checks)]
+    pub checks: CheckSet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckSet {
+    pub m2: bool,
+    pub m3: bool,
+}
+
+impl CheckSet {
+    fn title(self) -> &'static str {
+        match (self.m2, self.m3) {
+            (true, true) => "M2 + M3",
+            (false, true) => "M3",
+            _ => "M2",
+        }
+    }
+}
+
+fn parse_checks(s: &str) -> Result<CheckSet, String> {
+    let mut set = CheckSet { m2: false, m3: false };
+    for part in s.split(',').map(str::trim) {
+        match part {
+            "m2" => set.m2 = true,
+            "m3" => set.m3 = true,
+            _ => return Err(format!("unknown check set {part:?} (expected m2, m3 or m2,m3)")),
+        }
+    }
+    Ok(set)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,7 +100,7 @@ pub fn report(header: &str, checks: &[Check], out: &mut impl Write) -> std::io::
     for c in checks {
         let mark = if c.passed() { "✓" } else { "✗" };
         let ms = c.ms.map_or(String::new(), |ms| format!("{ms:>6} ms"));
-        let line = format!("  {mark} {:<36} {:<width$} {ms}", c.name, c.actual);
+        let line = format!("  {mark} {:<38} {:<width$} {ms}", c.name, c.actual);
         writeln!(out, "{}", line.trim_end())?;
     }
     let failed: Vec<&Check> = checks.iter().filter(|c| !c.passed()).collect();
@@ -115,7 +144,7 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
             return 1;
         }
     };
-    let checks = match checks(&url, &s, &loaded).await {
+    let checks = match checks(&url, a.checks, &s, &loaded).await {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(err, "tracedb demo: {e}");
@@ -123,7 +152,8 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         }
     };
     let header = format!(
-        "tracedb demo — M2 checks  (seed {}, {} traces, {} flushes)",
+        "tracedb demo — {} checks  (seed {}, {} traces, {} flushes)",
+        a.checks.title(),
         a.seed,
         thousands(loaded.traces as u64),
         loaded.flushes
@@ -215,6 +245,12 @@ impl Api {
             .await
     }
 
+    async fn aggregate(&self, body: Value) -> Result<(Value, u64), String> {
+        let what = format!("POST /api/aggregate {body}");
+        self.send(self.http.post(format!("{}/api/aggregate", self.url)).json(&body), &what)
+            .await
+    }
+
     async fn get(&self, path: &str) -> Result<(Value, u64), String> {
         self.send(self.http.get(format!("{}{path}", self.url)), &format!("GET {path}"))
             .await
@@ -254,7 +290,7 @@ fn count(name: &str, v: &Value, ms: u64, planted: &[uuid::Uuid]) -> Check {
     Check::new(name, &want.len().to_string(), &actual, Some(ms))
 }
 
-async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, String> {
+async fn checks(url: &str, set: CheckSet, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, String> {
     let api = Api {
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
@@ -262,6 +298,17 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
             .map_err(|e| e.to_string())?,
         url: url.into(),
     };
+    let mut out = Vec::new();
+    if set.m2 {
+        out.extend(m2_checks(&api, s, loaded).await?);
+    }
+    if set.m3 {
+        out.extend(m3_checks(&api, s).await?);
+    }
+    Ok(out)
+}
+
+async fn m2_checks(api: &Api, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, String> {
     let tag = scenario::BATCH_TAG;
     // Read before the queries, so a flush while they run can't make a run read across both look file-only.
     let (health, _) = api.get("/healthz").await?;
@@ -343,6 +390,260 @@ async fn checks(url: &str, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, 
         Check::new("checks across memtable and files", "yes", &across, None),
     ];
     Ok(checks)
+}
+
+fn tagged(tag: &str) -> String {
+    format!(r#"has(tags, "{tag}")"#)
+}
+
+fn pct(rate: f64) -> String {
+    format!("{:.1}%", rate * 100.0)
+}
+
+fn secs(ms: u64) -> String {
+    if ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    }
+}
+
+/// Cents when the amount is whole cents, else every digit, so a changed planted cost never rounds back.
+fn dollars(pico: i64) -> String {
+    if pico % 10_000_000_000 == 0 {
+        format!("${:.2}", pico as f64 / 1e12)
+    } else {
+        format!("${:.12}", pico as f64 / 1e12)
+    }
+}
+
+fn group<'a>(groups: &'a Value, key: &str) -> Option<&'a Value> {
+    groups.as_array()?.iter().find(|g| g["key"][0] == key)
+}
+
+fn rate(cells: &Value) -> String {
+    cells["error_rate"].as_f64().map_or("?".into(), pct)
+}
+
+fn p95(cells: &Value) -> String {
+    cells["p95"].as_u64().map_or("?".into(), secs)
+}
+
+/// " (e errors of n)" when a group's counts aren't the planted ones, which a rounded rate could hide.
+fn counts(cells: &Value, runs: usize, errors: usize) -> String {
+    let (n, e) = (cells["runs"].as_u64(), cells["errors"].as_u64());
+    if (n, e) == (Some(runs as u64), Some(errors as u64)) {
+        String::new()
+    } else {
+        format!(" ({} errors of {})", e.unwrap_or(0), n.unwrap_or(0))
+    }
+}
+
+/// Runs of the group `key` summed over a series' buckets.
+fn series_runs(side: &Value, key: &str) -> u64 {
+    let Some(i) = side["groups"]
+        .as_array()
+        .and_then(|g| g.iter().position(|g| g["key"][0] == key))
+    else {
+        return 0;
+    };
+    side["series"]["buckets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["per_group"][i]["runs"].as_u64())
+        .sum()
+}
+
+fn cost(totals: &Value) -> String {
+    let c = totals["cost_pico"].as_i64().map_or("no cost".into(), dollars);
+    format!("{c} ({} no price)", totals["no_price_runs"])
+}
+
+const BY_NAME: &str = "by name | count, error_rate, p95(latency), sum(cost)";
+
+async fn m3_checks(api: &Api, s: &Scenario) -> Result<Vec<Check>, String> {
+    let (a, b) = (tagged(scenario::BATCH_TAG), tagged(scenario::BATCH_B_TAG));
+    let fetch = "fetch_url";
+    let runs = scenario::FETCH_URL_RUNS;
+    let planted_rate = |errors: usize| pct(errors as f64 / runs as f64);
+    let (a_rate, b_rate) = (
+        planted_rate(scenario::BATCH_A_FETCH_ERRORS),
+        planted_rate(scenario::BATCH_B_FETCH_ERRORS),
+    );
+    let (a_p95, b_p95) = (
+        secs(scenario::BATCH_A_FETCH_P95_MS),
+        secs(scenario::BATCH_B_FETCH_P95_MS),
+    );
+
+    let (hits, ms_search) = api
+        .query(json!({
+            "project": PROJECT, "limit": 200, "count": true,
+            "filter": format!("and(or({a}, {b}), search({:?}))", scenario::PHRASE),
+        }))
+        .await?;
+    let page = hits["runs"].as_array().cloned().unwrap_or_default();
+    let mut search = matched(&hits).to_string();
+    if page.iter().any(|r| r["name"] != fetch) {
+        search.push_str(" (not all fetch_url)");
+    } else if page.iter().any(|r| {
+        !r["match"]["excerpt"]
+            .as_str()
+            .is_some_and(|e| e.contains(scenario::PHRASE))
+    }) {
+        search.push_str(" (an excerpt without the phrase)");
+    }
+
+    let (by_name, ms_agg) = api
+        .aggregate(json!({"project": PROJECT, "filter": a, "stats": BY_NAME}))
+        .await?;
+    let a_fetch = match group(&by_name["groups"], fetch) {
+        Some(g) => {
+            let c = &g["cells"];
+            format!(
+                "{} / {}{}",
+                rate(c),
+                p95(c),
+                counts(c, runs, scenario::BATCH_A_FETCH_ERRORS)
+            )
+        }
+        None => "no fetch_url group".into(),
+    };
+
+    let compare =
+        |view: &str| json!({"project": PROJECT, "filter": a, "stats": BY_NAME, "view": view, "compare": {"filter": b}});
+    let (table, ms_table) = api.aggregate(compare("table")).await?;
+    let (series, ms_series) = api.aggregate(compare("series")).await?;
+    let side_b = &table["compare"]["side_b"];
+    let pair = match (group(&table["groups"], fetch), group(&side_b["groups"], fetch)) {
+        (Some(x), Some(y)) => {
+            let (x, y) = (&x["cells"], &y["cells"]);
+            format!(
+                "{} → {}, {} → {}{}{}",
+                rate(x),
+                rate(y),
+                p95(x),
+                p95(y),
+                counts(x, runs, scenario::BATCH_A_FETCH_ERRORS),
+                counts(y, runs, scenario::BATCH_B_FETCH_ERRORS)
+            )
+        }
+        _ => "no fetch_url group on both sides".into(),
+    };
+    let keys = |g: &Value| -> Vec<Value> { g.as_array().into_iter().flatten().map(|g| g["key"].clone()).collect() };
+    let (ka, kb) = (keys(&table["groups"]), keys(&side_b["groups"]));
+    let side = !ka.is_empty() && kb.starts_with(&ka);
+    // Overlaid: both sides on one offset axis, each side's buckets holding all of its fetch_url runs.
+    let series_b = &series["compare"]["side_b"];
+    let (sa, sb) = (&series["series"], &series_b["series"]);
+    let buckets = |s: &Value| s["buckets"].as_array().map_or(0, Vec::len);
+    let overlaid = sa["offset"] == true
+        && sb["offset"] == true
+        && buckets(sa) > 0
+        && buckets(sa) == buckets(sb)
+        && series_runs(&series, fetch) == runs as u64
+        && series_runs(series_b, fetch) == runs as u64;
+    let mut vs = format!(
+        "{pair}, {} + {}",
+        if side { "side by side" } else { "not side by side" },
+        if overlaid { "overlaid" } else { "not overlaid" }
+    );
+    if side_b["totals"]["cost_pico"].as_i64() != Some(scenario::BATCH_B_COST_PICO) {
+        vs.push_str(&format!(" (b {})", cost(&side_b["totals"])));
+    }
+
+    // Feedback: the filter finds the scored runs, the average is over them, and the score sent before its run
+    // is stored with it and no longer an orphan.
+    let key = scenario::FEEDBACK_KEY;
+    let planted: std::collections::BTreeSet<String> = s
+        .feedback
+        .iter()
+        .filter_map(|f| f.body["run_id"].as_str().map(str::to_string))
+        .collect();
+    let scores: Vec<f64> = s.feedback.iter().filter_map(|f| f.body["score"].as_f64()).collect();
+    let want_avg = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
+    let early: Vec<&scenario::Feedback> = s.feedback.iter().filter(|f| f.before_run).collect();
+    let (scored, ms_filter) = api
+        .query(json!({
+            "project": PROJECT, "limit": 200, "count": true,
+            "filter": format!("and({a}, lt(feedback.{key}, 0.5))"),
+        }))
+        .await?;
+    let (avg, ms_avg) = api
+        .aggregate(json!({"project": PROJECT, "filter": a, "stats": format!("count, avg(feedback.{key})")}))
+        .await?;
+    let (orphans, mut ms_joined) = api.get("/api/feedback?orphaned=true").await?;
+    let orphaned = |id: &Value| {
+        orphans["feedback"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|r| &r["id"] == id)
+    };
+    let mut joined = 0;
+    for f in &early {
+        let run = f.body["run_id"].as_str().unwrap_or_default();
+        let (rows, ms) = api.get(&format!("/api/feedback?run_id={run}")).await?;
+        ms_joined += ms;
+        let found = rows["feedback"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|r| r["id"] == f.body["id"]);
+        joined += (found && !orphaned(&f.body["id"])) as usize;
+    }
+    let n = matched(&scored);
+    let mut runs_found = format!("{n} runs");
+    if n == planted.len() as u64 && ids(&scored) != planted {
+        runs_found.push_str(" (not the scored runs)");
+    }
+    let mut average = avg["totals"]["feedback_avg"]
+        .as_f64()
+        .map_or("avg none".into(), |v| format!("avg {v:.2}"));
+    if avg["totals"]["feedback_n"].as_u64() != Some(planted.len() as u64) {
+        average.push_str(&format!(" over {}", avg["totals"]["feedback_n"]));
+    }
+
+    Ok(vec![
+        Check::new(
+            "31 text hits, all fetch_url",
+            &scenario::PHRASE_RUNS.to_string(),
+            &search,
+            Some(ms_search),
+        ),
+        Check::new(
+            "fetch_url error rate / p95 (batch a)",
+            &format!("{a_rate} / {a_p95}"),
+            &a_fetch,
+            Some(ms_agg),
+        ),
+        Check::new(
+            "batch a cost",
+            &format!(
+                "{} ({} no price)",
+                dollars(scenario::BATCH_A_COST_PICO),
+                scenario::BATCH_A_NO_PRICE_RUNS
+            ),
+            &cost(&by_name["totals"]),
+            None,
+        ),
+        Check::new(
+            "batch a vs b",
+            &format!("{a_rate} → {b_rate}, {a_p95} → {b_p95}, side by side + overlaid"),
+            &vs,
+            Some(ms_table + ms_series),
+        ),
+        Check::new(
+            "feedback filter and average",
+            &format!(
+                "{} runs · avg {want_avg:.2} ({} sent before its run)",
+                planted.len(),
+                early.len()
+            ),
+            &format!("{runs_found} · {average} ({joined} sent before its run)"),
+            Some(ms_filter + ms_avg + ms_joined),
+        ),
+    ])
 }
 
 fn thousands(n: u64) -> String {

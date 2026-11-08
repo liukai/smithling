@@ -1,10 +1,12 @@
 //! Storage trait tests, run against every backend at hand: local files and SQLite always; S3 when
 //! `TRACEDB_TEST_S3_URL` is set (e.g. `s3://tracedb/test`, endpoint and credentials from `AWS_*`) and Postgres
 //! when `TRACEDB_TEST_PG_URL` is set (e.g. `postgres://tracedb@localhost/tracedb`, password from `PGPASSWORD`).
-//! Each run uses a fresh S3 prefix and a fresh Postgres database, so reruns don't see each other's data.
+//! Text index sidecars are put and looked up on each object store; catalog v2 and the `feedback` table on each
+//! metastore. Each run uses a fresh S3 prefix and a fresh Postgres database, so reruns don't see each other's data.
 
 use bytes::Bytes;
 use sqlx::Connection;
+use tracedb_storage::fts::{self, Fts, TextField, TextIndex, TextRow};
 use tracedb_storage::segment::FieldStat;
 use tracedb_storage::{DedupKeys, FeedbackKey, FeedbackRow, Metastore, SegmentMeta, Store};
 use uuid::Uuid;
@@ -86,6 +88,63 @@ async fn object_contract(store: Store) {
     assert_eq!(store.list().await.unwrap(), vec![b.to_string()]);
     assert!(store.get(a).await.is_err());
     store.delete(b).await.unwrap();
+    assert!(store.list().await.unwrap().is_empty());
+}
+
+/// A sidecar put through `store` and looked up (its rows span several term zones), and the suffix and ranged
+/// reads lookups are made of.
+async fn sidecar_contract(store: Store) {
+    let inputs: Vec<serde_json::Value> = (0..600)
+        .map(|i| serde_json::json!({"q": format!("ask w{i}")}))
+        .collect();
+    let errors: Vec<String> = (0..600)
+        .map(|i| match i % 7 {
+            0 => "HTTPError: 429 Too Many Requests".to_string(),
+            _ => format!("ReadTimeout after {i} s"),
+        })
+        .collect();
+    let rows: Vec<TextRow<'_>> = (0..600)
+        .map(|i| TextRow {
+            inputs: Some(&inputs[i]),
+            outputs: None,
+            error: Some(&errors[i]),
+        })
+        .collect();
+    let index = Fts::new(store.clone());
+    let sidecar = index.write(&rows).unwrap();
+    let stem = "p-1/2026-11-05/seg-f.fts";
+    store
+        .put_new(&fts::dict_path(stem), sidecar.dict.clone())
+        .await
+        .unwrap();
+    store
+        .put_new(&fts::post_path(stem), sidecar.post.clone())
+        .await
+        .unwrap();
+    let (mut seg, _) = segment(0, 10);
+    seg.fts_path = Some(stem.into());
+    let words = |ws: &[&str]| ws.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let phrase = index
+        .lookup(&seg, &words(&["429", "too", "many", "requests"]), TextField::Error)
+        .await
+        .unwrap();
+    assert_eq!(phrase, (0..600).step_by(7).collect::<Vec<u32>>());
+    let one = index.lookup(&seg, &words(&["w300"]), TextField::Inputs).await.unwrap();
+    assert_eq!(one, vec![300]);
+    let none = index.lookup(&seg, &words(&["w300"]), TextField::Error).await.unwrap();
+    assert!(none.is_empty());
+
+    let post = fts::post_path(stem);
+    let (tail, size) = store.get_suffix(&post, 8).await.unwrap();
+    assert_eq!(
+        (size, &tail[..]),
+        (sidecar.post.len() as u64, &sidecar.post[sidecar.post.len() - 8..])
+    );
+    let ranges = [0..3, 5..9];
+    let got = store.get_ranges(&post, &ranges).await.unwrap();
+    assert_eq!(got, vec![sidecar.post.slice(0..3), sidecar.post.slice(5..9)]);
+    store.delete(&fts::dict_path(stem)).await.unwrap();
+    store.delete(&post).await.unwrap();
     assert!(store.list().await.unwrap().is_empty());
 }
 
@@ -388,6 +447,7 @@ async fn migration_contract(url: &str, pg: bool) {
 async fn local_object_store() {
     let dir = tempfile::tempdir().unwrap();
     object_contract(Store::local(&dir.path().join("data")).unwrap()).await;
+    sidecar_contract(Store::local(&dir.path().join("data")).unwrap()).await;
 }
 
 #[tokio::test]
@@ -396,7 +456,8 @@ async fn s3_object_store() {
         return;
     };
     let store = Store::open(&format!("{}/traits-{}", base.trim_end_matches('/'), run_id())).unwrap();
-    object_contract(store).await;
+    object_contract(store.clone()).await;
+    sidecar_contract(store).await;
 }
 
 #[tokio::test]

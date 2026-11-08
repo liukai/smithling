@@ -4,7 +4,7 @@ A local trace store and viewer for AI agents. Point an unmodified LangSmith-SDK 
 `@traceable`) at it, watch its traces live in your browser, and query them. Everything stays in one folder on your
 machine (or, in cloud mode, in S3-compatible storage and Postgres).
 
-Status: **M2, "durable storage and query builder"**. Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
+Status: **M3, "search, aggregates and speed"** (being finished). Plans and progress: [`specs/000-tracedb-master-plan/roadmap.md`](specs/000-tracedb-master-plan/roadmap.md).
 
 ## Run it
 
@@ -44,20 +44,61 @@ at inline. The **field browser** lists every field seen in metadata, inputs and 
 top values. Switch between *Samples* and *Table* (pick your columns) without rebuilding the query, and turn on
 *live* to see matching new and updated runs as they arrive.
 
+**Search.** The search box finds words and phrases in inputs, outputs and errors (case-insensitive; a phrase is
+consecutive words within one text value; no fuzzy matching or ranking). It becomes a chip like any other condition,
+`search("429 Too Many Requests")` in *Text*, or `search(error, "timeout")` for one side; each hit shows an excerpt
+with the match highlighted. Each data file carries a small text index, so a search reads only the files and rows
+that can match.
+
+**Stats.** *Stats* groups the matching runs by up to two keys (name, `run_type`, model, status, tag,
+`metadata.<key>`, `feedback_key`) with metrics: count, error rate, p50/p95/p99 latency, token sums, cost and
+`avg(feedback.<key>)`; a stats line (`by name | count, error_rate, p95(latency), sum(cost)`) does the same in
+one string. Click any cell to see exactly its runs in *Samples*. *Time series* draws a metric per group over time
+and *Distribution* a latency histogram; click a bucket or bin for its runs. *Compare* puts a second query (another
+batch, or the same window a day earlier) side by side in the table and overlaid in the charts. On large data the
+first numbers are estimates (marked as such) that refine to the exact answer. Grouping, metrics, chart and
+comparison are in the URL.
+
+**Cost** is the cost the run reports; otherwise tokens × a built-in price list for common models (USD per 1M
+tokens). Edit `<data>/prices.toml` (or pass `--prices FILE`) to replace entries by name; prices are never fetched
+from the network. Runs with no price are counted, not guessed.
+
+**Feedback** the SDK sends (`client.create_feedback(...)`, evaluators, multipart `feedback.*` parts) is stored, even
+when it arrives before its run. Filter on it (`lt(feedback.correctness, 0.5)`), average it
+(`avg(feedback.correctness)`), group by `feedback_key`, and find `feedback.<key>` in the field browser.
+`GET /api/feedback?run_id=…` lists a run's feedback; `?orphaned=true` lists feedback whose run hasn't arrived.
+
 From a terminal, against a running server:
 
 ```bash
 ./target/release/tracedb query --project my-agent --time 12h --root 'eq(status, "error")'
 ./target/release/tracedb query --tree-filter 'eq(status, "error")' --json 'eq(status, "ok")'   # JSON lines
+./target/release/tracedb query --search '429 Too Many Requests'
+./target/release/tracedb query --group-by name --metrics 'count,error_rate,p95(latency),sum(cost)' \
+  --compare 'has(tags, "batch=2026-11-06-b")' 'has(tags, "batch=2026-11-05-a")'
 ```
 
-To check it all on generated data, `tracedb demo` loads an overnight-eval scenario into its own temporary server
-and prints a pass/fail table (14 failing roots, 23 quiet failures, top `prompt_version` values, a planted count,
-and reads across memory and files); exit code 0 when every check passes:
+To check it all on generated data, `tracedb demo` loads an overnight-eval scenario (two batches, before and after
+a retry fix) into its own temporary server and prints a pass/fail table with a timing per check: the M2 rows (14
+failing roots, 23 quiet failures, top `prompt_version` values, a planted count, reads across memory and files)
+and the M3 rows (31 search hits all on `fetch_url`, `fetch_url` 14.0% errors / p95 31 s, batch cost $4.12 with 12
+unpriced runs, batch a vs b side by side and overlaid, and a feedback filter and average with one score sent before
+its run). Exit code 0 when every check passes; 1 naming expected vs actual otherwise:
 
 ```bash
-./target/release/tracedb demo --seed 7
-./target/release/tracedb demo --url http://localhost:7070 --memtable 128MB   # into a running server (pass its --memtable)
+./target/release/tracedb demo --seed 7                 # M2 and M3 checks; --checks m2 (or m3) for one set
+./target/release/tracedb demo --url http://localhost:7070 --memtable 64MB   # into a running server (pass its --memtable)
+```
+
+**Speed.** `tracedb bench` loads a reference volume (2M runs by default, `--smoke` for 200k) into its own server
+while querying it, then prints P50/P99 per query type (trace, run, filtered list, text search, grouped, first
+estimate, suggestions), load rate, disk use and idle memory against the targets. With `--check` it exits 1 naming
+any row that misses its budget; on a shared machine the targets are scaled by a short calibration run. CI runs
+`--smoke --check` on every PR and the full run on `main` and nightly.
+
+```bash
+./target/release/tracedb bench --smoke --check
+./target/release/tracedb bench --runs 2000000 --json /tmp/bench.json --check
 ```
 
 ## Storage
@@ -70,9 +111,11 @@ pause for uploads; bursts get `429` retries instead of refusals). A catalog list
 |---|---|---|
 | `--storage` (`TRACEDB_STORAGE`) | `<data>/data` | a folder or `s3://bucket/prefix` |
 | `--metastore` (`TRACEDB_METASTORE`) | `sqlite://<data>/meta.sqlite` | `sqlite://path` or `postgres://user@host/db` |
-| `--memtable` | `128MB` | flush the in-memory batch at this size… |
-| `--flush-age` | `10m` | …or when its oldest event is this old |
+| `--memtable` | `64MB` | flush the in-memory batch when its heap reaches this size… |
+| `--flush-age` | `2m` | …or when its oldest event is this old |
 | `--dedup-window` | `10m` | how long an identical retry is recognized as a duplicate |
+| `--cache` | `32MB` | memory for file footers, text-index pages and payload pages read back |
+| `--prices` | `<data>/prices.toml` if present | model prices replacing the built-in entries by name |
 
 `--max-memory` and `--max-runs` (M1) are accepted with a warning; they no longer apply.
 
@@ -87,22 +130,35 @@ export PGPASSWORD=…
 ```
 
 `ci/cloud.yml` starts MinIO (bucket `tracedb`) and Postgres 17 (database `tracedb`) locally from the same
-variables; CI's `cloud` job runs the storage tests, `tracedb demo` and the crash tests against it.
+variables; CI's `cloud` job runs the storage tests, `tracedb demo` and the crash tests against it, and checks the
+demo table matches the local one.
 
-## What M2 does and doesn't do
+## What M3 does and doesn't do
 
-- **Does**: everything M1 does (LangSmith SDK JSON uploads, runs that arrive in pieces, crash safety, live updates,
-  zero outbound connections), plus data on disk or S3 + Postgres, the query panel, field browser, Table view, live
-  queries, `tracedb query` and `tracedb demo`.
-- **Doesn't yet**: no compaction (data files are never merged, so many small flushes slow reads down); no text
-  search; multipart uploads and feedback return `415` / `501` (M3). Speed targets are M2-sized; M3 owns the speed
-  work. At 2M runs (5.1 GB raw JSON, release build, laptop): filtered list p50 14–53 ms, trace 6 ms, single run
-  30 ms; data on disk 19% of the raw JSON.
+- **Does**: everything M2 does (SDK uploads, crash safety, live updates, data on disk or S3 + Postgres, the query
+  panel, field browser, Table view, `tracedb query`, zero outbound connections), plus multipart uploads on by
+  default (the SDK's default upload format, plain or zstd; `/info` advertises it, so no SDK setting changes),
+  feedback, text search, Stats / Time series / Distribution / Compare, costs from a local price list,
+  `tracedb bench` and the M3 demo checks. A damaged or missing data file is skipped and named (in the response and
+  in `/healthz`) instead of failing every query.
+- **Doesn't yet**:
+  - no compaction: data files are never merged, so many small flushes slow reads down;
+  - the text index stores no word positions: a phrase is confirmed by reading the candidate rows' text, so a
+    phrase of very common words reads more;
+  - attachments (multipart `attachment.*` parts) are rejected by name (`attachment_not_stored`); the run is kept;
+  - no feedback writes from the UI (adding or editing scores, threads, export are M4).
+- **Not verified yet**:
+  - the UI (search, Stats, charts, Compare, "N new") is covered by component tests but hasn't been checked in a
+    real browser;
+  - idle memory (≤ 200 MB) is measured only on Linux CI;
+  - the full 2M-run bench hasn't had a clean pass on the reference laptop yet;
+  - the cloud job (S3 + Postgres) hasn't had its first M3 run.
 
 ## Develop
 
 ```bash
 cargo test --workspace                       # Rust tests (S3/Postgres storage tests skip unless TRACEDB_TEST_S3_URL / TRACEDB_TEST_PG_URL are set)
+scripts/no-outbound.sh target/release/tracedb   # Linux: no non-loopback connection through seed, search, aggregate, multipart, demo
 (cd ui && npm test)                          # UI component tests
 cargo test --release -p tracedb --test crash --test restart --test throughput -- --ignored   # slow checks
 /path/to/python scripts/record-sdk-fixtures.py   # re-record SDK contract fixtures (see the script header)
