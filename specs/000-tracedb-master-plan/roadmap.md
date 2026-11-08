@@ -61,10 +61,9 @@ browser (D3-4), no-outbound under strace (D3-5).
 
 **Blocked on**: nothing.
 
-**NEXT**: 1) Make the end-to-end first run work with defaults: `tracedb demo --url` against a default `serve`
-(64 MB memtable) fails "checks across memtable and files" (D3-8). 2) User looks at the UI in a browser (D3-4); push to a
-remote so CI (incl. cloud and the nightly bench) runs. 3) **Before M4: re-evaluate the deferred performance work**
-(D3-1, D3-2, parked branch `wip/m3-bench-three-rows`), then plan M4.
+**NEXT**: 1) User looks at the UI in a browser (D3-4); push to a
+remote so CI (incl. cloud and the nightly bench) runs. 2) **Before M4: re-evaluate the deferred performance work**
+(D3-1, D3-2, the three-row bench is merged; only the 2M run itself remains), then plan M4.
 
 ## Progress
 
@@ -266,14 +265,14 @@ Work M3 planned but didn't finish or couldn't verify here. Each item says what w
 
 | # | Item | Why not done | Done when |
 |---|---|---|---|
-| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Finish the parked branch `wip/m3-bench-three-rows` (three text-search rows; idle row measured on the server and reported "waived (M4)" instead of failing `--check` — without it CI's full bench always fails); then `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
+| D3-1 | **Full 2M-run bench on a quiet machine** (T109) | A clean 1–2 h run on a dedicated machine isn't practical here; the busy-machine run missed run + payload, filtered list, text search p99 and load (before unit 12a's fixes) | Bench code done (three text-search rows; idle row reported "waived (M4)", merged in `ea6af31`); `tracedb bench --runs 2000000 --check` passes every non-waived row on a quiet machine or the nightly CI job, table recorded in M3 research |
 | D3-2 | **Idle memory ≤ 200 MB** (SC-05, T087) | Waived for M3 (D-028): 234–246 MB at 0.5M runs, ~0.6 GB projected at 2M, held by merged copies of late-updated runs and per-file state | M4 compaction merges late updates; idle test green at 2M |
 | D3-3 | **Cloud CI job's first real run** (T122), incl. M2's | No Docker, MinIO, Postgres or git remote on the build machine | The `cloud` job passes on a remote CI |
 | D3-4 | **UI checked in a real browser** (M1, M2, M3 views) | No headless browser in the sandbox; covered by component tests and API smoke tests only | Someone clicks through quickstart step 2 and the Stats/charts/Compare views |
 | D3-5 | **No-outbound check under strace** | Needs Linux; built on macOS | `scripts/no-outbound.sh` passes on Linux CI |
 | D3-6 | Chart metric and chosen group kept in the URL | Not in the URL contract | A shared link reopens the same chart metric and group |
 | D3-7 | Aggregate over a search stops early / cancels | The whole search runs before any estimate; closing the stream doesn't stop it | Estimate within 1 s with a search filter; cancel frees the scan |
-| D3-8 | `tracedb demo --url` against a default `serve` fails "checks across memtable and files" | The demo sizes its load for a 4 MB memtable; the server default is now 64 MB (heap) | The demo reads the server's memtable size (e.g. from `/healthz`) and passes against default settings |
+| D3-8 | ~~`tracedb demo --url` against a default `serve` fails "checks across memtable and files"~~ **Done 2026-11-07**: `/healthz` reports `memtable_limit_bytes`; `demo --url` sizes its load from it (10/10 against a default serve in ~5 s) | — | — |
 
 ## History
 
