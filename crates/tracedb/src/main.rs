@@ -75,7 +75,7 @@ enum Cmd {
     },
     /// Run a query against a running tracedb and print a table (or JSON lines).
     Query(tracedb::cli_query::QueryArgs),
-    /// Load the overnight-eval scenario and run the M2 checks; prints a pass/fail table.
+    /// Load the overnight-eval scenario and run the M2 and M3 checks (`--checks` picks); prints a pass/fail table.
     Demo(tracedb::demo::DemoArgs),
     /// Load the reference volume, time each query type and print P50/P99 against the targets.
     Bench(tracedb::bench::BenchArgs),
