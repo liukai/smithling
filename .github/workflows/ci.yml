@@ -47,7 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: "! command -v node"
+      # GitHub's runner image ships Node; hide every copy so the build below proves it doesn't need it.
+      - name: hide Node
+        run: |
+          for _ in 1 2 3 4 5; do p=$(command -v node) || break; sudo mv "$p" "$p.hidden"; hash -r; done
+          ! command -v node
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99"

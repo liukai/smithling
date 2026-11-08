@@ -28,6 +28,7 @@ Milestones, key decisions and changes someone would look up later, newest first.
   ([D-034](specs/000-smithling-master-plan/decisions.md#d-034)).
 - Storage parts stay concrete types until a second implementation is needed; only the text index is a trait
   ([D-035](specs/000-smithling-master-plan/decisions.md#d-035)).
+- CI: the no-Node build hides the Node that GitHub's runner image ships instead of assuming it's absent.
 - CI: runs on pushes to `main` or `master`, with a read-only token; the full 2M-run bench is started by hand until
   it's re-evaluated (roadmap D3-1); pull requests must update this file.
 - Specs brought in line with the built code (about 100 fixes); four earlier changes that had no decision-log entry
