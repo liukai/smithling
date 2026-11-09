@@ -54,6 +54,8 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-08: **New milestone M5 — Disaggregated trace database**, after M4 compaction and before the agents milestone (now **M6**): ingestion, read workers and compaction as separate services over shared storage and catalog, one binary ([D-036](decisions.md#d-036); spec `specs/005-m5-disaggregated-trace-db/`, folder `004-` reserved for M4). Spec and plan only for now; no implementation.
 - 2026-11-08 (M5 design): **problems drive the M5 design** (spec north-star table P1–P15); **a confirmed write survives loss of the writer's machine** (log batch in shared storage before confirming, optional fast-confirm mode); **single tenant, no sharding in M5**, tenant kept as a concept, trace id the preferred shard key later. Open questions live in the M5 spec. *(Durability and the open-question list superseded the same day by the M5 scope line below.)*
 - 2026-11-08 (M5 scope): **M5 builds only the P0 problems** (owner: be greedy, backlog the rest). M5 is **step 1 of a disaggregated trace database (read workers over shared storage)**, more steps to follow: read workers read published files only, checking the catalog per query, never contacting the writer; the writer stays a full node (ingest, flush, M4 compaction, live view). Machine-loss durability (the same-day Q1 decision) moves to M5 backlog B1, the first follow-up. M5 places requirements on M4 compaction (catalog and files only, guarded swap, grace-period delete, cloud-style CI).
+- 2026-11-08 (M4 scope): **M4 is compaction only** (one level, in the writer process, built for M5's M4-REQ-1–4); threads, export, feedback writes from the UI and find-what-stands-out move to the M4 backlog K1–K4 ([D-038](decisions.md#d-038)).
+- 2026-11-08 (M4 defaults, deferred work): **the deferred M3 performance work stays deferred through M4** (D3-1 full 2M bench, D3-2 idle memory as a gate; M4 only measures and reports idle memory); **re-evaluate before M5's plan starts**. M4 ships stated defaults (settle 15 min, target 256 MB, grace 24 h), configurable; final values from benchmarking, tuning and real usage (M4 backlog K10).
 
 **STATE as of 2026-11-08** (verified on `main` at the rename commit, D-037, by `cargo test --workspace` 303 passed /
 0 failed / 7 ignored (includes the `smithling demo` checks), clippy `-D warnings`, `cargo fmt --check`, `npm test` 248 passed;
@@ -81,7 +83,7 @@ performance work** (D3-1, D3-2), then plan M4.
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
 | M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 123/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
-| M4 Follow-through | — | not started | — | — |
+| M4 Compaction (core) | [`004-m4-compaction`](../004-m4-compaction/spec.md) | spec settled; plan next; backlog K1–K11 | — | — |
 | M5 Disaggregated trace DB, step 1: read workers | [`005-m5-disaggregated-trace-db`](../005-m5-disaggregated-trace-db/spec.md) | spec + plan proposed; design register KD-1–KD-12 (KD-4, KD-9, KD-11 open); backlog B1–B10 | — | — |
 | M6 Zero instrumentation + agents | — | not started | — | — |
 
@@ -179,30 +181,33 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 **Delivers**: FR-001 (full), FR-011, FR-014, FR-015, FR-023, FR-024, FR-031; QR-004, QR-005, QR-006, QR-008.
 
-### M4: Follow-through
+### M4: Compaction (core)
 
-**Goal and why**: close the loop (steps 10, 11, 13) and keep old data cheap. It moves the scenario from "found it" to
-"fixed it and prevented it".
+> Details of record: [`specs/004-m4-compaction/`](../004-m4-compaction/spec.md). Scope narrowed on 2026-11-08 ([D-038](decisions.md#d-038)): the original M4 features are in the M4 spec's backlog (K1–K4).
+
+**Goal and why**: keep reads fast and memory flat as data piles up, by merging each project's small flushed files
+into a few large ones with every run's versions merged into one row. The file count is the first measured wall
+(~680 files), late updates are what kept M3's idle memory over target (D3-2), and M5 needs compaction built against
+the catalog and files only.
 
 **End state** (capability first; *Example* = the scenario we prove it with):
-- As an **agent developer**, I can view a multi-turn conversation that spans several traces as one chat thread, in order.
-  - *Example*: a task with **6** turns.
-- As an agent developer, I can export any set of runs with their inputs, outputs and metadata to a file I can reuse as an eval dataset.
-  - *Example*: the **37** bad root runs to JSONL.
-- As an agent developer, I can select an unusual part of a chart and see which fields and values set it apart, ranked.
-  - *Example*: the error spike → `fetch_url` and `prompt_version = v7` at the top.
+- As an **agent developer**, I get the same fast trace and run reads at millions of runs as at thousands.
+  - *Example*: after compaction settles on the bench load, ≤ 10% of the files and single-run reads under 50 ms.
 - As an agent developer, I can rely on runs that finish late showing correctly, no matter when their last update arrives or whether background compaction has run.
-- As an agent developer, I can add a score and comment to any finished run from the UI, then filter and average by it (filtering and averaging, and SDK feedback, shipped in M3).
-- As a **maintainer**, I can trust these keep working: CI covers threads, export, compaction correctness and the ranking example.
+  - *Example*: `smithling demo` passes with identical counts with compaction forced between steps.
+- As an **operator**, I can kill Smithling at any moment during compaction and lose nothing; long queries never fail because files were replaced.
+- As a **maintainer**, I can trust it: CI runs the demo with compaction, the crash points and the cloud-style job.
 
 **Work needed → how it gets us there**:
 | Work | Contribution |
 |---|---|
-| Compaction tiers + atomic swap | Direct: late-end correctness after compaction. Indirect: keeps M3 speeds as data grows |
-| Threads view; export; feedback write from the UI | Direct: steps 10, 11 and feedback from the browser |
-| Find-what-stands-out | Direct: Story 12 |
+| Complete merge marks at flush; compaction job (one level, settled files, per project) | Direct: few files, late updates merged |
+| Guarded catalog swap; grace-period delete; crash points | Direct: safe at every moment |
+| Outputs carry payloads, text index, stats; payload lookup stays fast | Direct: same answers, same speed |
+| Status in UI and `/healthz`; demo with compaction; cloud CI | Durable: keeps it true |
 
-**Delivers**: FR-016, FR-017, FR-020, FR-032.
+**Delivers**: compaction (former M4 scope "compaction tiers + atomic swap", as one level); closes D3-2 by measurement; M5's M4-REQ-1–4.
+**Moved to the M4 backlog** (K1–K4): FR-016 threads, FR-017 export, FR-020 feedback writes from the UI, FR-032 find-what-stands-out.
 
 ### M5: Disaggregated trace database, step 1 (read workers over shared storage)
 
@@ -263,11 +268,11 @@ sharding) is in the M5 spec's backlog with triggers.
 | FR-002–007 | M1 | built, verified locally |
 | FR-008–010, 012, 013 | M2 | built, verified locally |
 | FR-011, 014, 015 | M3 | built, verified locally |
-| FR-016, 017, 020 | M4 | |
+| FR-016, 017, 020 | M4 backlog (K1–K3, D-038) | |
 | FR-021, 028 | M6 | |
 | FR-022–027 | M1 → M3 (grows each phase) | built through M3, verified locally; browser check open (D3-4) |
 | FR-029–031 | M2 (builder, Samples, Table) → M3 (charts, compare) | built, verified locally |
-| FR-032 | M4 | |
+| FR-032 | M4 backlog (K4, D-038) | |
 | QR-001–003 | M1 | QR-003 verified (crash 10/10); QR-001/002 CI-only |
 | QR-004–006, 008 | M3 | deferred (D3-1, D3-2); QR-006 disk met |
 | QR-007 | M2 | built, verified locally; cloud CI not run (D3-3) |
