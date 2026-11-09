@@ -229,6 +229,7 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
         },
         ui_dir: None,
         prices: None,
+        compact: Default::default(),
     };
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     let (state, _) = tokio::task::spawn_blocking(move || smithling_server::open(&cfg)).await??;

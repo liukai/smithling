@@ -14,6 +14,7 @@ fn cfg(dir: &std::path::Path, prices: Option<std::path::PathBuf>) -> ServeConfig
         limits: Limits::default(),
         ui_dir: None,
         prices,
+        compact: Default::default(),
     }
 }
 

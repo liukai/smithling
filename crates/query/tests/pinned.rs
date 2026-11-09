@@ -215,3 +215,62 @@ async fn a_scan_across_a_flush_sees_one_consistent_state() {
     assert_eq!(ids.len(), 185);
     assert!(after.runs.iter().all(|r| r.header.status != Status::Running));
 }
+
+/// M4 SC-06: a scan pinned before 100 compaction swaps, with deletes tried after each (grace period 0), reads
+/// the same rows and never a missing file; once it ends, the files it held are deleted.
+#[tokio::test(flavor = "current_thread")]
+async fn a_scan_held_across_100_compaction_swaps_returns_the_same_rows() {
+    let (_dir, ingest) = open_with(MEMTABLE, |c| c.compact.grace_us = 0);
+    for batch in 0..3 {
+        let runs = batch * 25 + 1..=batch * 25 + 25;
+        send(
+            &ingest,
+            runs.map(|n| (Op::Post, ended(&root(n, "a", n * 10), None))).collect(),
+        )
+        .await;
+        settle(&ingest, MEMTABLE).await;
+    }
+    let held = ingest.mem().read().unwrap().version.segments.clone();
+    assert!(held.len() >= 2, "the test needs several files");
+    let query = Query::new(ingest.clone());
+    let before = query.query(&spec()).await.unwrap();
+
+    let q = spec();
+    let mut scan = pin!(query.query(&q));
+    start(&mut scan).await;
+    let (mut swaps, mut n) = (0, 1_000);
+    while swaps < 100 {
+        let runs = n..n + 25;
+        n += 25;
+        send(
+            &ingest,
+            runs.map(|n| (Op::Post, ended(&root(n, "b", n), None))).collect(),
+        )
+        .await;
+        settle(&ingest, MEMTABLE).await;
+        if ingest.compact(true).unwrap().is_some() {
+            swaps += 1;
+        }
+        assert_eq!(
+            ingest.delete_replaced().unwrap(),
+            0,
+            "swap {swaps}: the scan still holds its files"
+        );
+    }
+    for s in &held {
+        assert!(files_exist(&ingest, s).await, "{} was deleted under the scan", s.id);
+    }
+    let during: Page = scan.as_mut().await.unwrap();
+    assert_eq!(during.runs, before.runs);
+
+    assert!(
+        ingest.delete_replaced().unwrap() >= held.len(),
+        "the scan let go of its files"
+    );
+    for s in &held {
+        assert!(!files_exist(&ingest, s).await, "{} outlived its grace period", s.id);
+    }
+    assert_eq!(ingest.health().files.replaced, 0);
+    let after = query.query(&spec()).await.unwrap();
+    assert_eq!(after.runs, before.runs, "the compacted files serve the same rows");
+}

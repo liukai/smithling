@@ -32,6 +32,7 @@ fn summary_hides_passwords_and_aws_values() {
         limits: Limits::default(),
         ui_dir: None,
         prices: None,
+        compact: Default::default(),
     };
     let env = [
         ("AWS_SECRET_ACCESS_KEY", "topsecret"),

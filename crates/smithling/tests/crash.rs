@@ -66,7 +66,7 @@ async fn storage_flags(round: u64) -> Vec<String> {
     ]
 }
 
-fn spawn(data: &std::path::Path, storage: &[String], crash_at: Option<&str>) -> (Child, String) {
+fn spawn(data: &std::path::Path, storage: &[String], extra: &[&str], crash_at: Option<&str>) -> (Child, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smithling"));
     // Small WAL files, so flushes have whole files to trim; retries are re-sent right after the restart, well
     // inside the dedup window (rebuilt from the catalog's saved keys).
@@ -81,6 +81,7 @@ fn spawn(data: &std::path::Path, storage: &[String], crash_at: Option<&str>) -> 
     ])
     .args(["--dedup-window", "20s"])
     .args(storage)
+    .args(extra)
     .env("SMITHLING_TEST_WAL_ROLL", "65536");
     match crash_at {
         Some(p) => cmd.env("SMITHLING_TEST_CRASH_AT", p),
@@ -207,123 +208,146 @@ async fn kill_9_loses_nothing_confirmed() {
             9 => Some("after_trim"),
             _ => None,
         };
-        let dir = tempfile::tempdir().unwrap();
-        let storage = storage_flags(round).await;
-        let (mut child, url) = spawn(dir.path(), &storage, crash_at);
-        let log = Arc::new(Mutex::new(Log::default()));
-        let clients: Vec<_> = (0..4u64)
-            .map(|c| tokio::spawn(client(url.clone(), c * 1_000_000 + 1, log.clone())))
-            .collect();
+        one_round(round, crash_at, &["--compact", "off"]).await;
+    }
+    eprintln!("10/10 rounds: 0 missing, 0 duplicated");
+}
 
-        let wait = random_ms(round);
-        if crash_at.is_some() {
-            // The server aborts itself at the crash point of a flush.
-            let deadline = std::time::Instant::now() + Duration::from_secs(120);
-            let status = loop {
-                if let Some(s) = child.try_wait().unwrap() {
-                    break s;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "round {round}: crash point never reached"
-                );
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            };
-            use std::os::unix::process::ExitStatusExt;
-            assert_eq!(
-                status.signal(),
-                Some(6),
-                "round {round}: died other than by the crash point: {status}"
-            );
-        } else {
-            tokio::time::sleep(Duration::from_millis(wait)).await;
-            child.kill().unwrap();
-            child.wait().unwrap();
+/// M4 SC-05: 10 rounds at each compaction crash point, with jobs every second and no grace period, so the
+/// server aborts while compacting the files its flushes keep writing (after the outputs are stored, after the
+/// swap, between a replaced file's deletion and its row's). The restart cleans up and nothing is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore]
+async fn compaction_crash_points_lose_nothing_confirmed() {
+    let extra = ["--compact", "on", "--compact-every", "1s", "--grace", "0s"];
+    let mut round = 100;
+    for point in ["compact_after_put", "compact_after_commit", "compact_mid_delete"] {
+        for _ in 0..10 {
+            one_round(round, Some(point), &extra).await;
+            round += 1;
         }
-        for c in clients {
-            c.await.unwrap();
-        }
+        eprintln!("{point}: 10/10 rounds, 0 missing, 0 duplicated");
+    }
+}
 
-        // The crashed flush's files (the newest segment id), its sidecar included, were never committed.
-        let crashed = (storage.is_empty() && crash_at == Some("after_fts_put")).then(|| {
-            let files = segment_files(&dir.path().join("data"));
-            let newest = files.keys().max().cloned().expect("a flush was under way");
-            let mut kinds = files[&newest].clone();
-            kinds.sort();
-            assert_eq!(
-                kinds,
-                ["core.parquet", "fts.dict.parquet", "fts.post", "payload.parquet"],
-                "round {round}: crashed after all four puts"
-            );
-            newest
-        });
-        let (mut child, url) = spawn(dir.path(), &storage, None);
-        if let Some(stem) = crashed {
-            let files = segment_files(&dir.path().join("data"));
-            assert!(
-                !files.contains_key(&stem),
-                "round {round}: orphan {stem} files left after restart"
-            );
-        }
-        let log = Arc::try_unwrap(log).ok().unwrap().into_inner().unwrap();
-        let http = reqwest::Client::new();
-        for body in &log.unanswered {
-            assert_eq!(
-                http.post(format!("{url}/runs/batch"))
-                    .json(body)
-                    .send()
-                    .await
-                    .unwrap()
-                    .status(),
-                202
-            );
-        }
+/// Start, upload from four clients, kill (at a random moment or at `crash_at`), restart, re-send what never
+/// got an answer, and check every confirmed item is there, merged, and stored once.
+async fn one_round(round: u64, crash_at: Option<&str>, extra: &[&str]) {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = storage_flags(round).await;
+    let (mut child, url) = spawn(dir.path(), &storage, extra, crash_at);
+    let log = Arc::new(Mutex::new(Log::default()));
+    let clients: Vec<_> = (0..4u64)
+        .map(|c| tokio::spawn(client(url.clone(), c * 1_000_000 + 1, log.clone())))
+        .collect();
 
-        let runs = all_runs(&url).await;
-        let health: Value = reqwest::get(format!("{url}/healthz"))
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let segments = health["segments"].as_u64().unwrap_or(0);
-        for n in &log.confirmed_start {
-            let r = runs
-                .get(&uid(*n))
-                .unwrap_or_else(|| panic!("round {round}: confirmed run {n} missing after kill -9 at {wait} ms"));
-            if log.confirmed_end.contains(n) {
-                assert_eq!(r["status"], "ok", "round {round}: confirmed end of {n} not merged");
+    let wait = random_ms(round);
+    if crash_at.is_some() {
+        // The server aborts itself at the crash point of a flush.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
             }
-        }
-        let mut ok = 0;
-        for r in runs.values() {
-            let expected = if r["status"] == "ok" { 2 } else { 1 };
-            ok += (expected - 1) as u64;
-            assert_eq!(
-                r["event_count"], expected,
-                "round {round}: {} stored more than once",
-                r["run_id"]
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: crash point never reached"
             );
-        }
-        // Reads merge versions, so also count them: a run has at most a start and an end version; more means
-        // recovery stored flushed events again.
-        let versions = health["runs"].as_u64().unwrap() + health["segment_rows"].as_u64().unwrap();
-        assert!(
-            versions <= runs.len() as u64 + ok,
-            "round {round}: {versions} stored versions for {} runs ({ok} ended)",
-            runs.len()
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            status.signal(),
+            Some(6),
+            "round {round}: died other than by the crash point: {status}"
         );
-        eprintln!(
-            "round {round}{}: {}; {} starts + {} ends confirmed, {} batches re-sent, {} segments; all present",
-            storage.get(1).map_or(String::new(), |s| format!(" on {s}")),
-            crash_at.map_or(format!("killed at {wait} ms"), |p| format!("crashed {p}")),
-            log.confirmed_start.len(),
-            log.confirmed_end.len(),
-            log.unanswered.len(),
-            segments
-        );
+    } else {
+        tokio::time::sleep(Duration::from_millis(wait)).await;
         child.kill().unwrap();
         child.wait().unwrap();
     }
-    eprintln!("10/10 rounds: 0 missing, 0 duplicated");
+    for c in clients {
+        c.await.unwrap();
+    }
+
+    // The crashed flush's files (the newest segment id), its sidecar included, were never committed.
+    let crashed = (storage.is_empty() && crash_at == Some("after_fts_put")).then(|| {
+        let files = segment_files(&dir.path().join("data"));
+        let newest = files.keys().max().cloned().expect("a flush was under way");
+        let mut kinds = files[&newest].clone();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            ["core.parquet", "fts.dict.parquet", "fts.post", "payload.parquet"],
+            "round {round}: crashed after all four puts"
+        );
+        newest
+    });
+    let (mut child, url) = spawn(dir.path(), &storage, extra, None);
+    if let Some(stem) = crashed {
+        let files = segment_files(&dir.path().join("data"));
+        assert!(
+            !files.contains_key(&stem),
+            "round {round}: orphan {stem} files left after restart"
+        );
+    }
+    let log = Arc::try_unwrap(log).ok().unwrap().into_inner().unwrap();
+    let http = reqwest::Client::new();
+    for body in &log.unanswered {
+        assert_eq!(
+            http.post(format!("{url}/runs/batch"))
+                .json(body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            202
+        );
+    }
+
+    let runs = all_runs(&url).await;
+    let health: Value = reqwest::get(format!("{url}/healthz"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let segments = health["segments"].as_u64().unwrap_or(0);
+    for n in &log.confirmed_start {
+        let r = runs
+            .get(&uid(*n))
+            .unwrap_or_else(|| panic!("round {round}: confirmed run {n} missing after kill -9 at {wait} ms"));
+        if log.confirmed_end.contains(n) {
+            assert_eq!(r["status"], "ok", "round {round}: confirmed end of {n} not merged");
+        }
+    }
+    let mut ok = 0;
+    for r in runs.values() {
+        let expected = if r["status"] == "ok" { 2 } else { 1 };
+        ok += (expected - 1) as u64;
+        assert_eq!(
+            r["event_count"], expected,
+            "round {round}: {} stored more than once",
+            r["run_id"]
+        );
+    }
+    // Reads merge versions, so also count them: a run has at most a start and an end version; more means
+    // recovery stored flushed events again.
+    let versions = health["runs"].as_u64().unwrap() + health["segment_rows"].as_u64().unwrap();
+    assert!(
+        versions <= runs.len() as u64 + ok,
+        "round {round}: {versions} stored versions for {} runs ({ok} ended)",
+        runs.len()
+    );
+    eprintln!(
+        "round {round}{}: {}; {} starts + {} ends confirmed, {} batches re-sent, {} segments; all present",
+        storage.get(1).map_or(String::new(), |s| format!(" on {s}")),
+        crash_at.map_or(format!("killed at {wait} ms"), |p| format!("crashed {p}")),
+        log.confirmed_start.len(),
+        log.confirmed_end.len(),
+        log.unanswered.len(),
+        segments
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
 }

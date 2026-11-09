@@ -75,6 +75,11 @@ pub fn end_update(f: &RunFields, error: Option<&str>) -> RunFields {
 }
 
 pub fn open(memtable_bytes: u64) -> (tempfile::TempDir, Ingest) {
+    open_with(memtable_bytes, |_| {})
+}
+
+/// Background compaction is off unless `tweak` turns it on, so answers don't change under a test.
+pub fn open_with(memtable_bytes: u64, tweak: impl FnOnce(&mut IngestConfig)) -> (tempfile::TempDir, Ingest) {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = IngestConfig::new(dir.path());
     cfg.limits = Limits {
@@ -82,6 +87,7 @@ pub fn open(memtable_bytes: u64) -> (tempfile::TempDir, Ingest) {
         dedup_window_us: 0,
         ..Limits::default()
     };
+    tweak(&mut cfg);
     let (ingest, _) = Ingest::open(cfg).unwrap();
     (dir, ingest)
 }

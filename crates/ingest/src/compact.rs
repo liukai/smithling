@@ -4,7 +4,8 @@
 //! than everything merged, so a run's versions keep covering disjoint seq ranges (M4 spec C8).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use smithling_model::attrs::promote;
@@ -17,11 +18,14 @@ use crate::Storage;
 
 const MINUTE_US: i64 = 60_000_000;
 
-/// Files compaction replaced, waiting for their grace period, with when they were replaced (µs).
-pub type Replaced = Arc<std::sync::Mutex<Vec<(Arc<SegmentMeta>, i64)>>>;
+/// Files compaction replaced, in swap order, waiting for their grace period: when they were replaced (µs) and
+/// the era their swap ended (`None` for files found at start-up, which no query in this process can hold).
+pub type Replaced = Arc<std::sync::Mutex<Vec<(Arc<SegmentMeta>, i64, Option<Weak<()>>)>>>;
 
 #[derive(Clone, Debug)]
 pub struct CompactConfig {
+    /// The background job; off unless asked for (`serve` turns it on), so a library user's answers don't change
+    /// under it. `Ingest::compact` works either way.
     pub enabled: bool,
     /// Width of a window of run start time (µs).
     pub window_us: i64,
@@ -35,18 +39,21 @@ pub struct CompactConfig {
     pub grace_us: i64,
     /// How often the writer looks for work.
     pub interval: Duration,
+    /// Tests only: the first this many jobs panic once their outputs are built.
+    pub test_panics: u32,
 }
 
 impl Default for CompactConfig {
     fn default() -> Self {
         CompactConfig {
-            enabled: true,
+            enabled: false,
             window_us: 60 * MINUTE_US,
             settle_us: 15 * MINUTE_US,
             target_bytes: 256 << 20,
             max_rows: 1_000_000,
             grace_us: 24 * 60 * MINUTE_US,
             interval: Duration::from_secs(60),
+            test_panics: 0,
         }
     }
 }
@@ -198,6 +205,10 @@ pub struct CompactHealth {
     pub last_error: Option<String>,
     pub last: Option<CompactReport>,
     pub jobs: u64,
+    /// Jobs that panicked since start (each is retried on the next tick).
+    pub panics: u64,
+    /// The background thread has exited (it shouldn't while serving): no more jobs or deletes until restart.
+    pub stopped: bool,
 }
 
 /// Runs jobs one at a time against the writer's state (M4 plan: steps 6–8).
@@ -212,16 +223,24 @@ pub(crate) struct Compactor {
     /// One job at a time.
     pub job: std::sync::Mutex<()>,
     /// Runs merged by a job, to leave the multi-version set once no query holds a file set from before its swap.
-    pub shrink: std::sync::Mutex<Vec<(crate::memtable::Era, HashSet<RunId>)>>,
+    pub shrink: std::sync::Mutex<Vec<(Weak<()>, HashSet<RunId>)>>,
+    /// Set on shutdown: a job stops before storing anything.
+    pub stop: Arc<AtomicBool>,
+    pub test_panics: AtomicU32,
+}
+
+/// A panicking job must not leave the next one stuck on a poisoned lock.
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Compactor {
     /// One job: pick, build, store, swap, publish. `Ok(None)` when there was nothing to compact.
     pub fn run(&self, force: bool) -> Result<Option<CompactReport>, StorageError> {
-        let _job = self.job.lock().unwrap();
-        self.health.lock().unwrap().running = true;
+        let _job = lock(&self.job);
+        lock(&self.health).running = true;
         let r = self.job(force);
-        let mut h = self.health.lock().unwrap();
+        let mut h = lock(&self.health);
         h.running = false;
         h.last_run_at = Some(Ts::now());
         match &r {
@@ -257,7 +276,19 @@ impl Compactor {
             return Ok(None);
         }
         let l1: Vec<Arc<SegmentMeta>> = version.segments.iter().filter(|s| s.tier > 0).cloned().collect();
+        tracing::info!(inputs = inputs.len(), force, "compaction job picked its inputs");
         let built = build(&self.storage, inputs, &l1, &self.cfg, now)?;
+        if self
+            .test_panics
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            panic!("test panic in a compaction job");
+        }
+        if self.stop.load(Ordering::Relaxed) {
+            tracing::info!("compaction job dropped at shutdown; nothing was stored");
+            return Ok(None);
+        }
         let input_ids: Vec<String> = built.inputs.iter().map(|s| s.id.clone()).collect();
         let metas: Vec<SegmentMeta> = built.outputs.iter().map(|w| w.meta.clone()).collect();
         let stats: Vec<_> = built.outputs.iter().flat_map(|w| w.stats.iter().cloned()).collect();
@@ -282,6 +313,7 @@ impl Compactor {
             {
                 Ok(()) => break,
                 Err(e) if e.to_string().contains(smithling_storage::metastore::SWAP_CONFLICT) => {
+                    tracing::warn!(error = %e, "compaction swap refused; its outputs are removed");
                     self.unstore(&built);
                     return Err(e);
                 }
@@ -300,13 +332,10 @@ impl Compactor {
             let mut mem = self.mem.write().unwrap();
             let removed: HashSet<String> = input_ids.iter().cloned().collect();
             let next = Arc::new(mem.version.with_compaction(&removed, metas, stats));
-            std::mem::replace(&mut mem.version, next).era.clone()
+            Arc::downgrade(&std::mem::replace(&mut mem.version, next).era)
         };
-        self.replaced
-            .lock()
-            .unwrap()
-            .extend(built.inputs.iter().map(|s| (s.clone(), at)));
-        self.shrink.lock().unwrap().push((old, runs));
+        lock(&self.replaced).extend(built.inputs.iter().map(|s| (s.clone(), at, Some(old.clone()))));
+        lock(&self.shrink).push((old, runs));
         let rep = CompactReport {
             inputs: built.inputs.len(),
             outputs: built.outputs.len(),
@@ -365,17 +394,85 @@ impl Compactor {
         });
     }
 
+    /// The writer's compaction thread: a job every `interval` while no flush is running (a flush gets the disk
+    /// first), until shutdown. A failed or panicking job is recorded in `/healthz` and the next tick tries again.
+    pub fn background(&self) {
+        let tick = self.cfg.interval.min(Duration::from_millis(200));
+        let mut last = std::time::Instant::now();
+        while !self.stop.load(Ordering::Relaxed) {
+            std::thread::sleep(tick);
+            if last.elapsed() < self.cfg.interval || self.mem.read().unwrap().frozen.is_some() {
+                continue;
+            }
+            last = std::time::Instant::now();
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.run(false)?;
+                self.delete_due()
+            })) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "compaction or a delete failed; retrying next tick"),
+                Err(p) => {
+                    let msg = p
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| p.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown".into());
+                    tracing::error!(panic = %msg, "compaction job panicked; retrying next tick");
+                    let mut h = lock(&self.health);
+                    h.running = false;
+                    h.panics += 1;
+                    h.last_run_at = Some(Ts::now());
+                    h.last_error = Some(format!("job panicked: {msg}"));
+                }
+            }
+        }
+    }
+
+    /// Deletes replaced files whose grace period has passed and that no query in this process can still read:
+    /// a file replaced by swap N is in versions of every era up to N's, so all of those must be gone. Files first,
+    /// then the row, so a crash in between leaves a row the next pass (or start-up) finishes. Returns how many.
+    pub fn delete_due(&self) -> Result<usize, StorageError> {
+        let _job = lock(&self.job);
+        let now = Ts::now().0;
+        let due: Vec<Arc<SegmentMeta>> = lock(&self.replaced)
+            .iter()
+            .take_while(|(_, at, era)| {
+                at.saturating_add(self.cfg.grace_us) <= now && era.as_ref().is_none_or(|e| e.strong_count() == 0)
+            })
+            .map(|(s, ..)| s.clone())
+            .collect();
+        let mut deleted = 0;
+        for s in due {
+            let (store, meta, s2) = (self.storage.store.clone(), self.storage.meta.clone(), s.clone());
+            self.storage.block(async move {
+                let mut files = vec![s2.core_path.clone(), s2.payload_path.clone()];
+                if let Some(stem) = &s2.fts_path {
+                    files.extend([
+                        smithling_storage::fts::dict_path(stem),
+                        smithling_storage::fts::post_path(stem),
+                    ]);
+                }
+                for f in &files {
+                    store.delete(f).await?;
+                }
+                crate::crash_point("compact_mid_delete");
+                meta.delete_replaced(&s2.id).await
+            })?;
+            lock(&self.replaced).retain(|(r, ..)| r.id != s.id);
+            tracing::info!(segment = %s.id, "deleted a replaced file");
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
     /// Lets merged runs leave the multi-version set, job by job in swap order, once no file set from before the
     /// job's swap is held (every version of that era is gone), keeping runs that still have a version in a
     /// memtable or a marked row in an active file.
     pub fn apply_shrink(&self) {
         let ready: Vec<HashSet<RunId>> = {
-            let mut pending = self.shrink.lock().unwrap();
+            let mut pending = lock(&self.shrink);
             // In order: a later era can only be free once the earlier ones are.
-            let n = pending
-                .iter()
-                .take_while(|(era, _)| Arc::strong_count(era) == 1)
-                .count();
+            let n = pending.iter().take_while(|(era, _)| era.strong_count() == 0).count();
             pending.drain(..n).map(|(_, runs)| runs).collect()
         };
         if ready.is_empty() {

@@ -60,6 +60,24 @@ enum Cmd {
         /// Model prices (USD per 1M tokens) replacing the built-in entries by name. Default: <data>/prices.toml if present.
         #[arg(long)]
         prices: Option<PathBuf>,
+        /// Merge small data files into larger ones in the background (`/api/compact` works either way).
+        #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+        compact: String,
+        /// Compacted files hold this much run start time each.
+        #[arg(long, default_value = "1h", value_parser = parse_duration_us)]
+        compact_window: i64,
+        /// A window is compacted once it ended this long ago (late updates mostly arrive before then).
+        #[arg(long, default_value = "15m", value_parser = parse_duration_us)]
+        settle: i64,
+        /// Compacted files are split at about this size.
+        #[arg(long, default_value = "256MB", value_parser = parse_size)]
+        compact_target: u64,
+        /// Replaced files are kept this long before deletion (readers elsewhere may still use them).
+        #[arg(long, default_value = "24h", value_parser = parse_duration_us)]
+        grace: i64,
+        /// How often the background job looks for work (tests use a short one).
+        #[arg(long, default_value = "60s", value_parser = parse_duration_us, hide = true)]
+        compact_every: i64,
     },
     #[cfg(feature = "tools")]
     /// Generate realistic research-agent traces and send them to a running smithling.
@@ -157,6 +175,12 @@ async fn run() -> ExitCode {
             max_runs,
             ui_dir,
             prices,
+            compact,
+            compact_window,
+            settle,
+            compact_target,
+            grace,
+            compact_every,
         } => {
             if max_memory.is_some() || max_runs.is_some() {
                 eprintln!("smithling: --max-memory and --max-runs no longer apply: data moves to disk (M2)");
@@ -176,6 +200,15 @@ async fn run() -> ExitCode {
                 },
                 ui_dir,
                 prices,
+                compact: smithling_ingest::compact::CompactConfig {
+                    enabled: compact == "on",
+                    window_us: compact_window,
+                    settle_us: settle,
+                    target_bytes: compact_target,
+                    grace_us: grace,
+                    interval: std::time::Duration::from_micros(compact_every.max(1) as u64),
+                    ..Default::default()
+                },
             };
             let shutdown = async {
                 let _ = tokio::signal::ctrl_c().await;

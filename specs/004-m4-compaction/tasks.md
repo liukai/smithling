@@ -31,15 +31,15 @@ From [plan.md](plan.md). Tests first in each unit. `[X]` when done; one local co
 
 Only what the done-check and M5's M4-REQ-1–4 need. Deferred items are listed at the end.
 
-- [ ] T017 Timer thread in the writer: one job at a time, skipped while write slowdown is on; `--compact on|off` plus the stated defaults as flags (`crates/smithling/src/main.rs`, `IngestConfig`). Clean shutdown (stop flag between jobs, bounded wait). A panic in a job is caught and recorded as `last_error`; the thread keeps going; `/healthz` shows `stopped` if it ever exits. `<storage>/LOCK` when the store is a local path (ADR A7). Logs each step; start-up logs the settings
-- [ ] T018 Delete loop: `replaced_at + grace ≤ now` and the swap's era token is free (keep `(era, files, replaced_at)` per swap); files first, then the row (M4-FR-07).
-- [ ] T019 Crash points `compact_after_put`, `compact_after_commit`, `compact_mid_delete` in the harness; 10/10 rounds each (SC-05, M4-FR-10)
-- [ ] T020 Test: a query held across 100 swaps returns the same answer; no missing-file error (SC-06)
+- [X] T017 Timer thread in the writer: one job at a time, skipped while write slowdown is on; `--compact on|off` plus the stated defaults as flags (`crates/smithling/src/main.rs`, `IngestConfig`). Clean shutdown (stop flag between jobs, bounded wait). A panic in a job is caught and recorded as `last_error`; the thread keeps going; `/healthz` shows `stopped` if it ever exits. `<storage>/LOCK` when the store is a local path (ADR A7). Logs each step; start-up logs the settings — *skips a tick while a flush is running (`frozen`), which covers write slowdown; `/healthz` adds `panics` (jobs that panicked since start); the hidden `--compact-every` sets the interval for the crash harness*
+- [X] T018 Delete loop: `replaced_at + grace ≤ now` and the swap's era token is free (keep `(era, files, replaced_at)` per swap); files first, then the row (M4-FR-07) — *eras are `Weak` tokens, so the bookkeeping never counts as a hold; replaced files are deleted as a prefix in swap order; `Ingest::delete_replaced` runs one pass*.
+- [X] T019 Crash points `compact_after_put`, `compact_after_commit`, `compact_mid_delete` in the harness; 10/10 rounds each (SC-05, M4-FR-10) — *`crates/smithling/tests/crash.rs`: 30 rounds, jobs every second with grace 0; local run 30/30, 0 missing, 0 duplicated (cloud run in T023)*
+- [X] T020 Test: a query held across 100 swaps returns the same answer; no missing-file error (SC-06) — *`query/tests/pinned.rs`: a real scan pinned before the swaps, deletes tried after each with grace 0*
 
 ## U5 Surface and demo
 
 - [ ] T021 `POST /api/compact` (`force`); `/healthz` gains `files` and `compaction`; UI storage line reads them (`ui/src`) with a component test
-- [ ] T022 `smithling demo --compact`: forces compaction between steps, same checks pass, prints files before/after (SC-01, SC-02)
+- [ ] T022 `smithling demo --compact`: forces compaction between steps (through `POST /api/compact`, so it works with `--url`), same checks pass, prints files before/after (SC-01, SC-02); output as in [the M4 demo](plan.md#the-m4-demo-what-youll-see)
 
 ## U6 CI and close
 

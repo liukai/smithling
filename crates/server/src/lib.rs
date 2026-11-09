@@ -80,6 +80,7 @@ pub struct ServeConfig {
     pub ui_dir: Option<PathBuf>,
     /// Price list replacing embedded entries by name (default `<data>/prices.toml` if present).
     pub prices: Option<PathBuf>,
+    pub compact: smithling_ingest::compact::CompactConfig,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -133,6 +134,7 @@ pub fn open(cfg: &ServeConfig) -> anyhow::Result<(AppState, OpenStats)> {
     icfg.storage = cfg.storage.clone();
     icfg.metastore = cfg.metastore.clone();
     icfg.limits = cfg.limits;
+    icfg.compact = cfg.compact.clone();
     // Tests only: roll WAL files small so a flush has whole files to trim.
     if let Some(b) = std::env::var("SMITHLING_TEST_WAL_ROLL")
         .ok()

@@ -20,6 +20,12 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- **Compaction runs in the background (M4, unit 4)**: `serve` starts a compactor thread (on by default in `serve`, off
+  for library users) (a job every 60 s, skipped while a flush runs); flags `--compact on|off`, `--compact-window`,
+  `--settle`, `--compact-target`, `--grace`. Replaced files are deleted once their grace period has passed and no
+  query in the process holds them. A panicking job is counted in `/healthz` (`compaction.panics`) and retried;
+  `compaction.stopped` shows if the thread ever exits. A local `--storage` folder outside the data folder is locked
+  too, so two data folders can't share one store.
 - README: "What's next" and "The seven questions" become one section, "What it does, milestone by milestone": the
   seven questions mapped to milestones, a status chart and a fuller milestone table, the research-agent setup, then
   one chapter per milestone (a quote, a scene, and the questions it answers with their screenshots; new screenshots

@@ -164,7 +164,7 @@ pub enum OpenError {
     Storage(#[from] StorageError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
-    #[error("data folder {0} is in use by another smithling process")]
+    #[error("{0} is in use by another smithling process")]
     Locked(PathBuf),
     #[error("could not lock the data folder: {0}")]
     Lock(std::io::Error),
@@ -480,8 +480,10 @@ struct Inner {
     /// Files compaction replaced, waiting for their grace period before deletion, with when (µs).
     replaced: compact::Replaced,
     compactor: Arc<compact::Compactor>,
+    compact_thread: Mutex<Option<JoinHandle<()>>>,
     /// Held for the life of the process: a second process on the same folder would delete our files as orphans.
-    _lock: std::fs::File,
+    /// The second lock is on a local store outside the data folder, which another data folder could share.
+    _lock: (std::fs::File, Option<std::fs::File>),
 }
 
 impl Drop for Inner {
@@ -500,7 +502,31 @@ impl Drop for Inner {
         if let Some(t) = self.flusher.lock().unwrap().take() {
             let _ = t.join();
         }
+        // A running job stops before storing anything; one that already stored finishes its swap.
+        if let Some(t) = self.compact_thread.lock().unwrap().take() {
+            let _ = t.join();
+        }
     }
+}
+
+/// Locks a local store's folder too, unless it is the data folder itself (already locked).
+fn lock_store_dir(cfg: &IngestConfig) -> Result<Option<std::fs::File>, OpenError> {
+    let spec = cfg.storage_spec();
+    if spec.starts_with("s3://") {
+        return Ok(None);
+    }
+    let dir = Path::new(spec.strip_prefix("file://").unwrap_or(&spec));
+    std::fs::create_dir_all(dir).map_err(OpenError::Lock)?;
+    let same = |a: &Path, b: &Path| {
+        a.canonicalize()
+            .ok()
+            .zip(b.canonicalize().ok())
+            .is_some_and(|(a, b)| a == b)
+    };
+    if same(dir, &cfg.data_dir) {
+        return Ok(None);
+    }
+    lock_data_dir(dir).map(Some)
 }
 
 fn lock_data_dir(dir: &Path) -> Result<std::fs::File, OpenError> {
@@ -527,7 +553,7 @@ impl Ingest {
     /// Opens storage and the catalog, removes orphan files, rebuilds the multi-version set, replays the WAL
     /// past `flushed_seq` into the active memtable, then starts the writer and the flusher (design §4.6).
     pub fn open(cfg: IngestConfig) -> Result<(Ingest, OpenStats), OpenError> {
-        let lock = lock_data_dir(&cfg.data_dir)?;
+        let lock = (lock_data_dir(&cfg.data_dir)?, lock_store_dir(&cfg)?);
         let storage = Arc::new(Storage::open(&cfg)?);
         let recover::Recovered {
             wal,
@@ -618,9 +644,9 @@ impl Ingest {
                 .map_err(OpenError::Thread)?
         };
         let damaged = Arc::new(RwLock::new(damaged.into_iter().map(|d| (d.id.clone(), d)).collect()));
-        let replaced = Arc::new(Mutex::new(
-            replaced.into_iter().map(|(s, at)| (Arc::new(s), at)).collect(),
-        ));
+        let mut replaced: Vec<_> = replaced.into_iter().map(|(s, at)| (Arc::new(s), at, None)).collect();
+        replaced.sort_by_key(|(_, at, _)| *at);
+        let replaced = Arc::new(Mutex::new(replaced));
         let compactor = Arc::new(compact::Compactor {
             mem: mem.clone(),
             mvset: mvset.clone(),
@@ -634,7 +660,30 @@ impl Ingest {
             cfg: cfg.compact.clone(),
             job: Mutex::new(()),
             shrink: Mutex::new(Vec::new()),
+            stop: stop.clone(),
+            test_panics: std::sync::atomic::AtomicU32::new(cfg.compact.test_panics),
         });
+        let c = &cfg.compact;
+        let compact_thread = if c.enabled {
+            tracing::info!(
+                window_s = c.window_us / 1_000_000,
+                settle_s = c.settle_us / 1_000_000,
+                target_bytes = c.target_bytes,
+                grace_s = c.grace_us / 1_000_000,
+                every_s = c.interval.as_secs(),
+                "compaction on"
+            );
+            let compactor = compactor.clone();
+            Some(
+                std::thread::Builder::new()
+                    .name("smithling-compactor".into())
+                    .spawn(move || compactor.background())
+                    .map_err(OpenError::Thread)?,
+            )
+        } else {
+            tracing::info!("compaction off");
+            None
+        };
         let inner = Inner {
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
@@ -657,6 +706,7 @@ impl Ingest {
             feedback,
             replaced,
             compactor,
+            compact_thread: Mutex::new(compact_thread),
             _lock: lock,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
@@ -665,6 +715,11 @@ impl Ingest {
     /// Runs one compaction job now (`force`: every window counts as closed). Blocking; one job at a time.
     pub fn compact(&self, force: bool) -> Result<Option<compact::CompactReport>, StorageError> {
         self.inner.compactor.run(force)
+    }
+
+    /// Deletes the replaced files that are due now (grace period passed, no query here holds them). Blocking.
+    pub fn delete_replaced(&self) -> Result<usize, StorageError> {
+        self.inner.compactor.delete_due()
     }
 
     /// Validates each item, then waits until the valid ones are durable and applied.
@@ -847,7 +902,16 @@ impl Ingest {
                 l1: mem.version.segments.iter().filter(|s| s.tier > 0).count(),
                 replaced: self.inner.replaced.lock().unwrap().len(),
             },
-            compaction: self.inner.compactor.health.lock().unwrap().clone(),
+            compaction: compact::CompactHealth {
+                stopped: (self.inner.compact_thread.lock().unwrap().as_ref()).is_some_and(|t| t.is_finished()),
+                ..self
+                    .inner
+                    .compactor
+                    .health
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            },
         }
     }
 }

@@ -333,6 +333,28 @@ async fn a_second_process_on_the_same_folder_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_data_folders_on_one_local_store_are_refused() {
+    let (a, b, store) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let with_store = |dir: &std::path::Path, s: &std::path::Path| {
+        let mut c = cfg(dir, 0);
+        c.storage = Some(s.display().to_string());
+        c
+    };
+    let (first, _) = Ingest::open(with_store(a.path(), store.path())).unwrap();
+    let err = Ingest::open(with_store(b.path(), store.path()))
+        .err()
+        .expect("a second writer on the store must fail");
+    assert!(matches!(err, smithling_ingest::OpenError::Locked(_)), "{err}");
+    drop(first);
+    // The data folder itself as the store: one lock, not two.
+    Ingest::open(with_store(a.path(), a.path())).expect("store = data folder opens");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_checks_every_files_footer_and_reports_damage() {
     let dir = tempfile::tempdir().unwrap();
     let (garbled, lost, total) = {

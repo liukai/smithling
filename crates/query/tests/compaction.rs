@@ -220,3 +220,78 @@ fn reopen(dir: &std::path::Path) -> Ingest {
     };
     Ingest::open(cfg).unwrap().0
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_background_job_compacts_on_its_own_and_outlives_a_panic() {
+    let (_dx, x) = open_with(MEMTABLE, |c| {
+        c.compact.enabled = true;
+        c.compact.interval = std::time::Duration::from_millis(300);
+        c.compact.test_panics = 1;
+    });
+    let (_dy, y) = open(MEMTABLE);
+    for i in [&x, &y] {
+        send(i, batches(7, 120)).await;
+        settle(i, MEMTABLE).await;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let h = x.health();
+        assert!(!h.compaction.stopped, "the thread outlives the panic");
+        if h.compaction.jobs > 0 && x.compact(false).unwrap().is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background compaction never caught up: {h:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        x.health().compaction.panics,
+        1,
+        "the panicking job is counted in /healthz"
+    );
+    assert!(x.health().files.l1 > 0);
+    same(&answers(&x).await, &answers(&y).await, "compacted in the background");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_does_not_wait_for_the_next_tick() {
+    let (_d, x) = open_with(MEMTABLE, |c| c.compact.enabled = true);
+    let t = std::time::Instant::now();
+    tokio::task::spawn_blocking(move || drop(x)).await.unwrap();
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "took {:?}",
+        t.elapsed()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaced_files_stay_for_the_grace_period_then_go_even_after_a_restart() {
+    let (dx, x) = loaded(7, 40, MEMTABLE).await;
+    let before = answers(&x).await;
+    compact(&x).await;
+    let replaced = x.health().files.replaced;
+    assert!(replaced > 0);
+    assert_eq!(x.delete_replaced().unwrap(), 0, "24 h grace period by default");
+    drop(x);
+
+    // The replaced rows outlive a restart; with no grace period they go on the next pass, files then rows.
+    let mut cfg = smithling_ingest::IngestConfig::new(dx.path());
+    cfg.limits = smithling_ingest::Limits {
+        memtable_bytes: MEMTABLE,
+        dedup_window_us: 0,
+        ..smithling_ingest::Limits::default()
+    };
+    cfg.compact.grace_us = 0;
+    let x = Ingest::open(cfg).unwrap().0;
+    assert_eq!(x.health().files.replaced, replaced);
+    assert_eq!(x.delete_replaced().unwrap(), replaced);
+    assert_eq!(x.health().files.replaced, 0);
+    same(&answers(&x).await, &before, "after deleting the replaced files");
+    drop(x);
+    let x = reopen(dx.path());
+    assert_eq!(x.health().files.replaced, 0, "the catalog rows went too");
+    same(&answers(&x).await, &before, "after a restart");
+}
