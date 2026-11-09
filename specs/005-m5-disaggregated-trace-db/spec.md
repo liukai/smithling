@@ -1,24 +1,25 @@
-# Feature Specification: M5 — Disaggregated trace database
+# Feature Specification: M5 — Disaggregated trace database, step 1: read workers over shared storage
 
 **Feature Branch**: `005-m5-disaggregated-trace-db`
 
-**Created**: 2026-11-08
+**Created**: 2026-11-08 · **Revised**: 2026-11-08 (problems first; then cut to the P0 problems, the rest to the backlog)
 
-**Status**: Draft (spec only; plan next, implementation not started)
+**Status**: Draft. Spec only; implementation not started.
 
 **Input**: User description: "how to move this into a disaggregated database … a new milestone after the compaction
-and before the debugging agent … review the following plan, spec this out … spec and plan, not implementation." The
-input was the 2026-11-08 system-design note (proposed architecture, write path, read path, snapshot correctness,
-compaction publication, sharding, reliability, open questions). The note's claims about today's code are checked in
-[review.md](review.md); this spec builds on what the code actually does.
+and before the debugging agent … spec and plan, not implementation." Then, after the design discussion: "be a little
+bit greedy, push things to the backlog if they're not essential, and only pick up the part that's critical."
+The 2026-11-08 design note's claims about today's code are checked in [review.md](review.md); the options other
+systems use are in [research.md](research.md). This spec says **what breaks and what must be true**; the plan will
+say how.
 
 **Master**: [specs/000-smithling-master-plan](../000-smithling-master-plan/spec.md) (requirements of record) ·
-[roadmap](../000-smithling-master-plan/roadmap.md) (progress; this milestone is inserted as M5, the agents milestone
-becomes M6, [D-036](../000-smithling-master-plan/decisions.md#d-036)). This folder holds the M5 details of record.
+[roadmap](../000-smithling-master-plan/roadmap.md) (progress; this milestone was inserted as M5 and the agents milestone
+became M6, [D-036](../000-smithling-master-plan/decisions.md#d-036)). This folder holds the M5 details of record.
 
-**Builds on**: M4 — Follow-through (compaction with an atomic catalog swap, threads, export). Spec folder `004-m4-…`
-is reserved for it; M5 starts after M4's compaction exit check passes. Everything M1–M4 promise stays true in the
-default one-process mode.
+**Builds on**: M4 — Follow-through (compaction, threads, export). Spec folder `004-m4-…` is reserved for it. M5
+starts after M4's compaction exit check passes, and puts [requirements on M4](#requirements-m5-places-on-m4).
+Everything M1–M4 promise stays true in the default one-process mode.
 
 **Delta key**:
 
@@ -28,349 +29,398 @@ default one-process mode.
 | 🟠 **Improved** | orange | exists from M1–M4; M5 extends or changes it |
 | ⚪ **Existing** | grey | built in M1–M4; M5 uses it as is |
 
-**Delivers from master**: the "cloud split" that master Scope lists as out of scope for v0 (it moves into scope with
-this milestone, D-036); constitution Architecture Constraints ("each role MUST be splittable into its own service
-without changing its contract"); design-notes §2 "Cloud path" column; backlog R-6.
+**Delivers from master**: the first step of the "cloud split" (D-036): read serving as its own service over shared
+storage; constitution Architecture Constraints ("each role MUST be splittable into its own service without changing
+its contract").
 
 ---
 
 ## Goal and why
 
-Run smithling as a **disaggregated trace database**: ingestion, read serving and compaction as separate services that
-scale on their own, over shared durable storage whose capacity doesn't depend on any one machine.
+Let **reads scale on their own**: separate read workers serve queries from the shared files and catalog, while the
+writer keeps ingesting as today.
 
-- **Long-running agents produce multi-day traces.** One process holding the live tail, the queries and the background
-  merges caps all three at one machine. Read load (many people and agents investigating) grows separately from write
-  load (more agents) and from data volume (longer retention).
-- **The storage layout is already the cloud layout** (constitution V): write-once data files on local disk or object
-  storage, and a catalog on SQLite or Postgres. What's missing is everything *between* processes: a change stream
-  readers can replay, a catalog protocol several processes can share safely, and ownership of a shard by one writer.
-- **It is the step before agents debugging agents (M6).** Agent investigation multiplies read traffic; read workers
-  must scale without touching ingestion first.
-- **It finishes the SmithDB service split** (constitution II): SmithDB runs ingestion, query and compaction as separate
-  services over object storage and a small metastore.
+- **M6 is read-heavy.** Agents investigating traces multiply read traffic. Today every query runs on the one process
+  that also ingests, so a read burst slows ingestion.
+- **The storage side is already shared.** Data files are write-once on local disk or object storage, and the catalog
+  is SQLite or Postgres (constitution V). Readers that only read files and the catalog need no new storage or service.
+- **Small first.** A full disaggregated trace database (durable log off the writer's machine, a compaction pool,
+  writer handoff, sharding) is many changes at once. M5 builds only what the read side needs; the rest is in the
+  [backlog](#backlog-with-triggers), each with the condition that brings it back.
 
-Until M5 ships, the precise description is "designed for compute–storage disaggregation". After M5's exit check,
-"disaggregated trace database" is accurate.
+### What M5 can and can't be called
+
+| Part | After M5 | Disaggregated? |
+|---|---|---|
+| Storage | Shared files on object storage, catalog in Postgres | ✅ capacity independent of any machine |
+| Read compute | Readers hold no data; add or remove them freely | ✅ scales on its own |
+| Write compute | One writer with memtables, a local log and compaction on the same machine | ❌ tied to one machine and its disk |
+
+So M5 is **step 1 of a disaggregated trace database: read workers over shared storage**. More steps follow: the
+[backlog](#backlog-with-triggers) items are known and unblocked by M5, but not yet fully specified. The full name
+"disaggregated trace database" is earned once B1 (durable log off the writer's machine) and B3 (compaction pool) ship.
+
+## Decisions so far
+
+| Date | Decision | Why |
+|---|---|---|
+| 2026-11-08 | **Problems drive the design.** Every M5 requirement traces to a problem in [What breaks as we scale](#what-breaks-as-we-scale-the-north-star) | So each design choice has a reason the reader can check |
+| 2026-11-08 | **M5 builds only the P0 problems** (P1, P2, P7, P9, plus light versions of P10 and P12); the rest goes to the backlog with triggers | Owner's call: avoid building the whole stack in one shot; take only what's critical for the goal |
+| 2026-11-08 | **Readers read published files only**, checking the catalog on every query; they never talk to the writer. Freshness on readers ≤ the writer's flush age (2 min default, configurable) | No reader-to-writer link, and readers can't miss or double-count a run around a flush, because they only ever read whole catalog versions ([research §5](research.md#5-readers-that-read-published-files-only), option A′) |
+| 2026-11-08 | **The writer stays a full node**: it ingests, flushes, runs M4 compaction and serves every read, including the live view (~1 s, as today) | Watching a run live keeps M1's freshness; heavy reads move to readers |
+| 2026-11-08 | **Single tenant, no sharding.** If sharding comes later, the preferred key is the trace id | Keeps M5 to the split itself; every event already carries its trace id ([research §4](research.md#4-upper-bound-of-one-machine-and-shard-keys)) |
+| 2026-11-08 | *Changed the same day*: "a confirmed write survives loss of the writer's machine" (log batch in shared storage before confirming) moves to **backlog B1**. M5 keeps today's guarantee: a confirmed write survives a crash of any process, on the writer's disk | Durability, not read scaling; it's the first follow-up after M5 |
+
+## What breaks as we scale (the north star)
+
+**Today**: one process on a laptop, about 2M runs, a target of ≥ 20k events/s of writes, one person querying.
+
+**Where we're going**: **10×** today, and **beyond one machine**:
+
+- about 20M runs held;
+- about 200k events/s of writes at peak, spread across many projects of one tenant;
+- 10× the read traffic, mostly agents investigating traces (M6);
+- 30 days of data kept;
+- traces that run for several days.
+
+### Upper bound of one machine
+
+Estimated for a 16-core, 64 GB, NVMe machine from M2/M3 measurements ([research §4](research.md#4-upper-bound-of-one-machine-and-shard-keys)).
+"Measured" values come from the M2 quickstart and M3 research; the rest are estimates.
+
+| Resource | Ceiling | What hits it |
+|---|---|---|
+| Number of files | ~680 files (~1.4M runs) before single-run reads miss 50 ms | One file per project per flush; no compaction until M4 |
+| Writes | ~30–40k events/s (measured 29.6k–38.6k) | One writer thread does dedup, log, fsync and apply in order |
+| Memory | ~100–200M runs held | ~0.3 GB per million runs: merged copies of late-updated runs, per-file state |
+| Grouped-query traffic | ~30–40 grouped queries/s | ~0.4–0.6 s of CPU per grouped query at 2M runs |
+| Disk | not the limit by count | 0.5–0.9 KB per run on disk |
+
+At 10× on one machine, in order: writes get "busy, retry" all the time; the dedup and project-map windows shrink to
+seconds; ~10,000 files push single-run reads to ~0.5 s; merged late-update copies need ~4.6 GB; grouped queries run
+out of CPU. M4 compaction handles the files and merged copies; **M5 handles read traffic**; the backlog holds the rest.
+
+### The problems
+
+| # | Today | Breaks when | What a user sees | Where |
+|---|---|---|---|---|
+| P1 | Writes, queries and compaction share one machine | A read burst competes with ingest | Slower confirmations and slow queries at the same time | **M5 (P0)**, reads only; compaction stays on the writer (B3) |
+| P2 | Queries read the writer's memory directly | A second machine serves reads | It can't see anything | **M5 (P0)**: readers read published files only |
+| P3 | The live change feed drops changes when a subscriber falls behind | Readers follow the feed | Missing runs, no way to catch up | Not needed in M5 (readers don't follow the feed); B2 |
+| P4 | The write log is deleted right after each flush | Anything other than the writer needs the log | Nothing to replay from | Not needed in M5; B1, B2 |
+| P5 | A write is confirmed once it's on the writer's local disk | That disk or machine is lost | Up to one flush of confirmed steps lost | **Backlog B1** (first follow-up) |
+| P6 | One "covered through N" number, used only in-process | Readers combine files with unflushed data | Runs missing or counted twice around a flush | Not needed in M5 (whole catalog versions only); B2 |
+| P7 | A query holds its files with in-memory references | Compaction (on the writer) replaces files a reader is using | A reader's query fails mid-way | **M5 (P0)**: grace period + query time limit |
+| P8 | Startup deletes any file not in the catalog | Several services upload to the same storage | One service deletes another's upload | Not needed in M5 (only the writer uploads); B3 |
+| P9 | Feedback, field stats and merged copies are loaded once at startup | Readers run for days | Stale or wrong answers until a restart | **M5 (P0)** |
+| P10 | Ownership is implicit: there's only one writer | A second writer is started on the same store | Two writers, the catalog and files get corrupted | **M5 (light)**: a second writer refuses to start. Handoff is B4 |
+| P11 | One writer takes all writes (~30–40k events/s) | Total writes pass one writer's limit | "Busy" for every project | **Backlog B5** |
+| P12 | Health exists only inside one process | A reader falls behind or fails | Nobody notices | **M5 (light)**: reader freshness in `/healthz` and a UI panel. Full cluster page is B6 |
+| P13 | A long trace is spread across many flushed files | Traces run for days with constant updates | Opening a trace gets slower each day | **M4** compaction |
+| P14 | The dedup window is a count (1M keys ≈ 1 min at 20k events/s) | Write rate grows | An SDK retry is stored twice | **Backlog B7** (write-rate problem on one writer) |
+| P15 | The run → project map is a count (~917k runs ≈ 50 s at 20k events/s) | Write rate grows, or updates come late | Late updates lose their project; slow lists (D-024) | **Backlog B7** |
 
 ## Delta at a glance
 
 ```mermaid
 flowchart TB
-    A["Ingest service<br/>one writer per shard"]:::revised
-    B["Durable change log<br/>replayable, retained"]:::new
-    C["Shared files + catalog<br/>coverage per shard"]:::revised
-    D["Read workers<br/>own tail, replay, lag"]:::new
-    E["Compaction pool<br/>leases, delayed delete"]:::revised
-    F["Cluster view in UI<br/>+ demo, crash, bench"]:::new
+    A["Writer: ingest, flush, compaction,<br/>all reads + live view"]:::old
+    B["Shared files + catalog<br/>+ grace period on deletes"]:::revised
+    C["Read workers<br/>files only, catalog per query"]:::new
+    D["Reader state refresh<br/>feedback, stats, merged copies"]:::new
+    E["Single-writer guard<br/>+ reader freshness view"]:::new
+    F["Demo: 1 writer + 2 readers<br/>same counts"]:::revised
     A --> B --> C --> D --> E --> F
     classDef new fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
     classDef revised fill:#ffe0b2,stroke:#ef6c00,color:#1b1b1b
     classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
 ```
 
-| | Part | Before M5 (M1–M4) | What M5 changes |
-|---|---|---|---|
-| 🟢 | Deployment shape | one process runs every role | the same binary runs one role or all; roles find each other through the catalog |
-| 🟢 | Change stream | in-process, drops changes when a subscriber falls behind | durable, ordered per shard, replayable from any retained position |
-| 🟢 | Read workers | query reads the writer's memory directly | each reader follows the change stream itself, keeps its own recent data, reports its position and lag |
-| 🟢 | Shard ownership | implicit (one writer) | one writer per shard with a fencing epoch; a stale writer can't append or publish |
-| 🟠 | Write acknowledgment | after fsync to the local disk | after the write is durable per the stated contract ([NEEDS CLARIFICATION: Q1]) |
-| 🟠 | Catalog coverage | one `flushed_seq` for the whole store | contiguous covered position per shard; readers pin a snapshot |
-| 🟠 | Compaction | M4: background task in the same process, swap + in-process pins | separate worker pool; cross-process query leases; delayed delete; orphan sweep that is safe with other writers |
-| 🟠 | Log retention | WAL trimmed right after flush | retained until files cover it *and* the retention window has passed |
-| 🟢 | Cluster view | none | browser page: roles, shards, positions, lag, backlogs, leases |
-| ⚪ | Data files, text index, merge rule, query language, UI views | M1–M4 | unchanged; same answers in both deployment shapes |
+| | Part | Before M5 (M1–M4) | What M5 changes | Problems |
+|---|---|---|---|---|
+| 🟢 | Deployment shape | one process runs every role | `smithling serve --role reader` runs a read worker; the default still runs everything | P1, P2 |
+| 🟢 | Read workers | none | serve every read API from published files, checking the catalog on each query | P2 |
+| 🟢 | Reader state | loaded once at startup, updated in-process at each flush | rebuilt or updated when the catalog version changes | P9 |
+| 🟠 | File deletion | in-process references keep files a query uses | replaced files also kept for a grace period; reader queries have a time limit | P7 |
+| 🟢 | Writer guard | implicit | a second writer on the same store refuses to start | P10 |
+| 🟢 | Freshness view | none | each reader reports its catalog version and how far behind it is | P12 |
+| ⚪ | Writer, write log, flush, compaction, live view, data files, query language, UI views | M1–M4 | unchanged | — |
 
 ## End state
 
 *Capability first; the Example under it is the scenario we use to prove it.*
 
-- 🟢 As an **operator**, I can run ingestion, read serving and compaction as separate services from the one smithling
-  binary, pointed at the same storage and catalog, and get the same answers as the one-process mode.
-  - *Example*: 1 writer, 2 readers, 1 compactor on one machine (shared folder + Postgres) and on cloud-style storage:
-    `smithling demo` passes every M2–M4 check with identical counts.
-- 🟢 As an operator, I can add or remove read workers without touching ingestion, and a new reader serves complete
-  answers after replaying only what isn't in files yet.
-  - *Example*: start a third reader during the demo load; it reports caught up and answers the 14 / 23 / 31 checks.
-- 🟢 As an **agent developer**, I see my agent's steps on any reader shortly after they're acknowledged, including
-  steps of a trace that has been running for days, and never see a run twice or lose one while files are being
-  flushed or compacted.
-  - *Example*: a 3-day trace updated across 50+ flushes and 5+ compactions shows one tree, latest values, on every reader.
-- 🟠 As an agent developer, I lose nothing smithling acknowledged, for the failures it promises to survive.
-  - *Example*: kill any service at any of the named crash points (10 rounds each); zero acknowledged events missing.
-- 🟢 As an operator, I can hand a shard to a new writer (planned or after a crash) and the old one can no longer write
-  or publish, even if it comes back.
-- 🟢 As an operator, I can see in the browser which services are running, each reader's position and lag per shard,
-  flush and compaction backlogs, and pinned snapshots, and spot a lagging reader at a glance.
-- 🟠 As a **maintainer**, I can trust all of this stays true: CI runs the split-deployment demo, the crash points and the
-  scaling bench, and fails on lost data or a wrong count.
+- 🟢 As an **operator**, I can start read workers from the one `smithling` binary, pointed at the writer's storage and
+  catalog, and get the same answers as the writer once the data is in files. (P1, P2)
+  - *Example*: 1 writer + 2 readers on one machine (shared folder + Postgres) and on cloud-style storage:
+    `smithling demo` against a reader passes every M2–M4 check with identical counts.
+- 🟢 As an operator, I can add, stop or restart read workers at any time without touching the writer. (P1)
+  - *Example*: start a third reader during the demo load; it serves the 14 / 23 / 31 checks.
+- 🟢 As an **agent** or **agent developer**, I can send heavy queries to readers and see data at most one flush age
+  old (2 min by default), with feedback and field statistics as current as the files. (P2, P9)
+- ⚪ As an agent developer, I can still watch a running trace live on the writer, within ~1 s as today.
+- 🟠 As an agent developer, my long queries on a reader finish correctly even while compaction replaces files. (P7)
+- 🟢 As an operator, I can't accidentally start a second writer on the same store. (P10)
+- 🟢 As an operator, I can see in the browser and in `/healthz` how far behind each reader is. (P12)
+- 🟠 As a **maintainer**, I can trust this stays true: CI runs the 1 writer + 2 readers demo and the problem demos.
 
 ## Lifecycle of one run in M5
 
-The `fetch_url` step from the scenario, in a split deployment.
+The `fetch_url` step from the scenario, with 1 writer and 2 readers.
 
-| # | | What happens | M5 work |
+| # | | What happens | Problems |
 |---|---|---|---|
-| 1 | 🟠 | The SDK uploads the step. The request reaches the writer that owns its shard. | Routing to the shard owner |
-| 2 | 🟢 | The writer gives it the next position in the shard's log and makes it durable per the contract; only then confirms. The confirmation carries the position. | Durable log, ack contract |
-| 3 | 🟢 | Both readers read the new log entry on their own and apply it to their recent data; each reports its applied position. | Change stream, readers |
-| 4 | ⚪ | The step's late update arrives and is merged by the same latest-value-wins rule, on the writer and on every reader. | (M1 rule) |
-| 5 | 🟠 | The writer flushes, uploads the files, and in one catalog commit publishes them and moves the shard's covered position. | Per-shard coverage |
-| 6 | 🟢 | A query on reader 2 pins the newest catalog snapshot (covered through N) and its own recent data after N. Nothing is missed or counted twice. | Snapshot + tail merge |
-| 7 | 🟠 | A compactor merges that file with older ones and swaps them in the catalog. The query from step 6 still holds the old snapshot, so its files stay until it finishes. | Leases, delayed delete |
-| 8 | 🟢 | The log entries for step 2 are retired once files cover them and the retention window has passed. | Log retention |
+| 1 | ⚪ | The SDK uploads the step to the writer; it is logged, confirmed and visible on the writer's live view within ~1 s. | — |
+| 2 | ⚪ | Within the flush age, the writer flushes it to files and publishes them in one catalog commit. | — |
+| 3 | 🟢 | An agent queries reader 2. The reader sees the catalog has a newer version, picks up the new files, and refreshes its state (feedback, field stats, merged copies of late-updated runs). The step is in the answer. | P2, P9 |
+| 4 | 🟠 | The writer's compaction merges that file with older ones. A long query on reader 1 still reads the old files; they stay for the grace period. | P7 |
+| 5 | 🟢 | The operator checks the readers' freshness panel: both are on the newest catalog version. | P12 |
 
 ## User Scenarios & Testing *(mandatory)*
 
-### 🟢 User Story 1 - Split deployment gives the same answers (Priority: P1)
+### 🟢 User Story 1 - Readers give the same answers as the writer (Priority: P1)
 
-An operator starts ingest, read and compaction services separately, pointed at the same storage and catalog, and uses
-smithling exactly as before.
+**Fixes**: P1, P2.
 
-**Why this priority**: the definition of the milestone. Nothing else matters if the split shape returns different answers.
+An operator starts read workers pointed at the writer's storage and catalog, and queries them exactly as before.
 
-**Independent Test**: start 1 writer, 2 readers and 1 compactor; run `smithling demo` against a reader; every check passes
-with the same numbers as the one-process mode, on local shared storage and on cloud-style storage.
+**Why this priority**: the definition of the milestone.
+
+**Independent Test**: start 1 writer and 2 readers; load the scenario; wait until the writer has flushed and both
+readers are on the newest catalog version; run `smithling demo` against each reader. Every check passes with the same
+numbers as the writer and as one-process mode, on local shared storage and on cloud-style storage.
 
 **Acceptance Scenarios**:
 
-1. **Given** a split deployment on an empty store, **When** the demo replays the scenario and waits until the reader has applied the last acknowledged position, **Then** every M2–M4 check passes with identical counts.
-2. **Given** the same load, **When** any read query (list, trace, run, search, aggregate, live view) is sent to either reader, **Then** both return the same result once both have applied the same position.
-3. **Given** `smithling serve` with no role options, **When** it starts, **Then** it runs every role in one process as today, makes no outbound connections, and passes every M1–M4 check unchanged.
-4. **Given** a reader asked to write, or a writer asked a read query, **When** the request arrives, **Then** it is refused with a message naming the service that handles it.
+1. **Given** the scenario is loaded and flushed, **When** any read query (list, trace, run, search, aggregate, field suggestions) is sent to a reader, **Then** it returns the same result as the writer.
+2. **Given** a step confirmed but not yet flushed, **When** a reader is queried, **Then** the step is absent (not partly present), and it appears once the flush is published.
+3. **Given** `smithling serve` with no role option, **When** it starts, **Then** it runs every role in one process as today, makes no outbound connections, and passes every M1–M4 check unchanged.
+4. **Given** a write request sent to a reader, **When** it arrives, **Then** it is refused with a message naming the writer's role.
+5. **Given** a reader's catalog is SQLite on another machine's disk, **When** it starts, **Then** it refuses with a message that split mode needs a shared catalog (Postgres), or a SQLite file on a shared local folder for one-machine tests.
 
 ---
 
-### 🟠 User Story 2 - Acknowledged writes survive the promised failures (Priority: P1)
+### 🟢 User Story 2 - Readers stay current without restarts (Priority: P1)
 
-Every write smithling confirms survives the failures stated in the durability contract, through every step from log to
-files to compaction.
+**Fixes**: P2, P9.
 
-**Why this priority**: a trace store that loses acknowledged steps can't be trusted for debugging; the constitution
-makes it a CI gate (Principle VI).
+A reader running for days keeps up with new files, feedback and statistics.
 
-**Independent Test**: the crash harness kills each service at each named crash point (after durable log write, before
-ack; after ack; mid-upload; after upload before catalog commit; after catalog commit; mid compaction swap; during
-handoff; mid reader replay), 10 rounds each, then checks that every acknowledged event is queryable exactly once.
+**Why this priority**: a reader that needs restarts to see new data isn't a usable read worker. Merged copies of
+late-updated runs (D-023, D-029) must follow new files, or answers go wrong, not just stale.
+
+**Independent Test**: run a reader for the length of the demo load with late updates arriving; after every flush,
+compare its answers with the writer's for the same catalog version; they match. Send feedback; it shows on the reader.
 
 **Acceptance Scenarios**:
 
-1. **Given** a write that was acknowledged, **When** the failure covered by the contract happens ([NEEDS CLARIFICATION: Q1 — writer process only, or also loss of the writer's disk or machine?]), **Then** after recovery the write is queryable with its exact content.
-2. **Given** a write that was not acknowledged, **When** the writer crashes, **Then** the client's retry is accepted and the run appears once, not twice.
-3. **Given** a crash after files were uploaded but before the catalog commit, **When** the writer recovers, **Then** the uploaded files are never visible to queries and are removed by the orphan sweep, and their data is restored from the log.
+1. **Given** the writer publishes a new catalog version, **When** the next query reaches a reader, **Then** the reader answers from that version (or the one before it, if it's still loading the new one, and says which).
+2. **Given** a late update flushed into a new file for a run whose start is in an older file, **When** a reader is queried, **Then** the run shows its merged latest values, same as the writer.
+3. **Given** new feedback stored in the catalog, **When** a reader is queried after its next catalog check, **Then** the feedback is filterable and averaged there.
+4. **Given** compaction replaced files, **When** a reader picks up the new version, **Then** its field counts and merged copies equal the writer's, with nothing counted twice.
 
 ---
 
-### 🟢 User Story 3 - Readers stay fresh and exact (Priority: P1)
+### 🟠 User Story 3 - Long reader queries survive compaction (Priority: P2)
 
-Each read worker follows the shard's change stream on its own, keeps the data not yet in files, and combines it with
-the published files without gaps or double counting.
+**Fixes**: P7.
 
-**Why this priority**: this is where disaggregation usually breaks correctness: the moment a flush or a compaction is
-published while queries run.
+A reader's query keeps reading the files of the catalog version it started on, even if compaction on the writer
+replaces them.
 
-**Independent Test**: under continuous load with flushes every few seconds and compactions running, compare every
-reader's answers against a reference computed from the full log; they match at every applied position.
+**Why this priority**: M4 protects queries with in-process references; readers in other processes don't have them.
+
+**Independent Test**: run reader queries that last minutes across 100 compaction swaps on the writer; each returns
+the same answer as without compaction; no file is deleted before its grace period ends.
 
 **Acceptance Scenarios**:
 
-1. **Given** a reader that has applied position P on a shard, **When** a query starts, **Then** it uses one catalog snapshot covering a contiguous prefix through N ≤ P plus the reader's recent data from N+1 to P, and the result equals the merged state of positions 1..P.
-2. **Given** a flush is published while a query runs, **When** the query finishes, **Then** no run is missing and none counted twice; the reader keeps the recent data the query needs until it finishes.
-3. **Given** the newest snapshot covers more than the reader has applied (N > P), **When** a query starts, **Then** the reader uses the newest snapshot it can combine exactly (one covering ≤ P) or waits briefly for its own position to reach N; it never mixes them inexactly.
-4. **Given** the same event delivered twice, or a late update that arrives before the reader has the run's start, **When** applied, **Then** the merged run is the same as on the writer and in files (deterministic: position order, latest value wins).
-5. **Given** a client holds the position returned by its write, **When** it asks a reader to answer at or after that position, **Then** the reader answers once it has applied it, or reports that it is still behind after a timeout.
+1. **Given** a reader query started on catalog version V, **When** compaction replaces V's files, **Then** the query finishes with V's answer.
+2. **Given** replaced files, **When** the grace period has passed, **Then** the writer deletes them; not before.
+3. **Given** a reader query that runs past its time limit, **When** the limit is hit, **Then** it fails with "query took too long, retry" and never reads a deleted file.
 
 ---
 
-### 🟢 User Story 4 - Scale and replace readers independently (Priority: P2)
+### 🟢 User Story 4 - Only one writer per store (Priority: P2)
 
-An operator adds a reader for more read capacity, or a reader is down for a while, and it catches up on its own.
+**Fixes**: P10 (light).
 
-**Why this priority**: independent read scaling is the main reason for the split, and the next milestone (agents) is read-heavy.
+A second writer started by mistake on the same storage and catalog refuses to start.
 
-**Independent Test**: start a new reader against a loaded store; it reports "caught up" without copying data files and
-answers the demo checks. Stop a reader for 30 minutes under load and restart it; it catches up without loss.
+**Why this priority**: with readers and a writer configured separately, pointing two writers at one store becomes an
+easy mistake that corrupts the catalog.
+
+**Independent Test**: start writer A; start writer B on the same store; B exits with a message naming A. Kill A; B can
+start once A's lease has expired; then wake a paused A: its next catalog publish is rejected.
 
 **Acceptance Scenarios**:
 
-1. **Given** a loaded store, **When** a new reader starts, **Then** it loads the newest catalog snapshot, replays the retained log after its covered position, and serves only after it is caught up (or, if configured, serves with a visible "behind" marker).
-2. **Given** a reader that has been down longer than the log retention, **When** it restarts, **Then** it starts again from the newest snapshot instead of failing, and says so.
-3. **Given** two readers and then four, **When** the same read load runs, **Then** read throughput grows with the reader count while write throughput and freshness on the writer are unchanged.
+1. **Given** a running writer, **When** a second writer starts on the same store, **Then** it refuses with a message naming the running one.
+2. **Given** the writer was killed, **When** its lease expires, **Then** a new writer can start and recovers from the log as today.
+3. **Given** a writer that was paused past its lease and a new writer took over, **When** the old one tries to publish, **Then** the publish is rejected and the old writer stops.
 
 ---
 
-### 🟠 User Story 5 - Compaction as its own pool, safe for every query (Priority: P2)
+### 🟢 User Story 5 - See how current each reader is (Priority: P3)
 
-Compaction runs in its own services, never slows ingestion down, and never removes a file a running query needs.
+**Fixes**: P12 (light).
 
-**Why this priority**: M4 makes compaction safe within one process; across processes the in-memory pins don't exist.
+An operator sees each reader's catalog version and how far behind the writer it is, in the browser and in `/healthz`.
 
-**Independent Test**: run queries that last minutes across 100 compaction swaps; each returns the same answer as
-without compaction; no file is deleted while a snapshot that names it is pinned or within its lease.
+**Why this priority**: constitution IV (UI first); a reader that silently falls behind gives old answers.
 
-**Acceptance Scenarios**:
-
-1. **Given** a compaction job selected inputs from snapshot S, **When** a flush publishes new files before the swap, **Then** the swap replaces only its inputs and keeps the new files.
-2. **Given** another compactor already replaced one of the inputs, **When** this job tries to swap, **Then** the swap is refused and the job's outputs become orphans for the sweep.
-3. **Given** replaced files, **When** every lease on snapshots naming them has ended or expired, **Then** they are deleted; not before.
-4. **Given** a compactor that crashed mid-upload, **When** the orphan sweep runs, **Then** files not named by any catalog entry and older than the upload grace period are removed, and files still being uploaded by a live service are not.
-
----
-
-### 🟢 User Story 6 - Shard ownership and writer handoff (Priority: P2)
-
-Each shard has exactly one active writer. Ownership can move to another writer, and a stale writer is fenced out.
-
-**Why this priority**: two writers on one shard would break ordering and corrupt coverage.
-
-**Independent Test**: move a shard to a second writer while load runs, then wake the old writer (paused, not killed);
-it can't append to the log or publish files; no acknowledged event is lost or duplicated.
+**Independent Test**: stop the writer's flushes (or block a reader's catalog access); within one catalog check the
+reader shows itself behind, with the age of its newest data.
 
 **Acceptance Scenarios**:
 
-1. **Given** writer A owns shard S at epoch e, **When** writer B takes S at epoch e+1, **Then** every log append and catalog publish by A is rejected from then on.
-2. **Given** a handoff, **When** B starts accepting writes, **Then** it continues the shard's positions after the last durable one, and clients retrying to A are redirected to B.
-3. **Given** shards keyed by [NEEDS CLARIFICATION: Q3 — one shard in M5, or several shards keyed by project?], **When** a request arrives, **Then** it reaches the owning writer and a read covering several shards combines them in one answer.
-
----
-
-### 🟢 User Story 7 - See the cluster in the browser (Priority: P3)
-
-An operator opens a cluster page and sees the services, shards, positions, lag, backlogs and leases.
-
-**Why this priority**: constitution IV (UI first): every capability ships its browser view.
-
-**Independent Test**: stop one reader under load; within a minute the page shows it as down and the other's lag stays low;
-restart it and watch its lag fall to normal.
-
-**Acceptance Scenarios**:
-
-1. **Given** a split deployment, **When** the cluster page opens, **Then** it lists each service with role, version, uptime and health; each shard with its owner, epoch, last durable position and covered position; each reader's applied position and lag per shard; flush and compaction backlogs; and pinned snapshots with their age.
-2. **Given** one-process mode, **When** the page opens, **Then** it shows the single process holding every role, with the same fields.
-
----
-
-### 🟠 User Story 8 - Bounded under pressure, measured (Priority: P3)
-
-Every queue and buffer is bounded and pushes back instead of growing; scaling and recovery are measured, not asserted.
-
-**Why this priority**: separate services fail separately; unbounded lag or backlog turns a slow reader into an outage.
-
-**Independent Test**: `smithling bench` in split mode reports write throughput per shard, read throughput for 1/2/4
-readers, freshness P50/P99, bootstrap time and catch-up time, separating data-volume growth from read and write load.
-
-**Acceptance Scenarios**:
-
-1. **Given** the writer's memtables, flush queue or durable-log backlog pass their limits, **When** more writes arrive, **Then** clients get "busy, retry after" as today, and nothing acknowledged is dropped.
-2. **Given** a reader whose recent data passes its memory limit, **When** it falls behind, **Then** it stops serving as caught up and reports it, rather than growing without bound.
-3. **Given** a compaction backlog over its limit, **When** queries run, **Then** the backlog is visible and ingestion is unaffected.
+1. **Given** a reader, **When** `/healthz` or the UI's status panel is opened on it, **Then** it shows its role, the catalog version it serves, the age of its newest data, and whether it's current.
+2. **Given** the writer's UI, **When** the status panel opens, **Then** it lists the readers that have checked in recently with the same fields.
 
 ---
 
 ### Edge Cases
 
-- A trace spans days, shards' flushes and many compactions, with its root finishing last: every reader shows one tree with the root's final status.
-- An update arrives for a run whose start is already compacted into a large old file: merged correctly; the update is not lost or applied twice at the next compaction.
-- Positions have a gap (a lost or not-yet-durable batch): coverage stops before the gap; the maximum position seen is never treated as coverage.
-- The catalog is briefly unreachable: writers keep accepting up to their limits and publish later; readers keep serving from their last snapshot and report staleness.
-- Object storage is slow or failing: flushes retry; the log keeps acknowledged data; nothing is published half-uploaded.
-- Writer clock skew: ordering comes from log positions, never from clocks.
-- A reader receives log entries out of order or twice: applied in position order, once.
-- Two compactors pick overlapping inputs: only one swap succeeds.
-- A query's lease expires while it is still running (very long query): it fails with a clear "snapshot expired, retry" rather than reading a deleted file.
-- Feedback (written straight to the catalog, D-027) and field statistics loaded at start: readers see new feedback and new files' stats without a restart.
-- Services run different versions during an upgrade: a service refuses to join a store whose format it doesn't understand, with a message.
-- A hot project produces most of the writes: the shard is visible as hot on the cluster page; splitting one project across shards is out of scope.
+- A trace whose root finishes last, after days: readers show it as running until the flush that carries the root's end, then finished.
+- A reader starts on a store of 2M runs: it serves only after loading the newest catalog version and its state, and says so meanwhile.
+- The catalog is briefly unreachable: readers keep serving their last version and report themselves behind.
+- Shared storage is slow: reader queries slow down; nothing incorrect is returned.
+- The writer is down: readers keep serving the last published version; writes fail until a writer is back.
+- A reader is asked for the live view: it serves its last version and points to the writer for live data.
+- Services run different versions: a reader refuses to serve a store whose format it doesn't understand, with a message.
 
 ## Requirements *(mandatory)*
+
+Each requirement names the problem it fixes.
 
 ### Functional Requirements
 
 **Deployment shape**
 
-- 🟢 **M5-FR-01** (constitution I, Arch. Constraints): The one smithling binary MUST be able to run any one role (ingest, read, compaction) or all of them; running all in one process MUST stay the default and behave exactly as M4.
-- 🟢 **M5-FR-02** (constitution III, V): Moving between one-process and split mode MUST be a configuration change only; in one-process local mode smithling MUST still make zero outbound connections.
-- 🟢 **M5-FR-03**: Services MUST discover the store's shards, owners and positions through the shared catalog; no service needs another's address configured except for request routing.
+- 🟢 **M5-FR-01** (P1; constitution I, Arch. Constraints): The one `smithling` binary MUST be able to run as a read worker; running every role in one process MUST stay the default and behave exactly as M4.
+- 🟢 **M5-FR-02** (constitution III, V): Adding read workers MUST be a configuration change only; in one-process local mode Smithling MUST still make zero outbound connections.
+- 🟢 **M5-FR-03** (P2): Read workers MUST find everything they serve through the shared catalog and storage; they MUST NOT contact the writer.
+- 🟢 **M5-FR-04**: Read workers MUST refuse write requests, and the writer's role MUST be named in the refusal.
 
-**Durable log and acknowledgment**
+**Reading**
 
-- 🟠 **M5-FR-04**: Each shard MUST have one ordered log; every accepted event MUST get the next position in it, and positions MUST be unique and increasing per shard.
-- 🟠 **M5-FR-05**: A write MUST be acknowledged only once it is durable to the failure scope the contract states ([NEEDS CLARIFICATION: Q1]); the acknowledgment MUST carry the shard and position.
-- 🟢 **M5-FR-06**: The log MUST be readable by any number of readers independently from any retained position, without affecting the writer or each other.
-- 🟠 **M5-FR-07**: Log entries MUST be retired only when published files cover them and the configured retention window has passed. A reader that needs a retired entry starts again from the newest snapshot.
-- 🟠 **M5-FR-08**: A client retrying a request MUST not create a second copy of a run, across writer restarts and handoff (dedup, as M2, extended to the handoff).
+- 🟢 **M5-FR-05** (P2): Read workers MUST serve every read API from one published catalog version per query, checking for a newer version at the start of each query.
+- 🟢 **M5-FR-06** (P2): A reader's answer MUST equal the writer's answer for the same catalog version, over files only (data not yet flushed is absent, never partial).
+- 🟠 **M5-FR-07** (P9): Feedback, field statistics, merged copies of late-updated runs and other state loaded from the catalog or files MUST follow each new catalog version, including compaction swaps, without a restart.
+- 🟢 **M5-FR-08** (P2): Freshness on readers MUST be at most the writer's flush age plus one catalog check, and the flush age MUST stay configurable (2 min default).
 
-**Catalog and coverage**
+**Deletion safety**
 
-- 🟠 **M5-FR-09**: Publishing flushed files MUST move the shard's covered position in the same catalog commit; coverage MUST mean "every position from the start through N is in published files or was superseded by compaction", with no gaps.
-- 🟢 **M5-FR-10**: Readers and compactors MUST work from a pinned catalog snapshot; a snapshot's files MUST stay readable until every lease on it ends or expires.
-- 🟠 **M5-FR-11**: Feedback, field statistics and other state that queries load from the catalog MUST reach every reader without a restart.
+- 🟠 **M5-FR-09** (P7): Files replaced by compaction MUST stay readable for a grace period, and reader queries MUST have a time limit shorter than it.
 
-**Read workers**
+**Writer guard**
 
-- 🟢 **M5-FR-12**: Each reader MUST apply the shard's log in position order, exactly once per position, using the same merge rule as the writer, files and compaction (latest value per field wins, by position).
-- 🟢 **M5-FR-13**: A query MUST combine one snapshot covering through N with the reader's recent data after N up to its applied position, and MUST NOT miss or double-count any position.
-- 🟢 **M5-FR-14**: A reader MUST report its applied position and lag per shard, and MUST be able to answer "at or after position X" or report that it is behind.
-- 🟢 **M5-FR-15**: A new or restarted reader MUST start from a snapshot plus log replay, without copying data files, and MUST say when it is caught up.
-- 🟢 **M5-FR-16** (constitution II): The fresh-data path MUST be [NEEDS CLARIFICATION: Q2 — readers consume the durable log themselves (the note's preferred direction, differs from SmithDB), or readers fetch the unflushed tail from the writer as SmithDB does?]; the chosen difference from SmithDB, if any, MUST be recorded with its reason.
+- 🟢 **M5-FR-10** (P10): The writer MUST hold a lease in the catalog; a second writer MUST refuse to start while it is valid, and every catalog publish MUST be checked against the current lease so a writer that lost it stops.
 
-**Compaction**
+**Visibility and verification**
 
-- 🟠 **M5-FR-17**: Compaction MUST run in services separate from ingestion, select inputs from a pinned snapshot, and swap them in one catalog commit that fails if any input is no longer current and keeps files published meanwhile.
-- 🟠 **M5-FR-18**: Replaced files MUST be deleted only after no lease names them; uploads not in the catalog MUST be swept only after a grace period longer than any live upload, so a sweep never deletes another service's in-flight upload.
+- 🟢 **M5-FR-11** (P12; constitution IV): Each reader MUST report its role, catalog version, age of its newest data and whether it's current, in `/healthz`, the API, the command line and a UI status panel; the writer's panel MUST list recently seen readers.
+- 🟠 **M5-FR-12** (constitution VI): CI MUST run the 1 writer + 2 readers demo and the problem demos for P2, P7, P9 and P10; the crash harness MUST keep passing for the writer; readers MUST be killable at any moment without effect on the writer or on stored data.
 
-**Shards and ownership**
+### Requirements M5 places on M4
 
-- 🟢 **M5-FR-19**: Each shard MUST have at most one active writer, holding an ownership epoch; every log append and catalog publish MUST be checked against the current epoch, and a stale writer's MUST fail.
-- 🟢 **M5-FR-20**: Ownership MUST be transferable, planned or after a writer is declared dead, without losing or duplicating acknowledged events.
-- 🟢 **M5-FR-21**: Requests MUST be routed to the shard's owning writer; reads that cover several shards MUST return one combined answer.
+So that compaction can later become its own service (backlog B3) without rework:
 
-**Bounds, visibility, verification**
-
-- 🟠 **M5-FR-22**: Memtables, flush queue, log backlog, reader recent data, query concurrency and compaction backlog MUST each have a limit; past it the service pushes back or reports itself behind, never grows without bound.
-- 🟢 **M5-FR-23** (constitution IV): A cluster page in the browser MUST show services, shards, owners, epochs, positions, reader lag, backlogs and pinned snapshots; the same data MUST be available from the API and the command line.
-- 🟠 **M5-FR-24** (constitution VI): The crash harness MUST cover every crash point in User Story 2 and run in CI; the demo MUST run against a split deployment in CI; the bench MUST report the User Story 8 rows as P50/P99.
+- **M4-REQ-1**: Compaction MUST take its inputs from the catalog and the files only, not from the writer's memory (for example, which runs need merging comes from the files' `needs_merge` rows).
+- **M4-REQ-2**: A compaction swap MUST be one catalog commit that fails if any input is no longer current and keeps files published meanwhile ([research §3](research.md#3-catalog-cleanup-and-fencing)).
+- **M4-REQ-3**: Replaced files MUST be deleted after a grace period, not only when in-process references drop.
+- **M4-REQ-4**: Compaction MUST run against cloud-style storage (MinIO + Postgres) in CI.
 
 ### Key Entities
 
-- **Shard**: a slice of the data with one ordered log and one active writer; key per Q3.
-- **Log position**: a shard's sequence number for one accepted event; increasing, unique, never reused.
-- **Ownership epoch**: a shard's current writer and a number that rises on each handoff; used to fence stale writers.
-- **Log batch**: a durable, ordered group of log entries for one shard, readable by position.
-- **Published file set**: data files (with their text index) listed in the catalog, each with its shard, position range, time and trace bounds.
-- **Coverage**: per shard, the largest N such that positions 1..N are all in published files.
-- **Snapshot**: a consistent view of the published file set and coverage at one catalog version.
-- **Lease**: a time-limited hold by a query or compaction job on a snapshot; files it names aren't deleted while it lasts.
-- **Reader state**: per reader and shard, the applied position, recent data after its snapshot, lag.
-- **Compaction job**: inputs (from a snapshot), outputs, state (selected, uploaded, swapped, abandoned).
-- **Orphan**: an uploaded file no catalog entry names; removed after the grace period.
+- **Writer**: the one process that ingests, flushes, compacts and publishes. Holds the lease.
+- **Read worker**: a process that serves reads from published files and the catalog only.
+- **Catalog version**: a consistent published file set, with feedback and statistics, at one point in time. Each query uses one.
+- **Writer lease**: a catalog row naming the current writer, with an expiry and a number that rises on each new writer.
+- **Grace period**: how long replaced files stay readable; longer than the reader query time limit.
+- **Reader status**: per reader, its catalog version, the age of its newest data, whether it's current, when it last checked in.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- 🟢 **SC-01**: In a split deployment (1 writer, 2 readers, 1 compactor), `smithling demo` passes every M2–M4 check with counts identical to one-process mode, on local shared storage and on cloud-style storage.
-- 🟠 **SC-02**: Zero acknowledged events lost or duplicated across 10 kill rounds at each crash point of User Story 2, in CI.
-- 🟢 **SC-03**: From acknowledgment to visible on every caught-up reader: P50 ≤ 1 s, P99 ≤ 2 s at the reference write load (SmithDB's ingestion-to-queryable is 630 ms / 1.47 s).
-- 🟢 **SC-04**: With 2 readers, sustained read throughput is ≥ 1.7× one reader's, and with 4 readers ≥ 3×, with write throughput within 10% of one-reader mode.
-- 🟢 **SC-05**: A new reader on a store of 2M runs is caught up and serving within 60 s, without copying data files.
-- 🟢 **SC-06**: A reader stopped for 30 minutes under load catches up within 5 minutes of restart, with no missing or doubled runs.
-- 🟢 **SC-07**: After a writer handoff, the new writer accepts writes within 30 s; 100% of the old writer's later append and publish attempts are rejected.
-- 🟠 **SC-08**: Queries running across 100 compaction swaps return the same answers as without compaction; no file is deleted while leased; orphans are gone within one sweep after the grace period.
-- 🟢 **SC-09**: An operator identifies a stopped or lagging reader on the cluster page within 1 minute of it falling behind.
-- ⚪ **SC-10**: All M1–M4 success criteria still pass in one-process mode.
+- 🟢 **SC-01** (P1, P2): With 1 writer and 2 readers, `smithling demo` against each reader passes every M2–M4 check with counts identical to one-process mode, on local shared storage and on cloud-style storage.
+- 🟢 **SC-02** (P2): On a reader, data is visible within the flush age plus 5 s, for 99% of confirmed steps.
+- 🟢 **SC-03** (P1): With 2 readers taking the read load, the writer's confirmation P99 under the bench write load stays within 10% of its value with no reads; read throughput with 2 readers is ≥ 1.7× one reader's.
+- 🟢 **SC-04** (P9): Across a full demo load with late updates and compaction, readers' answers equal the writer's at every catalog version checked (zero mismatches).
+- 🟠 **SC-05** (P7): Reader queries across 100 compaction swaps return the same answers as without compaction; zero queries fail from a missing file.
+- 🟢 **SC-06** (P10): 100% of attempts to start a second writer on a store with a valid lease are refused; a writer that lost its lease publishes nothing more.
+- 🟢 **SC-07**: A new reader on a store of 2M runs serves within 60 s.
+- 🟢 **SC-08** (P12): A reader that falls behind shows as behind within one catalog check.
+- ⚪ **SC-09**: All M1–M4 success criteria still pass in one-process mode.
+
+### Problem demos
+
+One demo per P0 problem: show it breaking, then show M5 fix it. The plan wires these into `smithling demo` and CI.
+
+| # | Show it breaking (M4) | Show it fixed (M5) | Pass check |
+|---|---|---|---|
+| P1 | Heavy grouped queries while ingesting at full rate, one process | Same queries on readers | Writer confirmation P99 within 10% of no-read baseline |
+| P2 | A second `serve` on the same storage either can't start or serves stale, unmerged data | `--role reader` | Same counts as the writer after flush |
+| P7 | A long query in a second process while the writer's compaction replaces its files | Grace period | Same answer; zero missing-file errors |
+| P9 | Send feedback and a late update; a second process started earlier doesn't show them | Reader refresh | Shown after the next flush |
+| P10 | Start two writers on one store; both write | Lease | Second refused; old writer's publish rejected |
+| P12 | Block a reader's catalog access; nothing shows it | Freshness panel | Shown as behind within one check |
+
+## Open questions
+
+Kept here until decided. Decisions move to [Decisions so far](#decisions-so-far) and the roadmap.
+
+### OQ-1: Constitution II — record the files-only read path as a staged difference?
+
+SmithDB queries the ingestion node for fresh data ([research §2](research.md#2-fresh-data-read-path)); M5 readers
+read files only. Proposed: record it as Principle II (c), "deliberately staged: simpler first", with backlog B2
+(readers see unflushed data) as the SmithDB-equivalent and its trigger. Confirm at the plan's Constitution Check.
+
+### OQ-2: Grace period and reader query time limit
+
+Starting values from Iceberg and Delta practice ([research §3](research.md#3-catalog-cleanup-and-fencing)): grace
+period 24 h, reader query time limit 1 h; exports longer than that need another way (backlog). Confirm or change.
+
+### OQ-3: Catalog check per query: lookup or notification?
+
+Each query checks the catalog for a newer version. Options: one indexed lookup per query (Quickwit style), or
+Postgres LISTEN/NOTIFY with a lookup fallback. Plan-level; the spec only requires FR-05 and FR-08.
+
+### OQ-4: Reader state refresh cost
+
+Rebuilding merged copies of late-updated runs and per-file statistics on every new catalog version may be slow at
+2M runs (M3-R4 measured 9 s uncached for 203k multi-version runs). Options: update incrementally per new file (as the
+writer does today at each flush), or rebuild in the background while serving the previous version. Plan-level, but
+it decides whether SC-02 and SC-04 hold together.
+
+## Backlog with triggers
+
+Everything below was in the full M5 design and is deferred on purpose. Each item says what brings it back. The
+reasoning and options stay in [research.md](research.md).
+
+| # | Item | Problems | Trigger to pick it up | Starting design (research) |
+|---|---|---|---|---|
+| B1 | **Durable log off the writer's machine**: log batch in shared storage before confirming; optional fast-confirm mode | P5 | First follow-up after M5; or any deployment where losing the writer's disk is unacceptable | Log batches created only if absent, ownership number in the catalog (§1, option 2) |
+| B2 | **Readers see unflushed data** (sub-flush freshness on readers) | P3, P4, P6 | Readers need fresher than the flush age (e.g. agents investigating a run still in progress), or the live view needs to move off the writer | Options: shorter flush + compaction; narrow live path from the writer; readers ask the writer (SmithDB); readers follow the log (Tempo) (§2, §5) |
+| B3 | **Compaction as its own service pool** | P1 (compaction part), P8 | Compaction measurably slows ingest on the writer, or needs more than one machine | Inputs from the catalog only, guarded swap, grace-period delete, pending-upload rows and ownership number in file names (§3); needs M4-REQ-1–4 |
+| B4 | **Writer handoff and full fencing** (planned move, automatic takeover) | P10 | The writer must be replaced without an operator, or with < 1 min of write downtime | Lease row with ownership number checked in every commit (§3) |
+| B5 | **Sharding** (several writers) | P11 | Sustained writes near one writer's ~30–40k events/s | Trace-id hash; small projects on a few shards (§4) |
+| B6 | **Full cluster page** (backlogs, positions, pending deletions) and the scaling bench rows | P12 | More than one writer or a compaction pool exists | — |
+| B7 | **Time-based dedup and project-map windows** | P14, P15 | Write rate near 10× today, or late updates older than the map's window seen in the scenario. Could land in M4 | Time windows instead of count caps (review item 8) |
+| B8 | **Tenants**: what a tenant is, isolation, limits; tenant id on data | — | A second tenant, or per-tenant limits needed | Options A–C (§6) |
+| B9 | **Queries across projects** (rollups, comparisons, search everywhere) | — | Users ask for "all my agents" views | §6; with trace-id sharding these cost the same as one-project queries |
+| B10 | **Long exports past the query time limit** | P7 | Exports need more than the reader time limit | Explicit hold rows with expiry (§3) |
 
 ## Assumptions
 
-- **Order**: M4 (compaction with an atomic swap, in one process) is built first; M5 then splits it out. The agents milestone (Claude Code import, agent tools) becomes M6.
-- **One binary, roles by configuration** (constitution I). Split mode needs a shared catalog database (Postgres) and shared storage (a folder all processes see, or object storage); SQLite stays for one-process mode.
-- **Freshness is eventual** across readers; strong consistency is not required. Read-your-writes is available on request by waiting for a position (M5-FR-14), not by default.
-- **Trust boundary**: services talk over a private network or localhost; service-to-service authentication and TLS are out of scope for M5 and listed in the backlog. Defaults still bind to localhost.
-- **Same version everywhere**: rolling upgrades and schema evolution across mixed versions are out of scope; mismatched services refuse to join (edge case).
-- **Log retention default**: 24 h after coverage, configurable. Long enough for a reader outage; replay beyond it starts from a snapshot.
-- **Shard key, if several shards** (Q3): by project, because ingest's per-project state (project map, flushed-run filter, multi-version set; D-024, D-025) then stays within one shard. Splitting one hot project across shards is out of scope.
-- **Performance priority** ([D-033](../000-smithling-master-plan/decisions.md#d-033)): correctness and the split working end to end come first; SC-03–SC-06 are measured and reported, and may be deferred by decision as M3's speed rows were.
-- **Delete and retention of trace data** stay in backlog B1; M5 defines no delete semantics beyond compaction replacing files.
-- **Agent debugging** (recorded-trace investigation vs live stepping) is M6's question, not this milestone's.
-- **Out of scope for M5**: autoscaling, multi-region, a managed log service operated by smithling, cross-shard transactions, splitting one trace across shards, the hosted product.
+- **Order**: M4 (compaction in the writer process, meeting M4-REQ-1–4) is built first. The agents milestone (Claude Code import, agent tools) is M6.
+- **One binary, roles by configuration** (constitution I). Split mode needs a shared catalog database (Postgres) and shared storage (a folder all processes see, or object storage). SQLite works only when all processes share one machine's folder, for tests.
+- **Freshness on readers is the flush age** (2 min default). Agents investigating recorded traces can work with that; watching a run live stays on the writer.
+- **Readers keep a cache** of file footers and pages, as the writer does (32 MB default, configurable); on object storage they'll likely want more, since every footer read is a request.
+- **Durability is unchanged from M4**: a confirmed write survives any process crash, on the writer's disk (B1 for machine loss).
+- **Trust boundary**: services run on a private network or localhost; no service-to-service authentication in M5. Defaults still bind to localhost.
+- **Same version everywhere**: mixed versions are out of scope; a mismatched reader refuses to serve.
+- **Performance priority** ([D-033](../000-smithling-master-plan/decisions.md#d-033)): correctness first; SC-02, SC-03 and SC-07 are measured and reported, and may be deferred by decision.
+- **Agent debugging** (recorded-trace investigation vs live stepping) is M6's question.
+- **Out of scope for M5**: everything in the backlog above, plus autoscaling, multi-region and the hosted product.

@@ -2,7 +2,7 @@
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-11-08
-**Feature**: [spec.md](../spec.md)
+**Feature**: [spec.md](../spec.md) · **Revalidated**: 2026-11-08 after the P0 cut
 
 ## Content Quality
 
@@ -13,7 +13,7 @@
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain (Q1 durability scope, Q2 fresh-data path, Q3 shard scope)
+- [x] No [NEEDS CLARIFICATION] markers remain (open items are the spec's OQ-1–OQ-4: one constitution confirmation, one value choice, two plan-level choices)
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
@@ -34,5 +34,6 @@
 - Like M2/M3, the spec names a few existing parts (Postgres catalog in split mode, fsync in the "before" column, the
   merge rule) where they define the before/after delta or a constitution constraint; requirements themselves stay
   behaviour-level. Accepted as the repo's spec style.
-- SC-03 cites SmithDB's ingestion-to-queryable numbers as a reference point only.
-- Three open questions block `/speckit-plan`; answers replace the markers in User Story 2, User Story 6, M5-FR-05 and M5-FR-16.
+- 2026-11-08 P0 cut: scope is read workers over published files (P1, P2, P7, P9; P10 and P12 light); everything
+  else is in the spec's "Backlog with triggers" (B1–B10). No open question blocks `/speckit-plan`; OQ-1 is confirmed
+  at the plan's Constitution Check, OQ-3/OQ-4 are plan-level.

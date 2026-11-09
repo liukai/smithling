@@ -52,6 +52,8 @@ querying; describe each work group as goal + why → end state as "As a <who>, I
 - 2026-11-08: **The `smithling` crate is split** into `smithling-server` (production surface), `smithling-tools` (seed, demo, bench, CLI query) and the `smithling` binary with a default `tools` feature; `--no-default-features` builds serve only; the shared test server is `smithling_server::testkit` ([D-034](decisions.md#d-034)).
 - 2026-11-08: **Interfaces stay as built** ([D-035](decisions.md#d-035)): only `TextIndex` is a trait; catalog, cache and segment format stay concrete types until a second implementation is needed. Don't add traits yet.
 - 2026-11-08: **New milestone M5 — Disaggregated trace database**, after M4 compaction and before the agents milestone (now **M6**): ingestion, read workers and compaction as separate services over shared storage and catalog, one binary ([D-036](decisions.md#d-036); spec `specs/005-m5-disaggregated-trace-db/`, folder `004-` reserved for M4). Spec and plan only for now; no implementation.
+- 2026-11-08 (M5 design): **problems drive the M5 design** (spec north-star table P1–P15); **a confirmed write survives loss of the writer's machine** (log batch in shared storage before confirming, optional fast-confirm mode); **single tenant, no sharding in M5**, tenant kept as a concept, trace id the preferred shard key later. Open questions live in the M5 spec. *(Durability and the open-question list superseded the same day by the M5 scope line below.)*
+- 2026-11-08 (M5 scope): **M5 builds only the P0 problems** (owner: be greedy, backlog the rest). M5 is **step 1 of a disaggregated trace database (read workers over shared storage)**, more steps to follow: read workers read published files only, checking the catalog per query, never contacting the writer; the writer stays a full node (ingest, flush, M4 compaction, live view). Machine-loss durability (the same-day Q1 decision) moves to M5 backlog B1, the first follow-up. M5 places requirements on M4 compaction (catalog and files only, guarded swap, grace-period delete, cloud-style CI).
 
 **STATE as of 2026-11-08** (verified on `main` at the rename commit, D-037, by `cargo test --workspace` 303 passed /
 0 failed / 7 ignored (includes the `smithling demo` checks), clippy `-D warnings`, `cargo fmt --check`, `npm test` 248 passed;
@@ -80,7 +82,7 @@ performance work** (D3-1, D3-2), then plan M4.
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
 | M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 123/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
 | M4 Follow-through | — | not started | — | — |
-| M5 Disaggregated trace database | [`005-m5-disaggregated-trace-db`](../005-m5-disaggregated-trace-db/spec.md) | spec drafted (3 open questions) | — | — |
+| M5 Disaggregated trace DB, step 1: read workers | [`005-m5-disaggregated-trace-db`](../005-m5-disaggregated-trace-db/spec.md) | spec + plan proposed; design register KD-1–KD-12 (KD-4, KD-9, KD-11 open); backlog B1–B10 | — | — |
 | M6 Zero instrumentation + agents | — | not started | — | — |
 
 "Tasks done" counts `[X]` in each phase's `tasks.md`. A phase is **done** only when its exit check passes, not when its PRs merge.
@@ -202,34 +204,36 @@ search work, and delivers the first half of morning triage (scenario steps 4, 5,
 
 **Delivers**: FR-016, FR-017, FR-020, FR-032.
 
-### M5: Disaggregated trace database
+### M5: Disaggregated trace database, step 1 (read workers over shared storage)
 
-> Details of record: [`specs/005-m5-disaggregated-trace-db/`](../005-m5-disaggregated-trace-db/spec.md); code check of the design note: [review.md](../005-m5-disaggregated-trace-db/review.md).
+> Details of record: [`specs/005-m5-disaggregated-trace-db/`](../005-m5-disaggregated-trace-db/spec.md); code check of the design note: [review.md](../005-m5-disaggregated-trace-db/review.md); options: [research.md](../005-m5-disaggregated-trace-db/research.md).
 
-**Goal and why**: run ingestion, read serving and compaction as separate services that scale on their own, over shared
-durable storage. Multi-day agent traces and M6's read-heavy agent investigation outgrow one process; the storage layout
-is already cloud-ready (constitution V), so the work is between processes.
+**Goal and why**: let reads scale on their own. M6's agents multiply read traffic, and today every query runs on the
+process that also ingests. Readers that read only the shared files and catalog need no new storage or service. Step 1
+of a disaggregated trace database; the rest (durable log off the writer's machine, compaction pool, handoff,
+sharding) is in the M5 spec's backlog with triggers.
 
 **End state** (capability first; *Example* = the scenario we prove it with):
-- As an **operator**, I can run ingest, read and compaction services from the one binary against shared storage and catalog, and get the same answers as one-process mode.
-  - *Example*: 1 writer, 2 readers, 1 compactor; `smithling demo` passes with identical counts.
-- As an operator, I can add or restart read workers without touching ingestion; each replays the durable log and reports its lag.
-- As an **agent developer**, I see acknowledged steps on any reader within seconds, never twice and never missing across flushes and compactions.
-- As an operator, I can hand a shard to a new writer; the old one is fenced out.
-- As a **maintainer**, I can trust it: CI runs the split demo, the new crash points and the scaling bench.
+- As an **operator**, I can start read workers from the one binary against the writer's storage and catalog, and get the same answers as the writer once data is in files.
+  - *Example*: 1 writer + 2 readers; `smithling demo` against each reader passes with identical counts.
+- As an operator, I can add, stop or restart readers without touching the writer.
+- As an **agent**, I can send heavy queries to readers and see data at most one flush age old (2 min default); watching a run live stays on the writer (~1 s).
+- As an agent developer, my long reader queries survive compaction; a second writer on the same store refuses to start.
+- As a **maintainer**, I can trust it: CI runs the 1 writer + 2 readers demo and the P2, P7, P9, P10 problem demos.
 
 **Work needed → how it gets us there**:
 | Work | Contribution |
 |---|---|
-| Per-shard durable log, positions, retention; ack contract | Direct: readers replay; acknowledged writes survive the promised failures |
-| Per-shard coverage + pinned snapshots + leases in the catalog | Direct: no missed or doubled runs across flush and compaction |
-| Read workers (own tail, bootstrap, lag, wait-for-position) | Direct: independent read scaling |
-| Compaction pool out of process; safe orphan sweep | Direct: compaction never slows ingest or breaks a query |
-| Ownership epochs, fencing, handoff, routing | Direct: one writer per shard, always |
-| Cluster page; split-mode demo, crash points, bench in CI | Durable: keeps the end state true |
+| `serve --role reader`: every read API from published files, catalog checked per query | Direct: independent read scaling |
+| Reader state follows each catalog version (feedback, field stats, merged copies of late-updated runs) | Direct: correct answers without restarts |
+| Grace period on deleted files + reader query time limit | Direct: long reader queries survive compaction |
+| Writer lease in the catalog | Direct: one writer per store |
+| Reader freshness in `/healthz` and a UI panel; demos in CI | Durable: keeps the end state true |
 | README and crate descriptions: the tagline gains its second half ("…locally, or scale out when you need to") | Direct: the project says what it now does |
 
-**Delivers**: the cloud split (master Scope, D-036); constitution Architecture Constraints; backlog R-6.
+**Depends on M4**: compaction built against the catalog and files only, guarded swap, grace-period delete, cloud-style CI (M5 spec, M4-REQ-1–4).
+
+**Delivers**: first step of the cloud split (master Scope, D-036); constitution Architecture Constraints.
 
 ### M6: Zero instrumentation + agents
 

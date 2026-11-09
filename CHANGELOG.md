@@ -50,6 +50,10 @@ Milestones, key decisions and changes someone would look up later, newest first.
 - A draft spec for **M5: disaggregated trace database** (ingest, read workers and compaction as separate services
   over shared storage); the agents milestone becomes M6
   ([D-036](specs/000-smithling-master-plan/decisions.md#d-036)).
+- M5 spec and plan proposed, cut to **step 1: read workers over shared storage** (readers read published files
+  only; the writer stays a full node). The problems found at 10× scale (P1–P15), the options other systems use, a
+  key-decision register (KD-1–KD-12) and a backlog with triggers (B1–B10: durable log on S3, compaction pool,
+  handoff, sharding, …) are in `specs/005-m5-disaggregated-trace-db/`.
 - Roadmap backlog: ideas not yet in the system (typed columns for hot JSON paths, cost-based condition order,
   result cache, a Vortex benchmark, bounded attribute promotion) and a scale / failure-modes checklist.
 - `LICENSE` (MIT), `SECURITY.md`, this changelog.

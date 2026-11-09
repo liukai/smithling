@@ -38,17 +38,22 @@ Input to the M5 [spec](spec.md) and plan. Each claim from the note is checked ag
 5. **SmithDB difference (constitution II).** Design notes §2 record SmithDB as querying fresh data from the ingestion
    node; the note's preferred direction (readers consume the log themselves) is a difference, and none of Principle
    II's three allowed reasons obviously fits. Either take SmithDB's path first (allowed as "staged"), or amend the
-   constitution / record a new reason. Spec Q2.
+   constitution / record a new reason. Spec OQ-1, OQ-5.
 6. **Shard key and ingest state.** The project map, flushed-run filter and multi-version set assume one writer sees
-   every version of a run. Sharding by project keeps that true; sharding by trace or hash of run would not, because a
-   project-less late update (D-024) couldn't be routed. Spec Q3.
+   every version of a run. *Corrected 2026-11-08*: sharding by trace keeps that true too, because every update must
+   carry `trace_id` and `dotted_order` (`model/src/validate.rs:55–56`), so even a project-less late update can be
+   routed by trace. (The first version of this item said otherwise.) M5 doesn't shard; the trace id is the preferred
+   key for later (spec Decisions, OQ-6).
+8. **Count-based windows break at 10×** (found by research §4). The dedup window holds 1M keys
+   (`ingest/src/dedup.rs:45`, about 1 min at 20k events/s) and the run → project map about 917k runs (D-028, about 50 s).
+   At 10× both shrink to seconds. Spec P14, P15.
 7. **Scope line in the master roadmap** says the cloud split is out of scope; adding M5 changes that (D-036).
 
 ## Points in the note that hold up
 
 - Readers of one shard each need the full stream; a shared consumer group would give each only part. ✅
 - Max position is not coverage when gaps are possible. ✅ (today there are no gaps, since there's one writer and positions are assigned in order; with a remote log and retries, there can be.)
-- Atomic swap alone doesn't make deletion safe; leases do. ✅
+- Atomic swap alone doesn't make deletion safe; leases do. ✅ (Research §3 suggests a grace period plus a query time limit instead of per-query leases.)
 - Using Postgres delegates catalog durability; it doesn't remove the requirement. ✅
 - Neon analogy: separate compute, durable log and storage serving; keep columnar files and don't import page
   reconstruction. ✅ Not verified against Neon's current architecture (the note says so too).
@@ -56,5 +61,6 @@ Input to the M5 [spec](spec.md) and plan. Each claim from the note is checked ag
 ## Suggested milestone order
 
 The note's six steps, mapped to this repo: step 1 (code review) is this file; step 2 is M4; steps 3–5 are M5; step 6 is
-M6. Inside M5, the plan should go: per-shard log and coverage in one process → readers as a second process on the same
-machine → compaction out of process with leases → handoff and fencing → cloud-style CI.
+M6. *As cut on 2026-11-08* (spec Decisions): M5 builds only read workers over published files (with state refresh,
+the grace period, a writer lease and a freshness view); the durable log off the writer's machine, the compaction pool,
+handoff and sharding are spec backlog B1–B5.
