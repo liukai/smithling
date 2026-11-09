@@ -347,16 +347,23 @@ it beyond `127.0.0.1`.
 
 ## Personal notes: why I'm doing this experiment
 
-I've worked on low-level storage engines like RocksDB, and when I read the SmithDB post I recognized the skeleton:
-an LSM with a log, memtables and immutable files. But a columnar database bends each of those pieces toward a
-different job. The two worlds share a lot of interesting ideas, and each has problems of its own. I wanted to see
-exactly where they meet and where they part.
+Why rebuild something that already exists? Because building a thing is the best way I know to understand it.
+Smithling isn't meant to compete with SmithDB; it's how I'm learning it.
 
-I've also always been amazed by how fast columnar systems are. With tools like Facebook's Scuba, you ask a question
-over a huge pile of events and the aggregation comes back almost before you've finished typing. I wanted to know how
-that works from the inside. AI agents gave me the perfect excuse: they produce deep, tree-shaped traces of spans that
-arrive in pieces, which is a fresh and slightly awkward shape for a database. That felt like the right problem to
-learn on.
+I came to this as a user first. I build agents with LangChain and really enjoy it, and LangSmith is where I watch them
+run. Then I read the SmithDB post and kept recognizing words: write-ahead log, memtables, immutable files,
+compaction, pinned versions. I've worked on storage engines like RocksDB, so that skeleton felt familiar.
+
+But SmithDB is columnar, and that's a different world. I've always been amazed by how fast columnar systems are: with
+tools like Facebook's Scuba, you ask a question over a huge pile of events and the answer comes back almost before
+you've finished typing. A key-value engine and a columnar one share the same skeleton, yet each bends every piece of
+it toward a different job. I knew they were very different; rebuilding SmithDB was a way to find out exactly where
+they meet and where they part.
+
+The part I find most interesting is the collision: a database on one side, an agent on the other. Agents produce
+deep, tree-shaped traces whose pieces arrive minutes apart, and people read them with questions a key-value store was
+never built for. I want to see how the two shape each other: what an agent's data demands from storage, and what
+storage makes cheap or hard to ask about an agent. Once the store works, the agent can turn around and use it (M6).
 
 I started with something small: one program, one folder, on my laptop. Each milestone fixed one thing that was
 broken:
@@ -367,10 +374,10 @@ broken:
   any of them by clicking.
 - ✅ **M3, search, aggregates and speed**: find the needle, then count the haystack. Search the text, add it up, compare
   batches.
-- 🔜 **M4, compaction**: every flush leaves a crumb. Merge small files into big ones and store each run whole. Planned
-  and scoped.
-- 🔜 **M5, a disaggregated trace database**: reads and writes stop fighting over one box. Ingest, read workers and
-  compaction as separate services over shared storage. Planned and scoped.
+- 🟠 **M4, compaction**: every flush leaves a crumb. Merge small files into big ones and store each run whole. In
+  progress.
+- 🔜 **M5, a disaggregated trace database**: reads and writes stop fighting over one box. Step 1: read workers over
+  shared storage, beside the writer. Spec and plan drafted.
 - 💭 **M6, agents debugging agents**: let an agent answer "why did batch a fail?" and cite the runs. Not started.
 
 Then, with a slightly inflated ego, I started asking: what if this had to scale? What would have to change? That
