@@ -83,7 +83,7 @@ performance work** (D3-1, D3-2), then plan M4.
 | M1 See agent trace live | [`001-m1-see-agent-trace-live`](../001-m1-see-agent-trace-live/spec.md) | built; exit check passed locally except the UI by eye and CI-only checks | 69/69 | passed locally (see STATE) |
 | M2 Durable storage + query builder | [`002-m2-durable-storage-query-builder`](../002-m2-durable-storage-query-builder/spec.md) | built; passed locally except the UI by eye and CI-only checks | 83/83 | passed locally (see STATE) |
 | M3 Core demo | [`003-m3-search-aggregates-speed`](../003-m3-search-aggregates-speed/spec.md) | built; passed locally; performance deferred (D3-1, D3-2) | 123/128 | demo 10/10 + quickstart; QR-004/005/006 deferred (D3-1, D3-2) |
-| M4 Compaction (core) | [`004-m4-compaction`](../004-m4-compaction/spec.md) | spec + plan + tasks (25); implementing U1–U6 | — | — |
+| M4 Compaction (core) | [`004-m4-compaction`](../004-m4-compaction/spec.md) | spec + plan + tasks (24, trimmed to essentials); U1–U3 done, U4–U6 next | — | — |
 | M5 Disaggregated trace DB, step 1: read workers | [`005-m5-disaggregated-trace-db`](../005-m5-disaggregated-trace-db/spec.md) | spec + plan proposed; design register KD-1–KD-12 (KD-4, KD-9, KD-11 open); backlog B1–B10 | — | — |
 | M6 Zero instrumentation + agents | — | not started | — | — |
 

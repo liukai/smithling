@@ -20,6 +20,9 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- **M4 tasks trimmed to essentials**: 8 open tasks left (U4–U6); `smithling compact` CLI, bench rows and the payload
+  lookup by source file deferred (K10, K11, D-033). The plan gains the delta key, compaction diagrams, key decisions
+  A1–A8 and a failure table; a job whose swap gives up is settled by a restart (K12 for in-process).
 - **Compaction (M4, units 1–3)**: `Ingest::compact` merges a prefix of the log (whole flushes whose hour windows
   have closed) into one `cmp-*` file per project per hour, one row per run; one catalog commit swaps them in
   (refused if an input changed); merged runs leave the multi-version set once no query holds the old file set.

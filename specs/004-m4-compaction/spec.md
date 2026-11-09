@@ -61,6 +61,7 @@ ones, with every run's versions merged into one row.
 | 2026-11-08 | **One level: flushed files (L0) → compacted files (L1); L1 files are not rewritten in M4.** No further levels | Owner's call; bounds the file count with the least machinery |
 | 2026-11-08 | **Very late updates to already-compacted runs stay in their own small files and are merged at query time** (option a). *Considered*: (b) rewrite an L1 file once its late rows pass a share; (c) multi-tier compaction (K6). Revisit if late files per window grow (K6, K10) | Owner's call; late updates to compacted runs are rare, so query-time merging stays cheap |
 | 2026-11-08 | **A run goes into the window of its own start time** (what file bounds use today, `storage/src/segment.rs:173`). *Considered*: the trace's start (the root's time, the first segment of every version's `dotted_order`), which would keep a multi-day trace in one window; rejected for M4 as the less simple choice | Owner's call: start simple, document the alternative |
+| 2026-11-08 | **A job whose swap gives up is settled by a restart**, not in the running server. Until then its outputs stay `pending` (unread) and, if the commit did land, later jobs are refused; `/healthz` shows `last_error`. In-process settling is backlog K12 | Owner's call: rare (the catalog must fail 5 times in a row), answers stay right, and start-up already cleans it up |
 | 2026-11-08 | **Good defaults now, tuned later**: window 1 h of run start time, settle age 15 min, target file size 256 MB, grace period 24 h, all configurable. The final values come from benchmarking, tuning and real usage (backlog K10) | Owner's call: don't block on numbers we can't measure yet |
 
 ## How compaction works (as decided)
@@ -337,6 +338,7 @@ values moved to [Decisions so far](#decisions-so-far); log-prefix selection (C8)
 | K9 | **Compaction as its own service** | M5 backlog B3 |
 | K10 | **Tune the defaults** (window, settle age, target size, grace period, job limits) with the bench and real workloads | The full bench can run (D3-1), or real usage shows a default is wrong |
 | K11 | **The deferred M3 performance work**: the full 2M-run quiet bench (D3-1) and idle memory ≤ 200 MB as a gate (D3-2) | A quiet machine or the nightly CI bench exists; re-evaluate before M5's plan starts |
+| K12 | **Settle a job whose swap gave up without a restart** (re-read its outputs: delete if `pending`, publish if `active`) | Catalog outages make operators restart to unstick compaction |
 
 ## Assumptions
 

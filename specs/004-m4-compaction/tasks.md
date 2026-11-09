@@ -23,24 +23,36 @@ From [plan.md](plan.md). Tests first in each unit. `[X]` when done; one local co
 - [X] T011 Upload + `commit_compaction` + `Version::with_compaction` (`ingest/src/memtable.rs`)
 - [X] T012 Rebuild the multi-version set after a swap (start-up's source: `needs_merge` rows, plus members still in a memtable)
 - [X] T013 Query: reset kept rows (`VersionRows`) and per-file subtract-stats when the `Version` lost files (`query/src/fields.rs`)
-- [ ] T014 Single-run payload read from the row's source file (`query/src/scan.rs`) — *answers already match after compaction (T015); kept open to measure in U5's bench and change only if it's slower*
+- [~] T014 Single-run payload read from the row's source file (`query/src/scan.rs`) — *deferred (D-033, K11): answers already match after compaction (T015); measure with the full bench*
 - [X] T015 Test (`query/tests/compaction.rs`): lists, trace, run + payload, search, field counts, aggregates equal before and after a forced compaction; and after a late update to a compacted run
 - [X] T016 Test: every run with versions in several files has a marked row once all are flushed (M4-FR-04) — *covered by T015: unmarked rows would change the field counts and aggregates it compares*
 
-## U4 Background, limits, deletes, crashes
+## U4 Background, deletes, crashes
 
-- [ ] T017 Timer in the writer; skip while write slowdown is on or a flush is queued; one job at a time; config flags (`crates/smithling/src/main.rs`, `IngestConfig`)
-- [ ] T018 Delete loop: `replaced_at + grace ≤ now` and no pinned `Version` holds the file; files first, then the row
-- [ ] T019 Crash points `compact_after_put`, `compact_after_commit`, `compact_mid_delete`; harness rounds
-- [ ] T020 Test: a query held across 100 swaps returns the same answer; no missing-file error
+Only what the done-check and M5's M4-REQ-1–4 need. Deferred items are listed at the end.
 
-## U5 Surface
+- [ ] T017 Timer thread in the writer: one job at a time, skipped while write slowdown is on; `--compact on|off` plus the stated defaults as flags (`crates/smithling/src/main.rs`, `IngestConfig`). Clean shutdown (stop flag between jobs, bounded wait). A panic in a job is caught and recorded as `last_error`; the thread keeps going; `/healthz` shows `stopped` if it ever exits. `<storage>/LOCK` when the store is a local path (ADR A7). Logs each step; start-up logs the settings
+- [ ] T018 Delete loop: `replaced_at + grace ≤ now` and the swap's era token is free (keep `(era, files, replaced_at)` per swap); files first, then the row (M4-FR-07).
+- [ ] T019 Crash points `compact_after_put`, `compact_after_commit`, `compact_mid_delete` in the harness; 10/10 rounds each (SC-05, M4-FR-10)
+- [ ] T020 Test: a query held across 100 swaps returns the same answer; no missing-file error (SC-06)
 
-- [ ] T021 `POST /api/compact` (`force`), `smithling compact [--url]`
-- [ ] T022 `/healthz`: `files`, `compaction`; UI storage line (`ui/src`) with a component test
-- [ ] T023 `smithling demo --compact`; bench reports files before/after and single-run P50
+## U5 Surface and demo
 
-## U6 CI and docs
+- [ ] T021 `POST /api/compact` (`force`); `/healthz` gains `files` and `compaction`; UI storage line reads them (`ui/src`) with a component test
+- [ ] T022 `smithling demo --compact`: forces compaction between steps, same checks pass, prints files before/after (SC-01, SC-02)
 
-- [ ] T024 Cloud CI job runs `demo --compact` and the swap crash points (`.github/workflows/ci.yml`, `ci/cloud.yml`)
-- [ ] T025 Roadmap STATE/Progress, CHANGELOG, STARTER_GUIDE M4 section, contracts in USAGE.md
+## U6 CI and close
+
+- [ ] T023 Cloud CI job runs `demo --compact` and the compaction crash points (`.github/workflows/ci.yml`, `ci/cloud.yml`) (M4-FR-10)
+- [ ] T024 Close M4: roadmap STATE/Progress, CHANGELOG, STARTER_GUIDE M4 section, contracts in USAGE.md
+
+## Assumption
+
+- One writer per store across machines until M5's lease (M5-FR-10); locally the `LOCK` files enforce it (ADR A7).
+
+## Deferred (not needed to close M4)
+
+- `smithling compact [--url]` CLI: `POST /api/compact` covers tests and the demo
+- Settling a job whose swap gave up without a restart: K12; a restart does it
+- Skipping a job while a flush is queued: K10, if flushes are seen waiting on compaction
+- Bench rows for files before/after and single-run P50 (SC-03, SC-07); T014's payload lookup: K11, with D3-1 (D-033)
