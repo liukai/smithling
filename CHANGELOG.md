@@ -56,7 +56,7 @@ Milestones, key decisions and changes someone would look up later, newest first.
   handoff, sharding, …) are in `specs/005-m5-disaggregated-trace-db/`.
 - M4 narrowed to **compaction (core)**: one level, in the writer, built for M5; threads, export, feedback writes
   from the UI and find-what-stands-out move to the M4 backlog ([D-038](specs/000-smithling-master-plan/decisions.md#d-038)).
-  Spec in `specs/004-m4-compaction/`.
+  Spec, plan and tasks in `specs/004-m4-compaction/`.
 - Roadmap backlog: ideas not yet in the system (typed columns for hot JSON paths, cost-based condition order,
   result cache, a Vortex benchmark, bounded attribute promotion) and a scale / failure-modes checklist.
 - `LICENSE` (MIT), `SECURITY.md`, this changelog.
