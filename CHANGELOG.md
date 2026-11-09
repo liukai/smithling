@@ -20,6 +20,10 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- README: "What's next" and "The seven questions" become one section, "What it does, milestone by milestone": the
+  seven questions mapped to milestones, a status chart and a fuller milestone table, the research-agent setup, then
+  one chapter per milestone (a quote, a scene, and the questions it answers with their screenshots; new screenshots
+  for M1 and M2). STARTER_GUIDE gains section 7, "How a read works", with the details compaction changes.
 - **M4 tasks trimmed to essentials**: 8 open tasks left (U4–U6); `smithling compact` CLI, bench rows and the payload
   lookup by source file deferred (K10, K11, D-033). The plan gains the delta key, compaction diagrams, key decisions
   A1–A8 and a failure table; a job whose swap gives up is settled by a restart (K12 for in-process).

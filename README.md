@@ -9,14 +9,14 @@ your laptop: same design, one folder, and your agent's data never leaves the mac
 |---|---|
 | see what my agent is doing | [Use it today](#use-it-today) |
 | learn how a trace database works | [Learn from it](#learn-from-it) |
-| know where this is going | [What's next](#whats-next) |
+| see what each milestone answers, and what's next | [What it does, milestone by milestone](#what-it-does-milestone-by-milestone) |
 
 ## Credit: SmithDB
 
 Smithling is named after **SmithDB** and exists because of it. The LangChain team described SmithDB, the storage
 engine they built for LangSmith, in [Introducing SmithDB](https://www.langchain.com/blog/introducing-smithdb). That
 post laid out the problem (seven kinds of questions people ask about agent traces, listed
-[below](#the-seven-questions-from-the-smithdb-post)) and a design for answering them fast. Smithling is my attempt to
+[below](#the-seven-questions)) and a design for answering them fast. Smithling is my attempt to
 learn that design by rebuilding it, small enough to run on a laptop: hence the name, a *little* Smith.
 
 **From the post**: the seven workloads; the architecture (Rust and Apache DataFusion, a log-structured write path
@@ -120,42 +120,86 @@ cargo run --release -p smithling-tools --example columnar_tour   # rows vs colum
 
 ---
 
-## What's next
+## What it does, milestone by milestone
 
-| Milestone | What it adds | Status |
-|---|---|---|
-| **M1** See an agent trace live | uploads, crash-safe log, live browser view | ✅ built |
-| **M2** Durable storage + query builder | data on disk (Parquet), filters by clicking, trace conditions | ✅ built |
-| **M3** Search, aggregates, speed | text search, stats and charts, batch comparison | ✅ built |
-| **M4** Compaction | merges small files into larger ones, one row per run, so reads touch fewer files | in progress |
-| **M5** Disaggregated trace database | ingest, readers and compaction as separate services that scale out | spec and plan drafted (step 1: read workers) |
-| **M6** Agents debugging agents | import Claude Code sessions, agent tools over MCP | planned |
+The [SmithDB post](https://www.langchain.com/blog/introducing-smithdb) names seven questions a trace store has to
+answer fast. Smithling is built in milestones, and each one lets you answer more of them. This section follows one
+story through all of them, with screenshots of the demo data.
 
-Also deferred: conversation threads, export, feedback from the UI and "what stands out" (moved out of M4,
-[D-038](specs/000-smithling-master-plan/decisions.md#d-038)); a full 2M-run benchmark and the idle-memory target
-(re-evaluated before M5's plan); delete and retention. Status and plans:
-[roadmap](specs/000-smithling-master-plan/roadmap.md) · what changed: [CHANGELOG.md](CHANGELOG.md).
+### The seven questions
 
----
+| # | Question | Example in the demo data | Answered in |
+|---|---|---|---|
+| 1 | **Show me this one** | open the slowest failed task of batch a, then any step's full input | ✅ [M1](#m1-see-an-agent-trace-live-) |
+| 2 | **Narrow it down** | failed steps in batch a that took longer than 2 s | ✅ [M2](#m2-keep-everything-find-anything-) |
+| 3 | **Find the text** | runs mentioning "429 Too Many Requests" (31, all `fetch_url`) | ✅ [M3](#m3-search-add-it-up-compare-) |
+| 4 | **Look inside the JSON** | runs on `metadata.prompt_version = v7` whose output had `status_code = 429` | ✅ [M2](#m2-keep-everything-find-anything-) |
+| 5 | **Think in trees** | tasks that finished ok although a step inside them failed (23 of them) | ✅ [M2](#m2-keep-everything-find-anything-) |
+| 6 | **Rebuild the conversation** | all turns of one chat, in order | ⏳ backlog ([D-038](specs/000-smithling-master-plan/decisions.md#d-038)) |
+| 7 | **Add it up** | per step name: `fetch_url` fails 14% of the time, p95 31 s; batch a cost $4.12 | ✅ [M3](#m3-search-add-it-up-compare-) |
 
-## The seven questions from the SmithDB post
+### Milestones at a glance
 
-The SmithDB post names seven questions a trace store has to answer quickly. Smithling's demo data is built so you can
-ask each of them, and see the answer, on your laptop.
+```mermaid
+flowchart TB
+    subgraph now ["Built"]
+        direction LR
+        M1["M1 Watch it live"]:::built
+        M2["M2 Find the needle"]:::built
+        M3["M3 See why, prove the fix"]:::built
+        M1 --> M2 --> M3
+    end
+    subgraph next ["Next"]
+        direction LR
+        M4["M4 Stays fast<br/>as data piles up"]:::doing
+        M5["M5 Your team<br/>queries too"]:::plan
+        M6["M6 An AI<br/>debugs it for you"]:::plan
+        M4 --> M5 --> M6
+    end
+    now --> next
+    classDef built fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
+    classDef doing fill:#ffe0b2,stroke:#ef6c00,color:#1b1b1b
+    classDef plan fill:#e3f2fd,stroke:#1565c0,color:#1b1b1b,stroke-dasharray: 4 3
+```
 
-**Run the demo**:
+*Green: built. Orange: in progress. Dashed blue: planned.*
+
+| Milestone | What you get | Questions | Status |
+|---|---|---|---|
+| **M1** See an agent trace live | Point your agent at Smithling with one setting and watch every step appear as it happens: the tree, the timing, each step's full input and output. Nothing Smithling confirmed is lost in a crash. | 1 | ✅ built |
+| **M2** Keep everything, find anything | Months of runs stay on disk. Narrow them down by clicking: any field, any key inside the JSON, conditions on a whole trace. Every view is a link you can share. | 2, 4, 5 | ✅ built |
+| **M3** Search, add it up, compare | Search every word your agent read or wrote. Error rate, latency percentiles, tokens and cost by any field, as tables and charts. Put two batches side by side. | 3, 7 | ✅ built |
+| **M4** Compaction | Small files are merged in the background, so reads stay fast and answers stay identical as data piles up, through crashes and long queries. | all, at scale | 🟠 in progress |
+| **M5** Read workers | Start read-only copies on the same storage for heavy queries; the writer keeps taking traces as before. | all, for a team | spec and plan drafted |
+| **M6** Agents debugging agents | Import your Claude Code sessions with no setup; let an AI agent investigate traces through tools and cite the runs. | 1–7, asked by an agent | planned |
+
+### The setup
+
+You've built a **research agent**. Last night it ran **batch a**: 200 research tasks, each searching the web, fetching
+pages with a `fetch_url` tool and asking an LLM to summarize. This morning the batch looks bad and you don't know why.
+You'll fix a bug, and **batch b** runs with the fix. The numbers below are the ones `smithling demo` plants and checks.
 
 ```bash
 ./target/release/smithling serve                               # terminal 1
 ./target/release/smithling demo --url http://localhost:7070    # terminal 2: loads the data, checks 10 numbers
 ```
 
-Then open **http://localhost:7070/scenarios**: one card per question, one click each.
+Then open **http://localhost:7070/scenarios**: one card per question, one click each. Orange boxes in the screenshots
+mark what to look at.
 
-The screenshots below come from that demo data: an overnight evaluation of a research agent in two batches, `a`
-before a bug fix and `b` after. Orange boxes mark what to look at.
+### M1: See an agent trace live ✅
 
-### 1. Show me this one ✅
+> *As an agent developer, I change one setting, and every step my agent takes shows up in my browser within a second.*
+
+You start a job. A run appears marked **running**, and its steps fill in as a tree with a timing bar each: search,
+fetch, fetch, LLM. Forty minutes later it flips to **ok**. You click one `fetch_url` step and read the full 40 KB page
+it got back. Then you pull the power cord mid-run: after the restart, nothing Smithling confirmed is missing.
+
+![A research_task still running: four steps done, the last fetch_url still in flight, both marked run](docs/images/m1-live-trace.png)
+
+*Still running: the task and its last `fetch_url` show `run`, and their bars keep growing until they finish.*
+
+#### Question 1: Show me this one
 
 Open the slowest failed task of batch a, then any step's full input. Smithling shows the trace tree, a timing
 waterfall, and each step's inputs and outputs.
@@ -169,7 +213,20 @@ beside it is where the time went.*
 
 *Click any step to read it whole: 2.44 s, 4,750 tokens on `gpt-4o-mini`, its inputs, outputs and metadata.*
 
-### 2. Narrow it down ✅
+### M2: Keep everything, find anything ✅
+
+> *As an agent developer, I can narrow millions of runs down to the handful I care about, by clicking.*
+
+Click *last night's batch*, then *errored*: **14 runs**. Then a sneakier question: *which tasks said "success" but had
+a failing tool inside?* **23**, the quiet failures you'd never have noticed. A side panel shows
+`prompt_version: v7 (912), v6 (928)`; one click filters on `v7`. You send a teammate the link and it opens the same
+view.
+
+![The field browser with metadata.prompt_version open: v6 928, v7 912](docs/images/m2-fields.png)
+
+*Every field in your data, with its most common values and counts. Click one to filter on it.*
+
+#### Question 2: Narrow it down
 
 Failed steps in batch a that took longer than 2 s. Filter on any field, by clicking or as text.
 
@@ -178,20 +235,12 @@ Failed steps in batch a that took longer than 2 s. Filter on any field, by click
 *Three clicks, three conditions: the `fetch_url` steps that hit a 429 or a 30 s timeout, and the failed tasks above
 them (56 runs; the list stops at the page limit of 50).*
 
-### 3. Find the text ✅
-
-Runs mentioning "429 Too Many Requests". Smithling searches inputs, outputs and errors, and highlights each match.
-
-![Text search for "429 Too Many Requests": 31 runs, all fetch_url, the match highlighted in each error](docs/images/q3-text-search.png)
-
-*31 hits, every one a `fetch_url` failing with `HTTPError: 429`. The agent is being rate limited.*
-
-### 4. Look inside the JSON ✅
+#### Question 4: Look inside the JSON
 
 Runs on `metadata.prompt_version = v7` whose output had `status_code = 429` (19 in batch a). Filter on fields inside
 the metadata, input and output JSON. The step opened under question 5 is one of them.
 
-### 5. Think in trees ✅
+#### Question 5: Think in trees
 
 Tasks that finished ok although a step inside them failed (23 of them). Put conditions on a trace's root or on any run
 in it.
@@ -206,11 +255,23 @@ one marked ✓ ok. Open one:*
 *The task says ✓ ok, but one `fetch_url` inside it failed with a 429. Its `outputs.status_code` and
 `metadata.prompt_version` are the fields question 4 filters on.*
 
-### 6. Rebuild the conversation ⏳
+### M3: Search, add it up, compare ✅
 
-All turns of one chat, in order. Not yet: conversation threads are in the backlog.
+> *As an agent developer, I can search everything my agent read and wrote, and put numbers on what went wrong.*
 
-### 7. Add it up ✅
+Search for **"429 Too Many Requests"**: **31 runs**, all `fetch_url`. The website was rate-limiting you. Group by tool:
+`fetch_url` fails **14%** of the time and its slowest 5% take **31 s**; the batch cost **$4.12**. You add a retry and
+run batch b. Side by side: **14% → 2%** errors, **31 s → 9 s**. Proof on one screen, not a hunch.
+
+#### Question 3: Find the text
+
+Runs mentioning "429 Too Many Requests". Smithling searches inputs, outputs and errors, and highlights each match.
+
+![Text search for "429 Too Many Requests": 31 runs, all fetch_url, the match highlighted in each error](docs/images/q3-text-search.png)
+
+*31 hits, every one a `fetch_url` failing with `HTTPError: 429`. The agent is being rate limited.*
+
+#### Question 7: Add it up
 
 Per step name: how often it fails, how slow it is, what it costs. Smithling shows stats, time series and distributions.
 
@@ -218,13 +279,48 @@ Per step name: how often it fails, how slow it is, what it costs. Smithling show
 
 *`fetch_url` fails 14% of the time with a p95 of 31 s; the model calls cost $4.12 for the batch.*
 
-### Bonus: did the fix work?
+#### Bonus: did the fix work?
 
 Compare batch a with batch b, after the fix, side by side.
 
 ![Batch a vs batch b: p95 latency of llm over time, and a table with both batches side by side](docs/images/compare-batches.png)
 
 *`fetch_url` errors drop from 14% to 2% and its p95 from 31 s to 9 s; failed tasks go from 7% to none.*
+
+### M4: Compaction 🟠 in progress
+
+> *As an agent developer, I get the same fast answers at a million runs as at a thousand, and never have to think
+> about why.*
+
+Months of nightly batches leave thousands of small files. You notice nothing: in the background, Smithling merges
+them into about **a tenth as many**, and opening one run stays **under 50 ms**. A job whose last step arrived hours
+late still shows the right result. Kill Smithling in the middle of a merge and nothing is lost; a long query left
+running finishes normally, even though the files under it were replaced.
+
+### M5: Read workers (spec and plan drafted)
+
+> *As an operator, I can add read-only copies for heavy queries, and the one taking writes never notices.*
+
+The whole team uses it now. You start **two readers** from the same program, on the same storage. Dashboards and big
+comparisons go to them; live tracing stays on the writer, still about a second behind. You restart a reader at lunch
+and the writer doesn't notice. Someone starts a second writer by mistake, and it refuses to start.
+
+### M6: Agents debugging agents (planned)
+
+> *As an agent developer, I can ask an AI "why did last night's batch fail?" and get an answer with links to the
+> evidence.*
+
+You import your own Claude Code sessions with no setup and ask *"which session ran the failing `cargo test`, and what
+did the agent do just before?"* Then you ask an AI assistant about batch a. It works through the traces with tools
+sized for it, answers *rate limiting on `fetch_url`*, and cites the **31 runs**. You click through to check its work.
+
+### Not yet, and why
+
+Question 6, **rebuild the conversation** (all turns of one chat, in order), needs conversation threads, which are in
+the backlog. Also deferred: export, feedback from the UI and "what stands out" (moved out of M4,
+[D-038](specs/000-smithling-master-plan/decisions.md#d-038)); a full 2M-run benchmark and the idle-memory target
+(re-evaluated before M5's plan); delete and retention. Status and plans:
+[roadmap](specs/000-smithling-master-plan/roadmap.md) · what changed: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

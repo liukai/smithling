@@ -4,8 +4,8 @@ New here? This guide explains smithling from zero: the problem it solves, how th
 milestone turned a blank repo into a usable trace store, one step at a time. No storage background needed.
 
 - **10 minutes**: read sections 1–3.
-- **An hour**: read it all, then try section 8 on your laptop.
-- **Ready for code**: each milestone has a detailed, line-linked guide; links are in section 9.
+- **An hour**: read it all, then try section 9 on your laptop.
+- **Ready for code**: each milestone has a detailed, line-linked guide; links are in section 10.
 
 [README.md](README.md) has a five-minute tour and [USAGE.md](USAGE.md) every command and flag; this guide is the story
 behind them.
@@ -442,7 +442,102 @@ Deep dive: [M3 starter guide](specs/003-m3-search-aggregates-speed/starter-guide
 
 ---
 
-## 7. What's next
+## 7. How a read works (and what compaction changes)
+
+Every question you ask, whether it's a runs list, a trace, one run, a search or a chart, goes through the same five
+steps. Sections 4–6 introduced them one milestone at a time; this section puts them together, with the details
+that matter once compaction (M4) starts replacing files under running queries.
+
+```mermaid
+flowchart TB
+    subgraph read ["Every read"]
+        direction LR
+        P["1 Pin<br/>file list + memtables"]:::old
+        S["2 Skip files<br/>catalog ranges"]:::old
+        C["3 Scan wide<br/>match OR needs_merge"]:::old
+        M["4 Merge split runs<br/>then judge exactly"]:::old
+        P --> S --> C --> M
+    end
+    subgraph m4 ["What M4 adds around it"]
+        direction LR
+        F["Fewer, larger files<br/>most runs one row"]:::new
+        W["Swap publishes a<br/>new file list"]:::new
+        K["Kept rows reset,<br/>memory shrinks"]:::revised
+        D["Old files deleted only<br/>when no pin + grace"]:::new
+        F --> W --> K --> D
+    end
+    read --> m4
+    classDef new fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
+    classDef revised fill:#ffe0b2,stroke:#ef6c00,color:#1b1b1b
+    classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
+```
+
+*Grey: built in M1–M3. Green: new in M4. Orange: changed by M4.*
+
+### The five steps
+
+| Step | What happens | Why |
+|---|---|---|
+| **1. Pin** | Under the memtable lock, the query takes the current file list (an `Arc<Version>`) and copies the memtable rows in scope, without payloads | A consistent snapshot; the writer never waits for a query |
+| **2. Skip files** | The catalog's ranges (project, start time, trace id, sequence numbers) drop whole files without reading them | Most files never get opened |
+| **3. Scan wide** | DataFusion reads the rest with Parquet statistics, page indexes and bloom filters, keeping every row that *might* match plus every row marked `needs_merge` | The "sieve": it may keep extras, never drops a match |
+| **4. Merge, then judge** | Runs split across places are merged (newest value per field wins), and only then is the exact filter applied | Correct no matter where a run's pieces live |
+| **5. Fill the page** | Lists read the newest time slice first and stop once a page is full; payloads are read only for rows on screen | Fast first answers |
+
+Code: [`crates/query/src/scan.rs`](crates/query/src/scan.rs) (pin, scan, merge),
+[`crates/query/src/fields.rs`](crates/query/src/fields.rs) (field counts and kept rows).
+
+### The details
+
+- **A snapshot, not a lock.** A flush that lands mid-query doesn't change that query's answer; the next query sees it.
+  Live views re-run the same query over the traces that changed, at most every 100 ms.
+- **One run can be in two places.** The 40-minute research run's start was flushed to a file long before its end
+  arrived. The end sits in the memtable; the read finds both pieces and merges them. Filtering first would be wrong:
+  the file's copy still says `running`.
+- **How a read knows a run is split.** The writer keeps a *multi-version set*: runs whose update arrived after their
+  start was frozen or flushed. A run joins it under the same lock readers pin with, so no query can see a new piece
+  before the run is marked. When the memtable is flushed, those runs' rows get `needs_merge`. About 10% of runs are
+  split; the rest are read as they are.
+- **Counts add up per file, minus the split runs.** Field counts ("`prompt_version: v7 (912)`") come from per-file
+  stats, which would count a split run once per piece. So for split runs the query subtracts their per-file rows and
+  adds one merged row. Those merged rows (*kept rows*) are cached across requests, because before M4 files were only
+  ever added. That cache is most of the idle memory that M3 waived (D-028).
+- **One run's payload is read from one file.** A single-run read finds the file by its sequence and trace-id ranges,
+  then reads the inputs and outputs for just that row.
+- **Search never trusts the index alone.** The text index narrows to candidates; the exact phrase is checked on the
+  merged text. If a late update replaced the output that matched, the stale index entry is rejected.
+- **A damaged file is skipped and named**, not allowed to break every query.
+
+### What compaction changes for reads (M4)
+
+Compaction merges small files into one file per project per hour, with one row per run. Every query must give the
+same answer before and after (SC-02). Here is what that takes:
+
+- **Files can disappear now.** Before M4, files were never deleted, so a pinned file list was always readable.
+  Now each swap publishes a new file list, and replaced files are deleted later. A query keeps reading the list it
+  pinned. A replaced file is deleted only when no query still holds a file list from before its swap (an *era
+  token*, a reference count shared by every file list between two swaps) **and** its grace period (24 h) has passed.
+- **Answers switch files at one moment.** The swap is one catalog commit that also swaps the files' field stats. A
+  query sees either all the old files or all the new ones, never a mix, so nothing is counted twice or lost.
+- **Fewer files, fewer merges.** A compacted run is one row in one file, so most of step 4 disappears for old data.
+- **Memory shrinks, once it's safe.** Merged runs leave the multi-version set, and the kept rows reset, but only
+  after every file list from before the swap is released. The first field-count or aggregate request after that
+  rebuilds the kept rows, which are now small.
+- **Late updates still work.** An update to an already-compacted run lands in a new small file marked `needs_merge`
+  and is merged at query time, as before. Compacted files are never rewritten (backlog K6 revisits this if these
+  small files pile up).
+- **Single-run reads cover a wider range.** A compacted file spans a wide range of sequence numbers, so the
+  single-run lookup may open more candidate files. Answers are the same; whether it's slower is measured with the
+  full bench (backlog K11).
+- **Readers in other processes (M5).** A reference count only sees queries in this process. Read workers on other
+  machines are covered by the grace period instead, with each reader query capped well under it.
+
+How a job runs, the catalog states and the crash cases are in the
+[M4 plan](specs/004-m4-compaction/plan.md#how-compaction-works).
+
+---
+
+## 8. What's next
 
 Nothing below is specced yet; it's the plan and the current thinking.
 
@@ -491,7 +586,7 @@ numbers (a flush already holds minutes of data, not seconds).
 
 ---
 
-## 8. Try it
+## 9. Try it
 
 ```bash
 (cd ui && npm ci && npm run build)          # the UI, once
@@ -519,7 +614,7 @@ Things worth watching while you play:
 
 ---
 
-## 9. Where to go next
+## 10. Where to go next
 
 | You want to… | Read |
 |---|---|
