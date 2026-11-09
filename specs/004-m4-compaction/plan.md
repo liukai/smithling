@@ -24,6 +24,27 @@ SMITHLING_TEST_CRASH_AT=<point> …           # crash harness: 10/10 rounds per 
 
 Plus the cloud CI job (MinIO + Postgres) running the demo with `--compact`.
 
+## The M4 demo (what you'll see)
+
+**In one sentence**: Smithling quietly merges its many small data files into a few large ones, and every answer you
+get stays exactly the same.
+
+**Why it matters**: every flush writes new small files. After weeks of use there are thousands, and each query has
+to open them all. Compaction keeps the count low, so Smithling stays fast as data piles up. In normal use you never run
+anything: `serve` does it in the background every minute. The demo just makes it happen right away, so you can see it.
+
+| Step | You run | You'll see | What it shows |
+|---|---|---|---|
+| 1 | `smithling serve` (terminal 1) | the usual `listening on http://localhost:7070` | nothing new yet |
+| 2 | `smithling demo --url http://localhost:7070 --compact` (terminal 2) | the same research-agent story as M3 (batch a fails, batch b has the fix), the same **10 checks, all ✓, same numbers** (14 failing tasks, 31 hits for "429 Too Many Requests", 14% → 2% errors), plus one new line: **files before → after compaction** | answers don't change (SC-02); the file count drops to ≤ 10% (SC-01) |
+| 3 | open **http://localhost:7070** | a new **storage line**: how many files, whether compaction is up to date, when it last ran. Clicking around gives the same answers as before | you can see compaction keeping up (Story 5) |
+
+**What the demo doesn't show**, and where it is shown instead:
+
+- *Crash safety*: killing Smithling mid-compaction loses nothing. CI proves it: 30 rounds that crash at the three
+  compaction points (T019).
+- *Speed at scale*: read times at 2M runs, measured later with the full bench (K11).
+
 ## Delta at a glance
 
 | | Part | Before M4 | What M4 changes | Status |

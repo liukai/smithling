@@ -192,7 +192,8 @@ the catalog and files only.
 
 **End state** (capability first; *Example* = the scenario we prove it with):
 - As an **agent developer**, I get the same fast trace and run reads at millions of runs as at thousands.
-  - *Example*: after compaction settles on the bench load, ≤ 10% of the files and single-run reads under 50 ms.
+  - *Example*: `smithling demo --compact` ends with ≤ 10% of the files it had before. Read speed at the 2M-run
+    bench load is measured later with the full bench (K11, D-033).
 - As an agent developer, I can rely on runs that finish late showing correctly, no matter when their last update arrives or whether background compaction has run.
   - *Example*: `smithling demo` passes with identical counts with compaction forced between steps.
 - As an **operator**, I can kill Smithling at any moment during compaction and lose nothing; long queries never fail because files were replaced.

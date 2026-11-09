@@ -131,8 +131,8 @@ flowchart TB
 
 - 🟢 As an **agent developer**, I get the same fast trace and run reads at millions of runs as at thousands, because
   files are merged in the background. (C1, C4)
-  - *Example*: at the 2M-run bench load, after compaction settles, the file count is ≤ 10% of the uncompacted count
-    and single-run reads are back under 50 ms (median).
+  - *Example*: `smithling demo --compact` ends with ≤ 10% of the files it had before compaction. Read speed at the
+    2M-run bench load (single-run median under 50 ms) is measured later with the full bench (K11, D-033).
 - 🟢 As an agent developer, I see runs that finished late exactly as before compaction, whenever their last update
   arrives, before or after compaction has run. (C2, C6)
   - *Example*: `smithling demo` passes every check with identical counts with compaction forced between steps.
@@ -309,7 +309,7 @@ points; counts match local.
 
 ### Measurable Outcomes
 
-- 🟢 **SC-01** (C1): After compaction settles on the bench load, the file count is ≤ 10% of the uncompacted count.
+- 🟢 **SC-01** (C1): After compaction settles, the file count is ≤ 10% of the uncompacted count: shown by `smithling demo --compact`; at the full bench load with K11.
 - 🟢 **SC-02** (C2, C6): Zero differences between query results with and without compaction, across the property test and `smithling demo` with compaction forced between steps, on local and cloud-style storage.
 - 🟠 **SC-03** (C1, C5): Single-run and trace reads at the bench load after compaction: median ≤ 50 ms (master QR-004), and never slower than before compaction.
 - 🟠 **SC-04** (C2): Idle memory at 0.5M runs after compaction, measured and reported against the 200 MB target (D3-2); not a gate in M4 (Decisions, K11).

@@ -20,6 +20,8 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- The M4 plan gains "The M4 demo": what you run and what you'll see, in plain words. The M4 examples no longer promise
+  single-run reads under 50 ms in M4; read speed at the bench load is measured later (K11, D-033).
 - **Compaction runs in the background (M4, unit 4)**: `serve` starts a compactor thread (on by default in `serve`, off
   for library users) (a job every 60 s, skipped while a flush runs); flags `--compact on|off`, `--compact-window`,
   `--settle`, `--compact-target`, `--grace`. Replaced files are deleted once their grace period has passed and no

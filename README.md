@@ -293,9 +293,14 @@ Compare batch a with batch b, after the fix, side by side.
 > about why.*
 
 Months of nightly batches leave thousands of small files. You notice nothing: in the background, Smithling merges
-them into about **a tenth as many**, and opening one run stays **under 50 ms**. A job whose last step arrived hours
+them into about **a tenth as many**, and every answer stays exactly the same. A job whose last step arrived hours
 late still shows the right result. Kill Smithling in the middle of a merge and nothing is lost; a long query left
 running finishes normally, even though the files under it were replaced.
+
+**The demo, once M4 is done**: run `smithling demo --url http://localhost:7070 --compact`. You'll see the same 10
+checks pass with the same numbers as before, plus a line with the file count before and after compaction (the target is
+a tenth or less). In the browser, a new storage line shows how many files there are and whether compaction is up to
+date. Step by step: [the M4 demo](specs/004-m4-compaction/plan.md#the-m4-demo-what-youll-see).
 
 ### M5: Read workers (spec and plan drafted)
 
