@@ -24,6 +24,12 @@ Milestones, key decisions and changes someone would look up later, newest first.
   seven questions mapped to milestones, a status chart and a fuller milestone table, the research-agent setup, then
   one chapter per milestone (a quote, a scene, and the questions it answers with their screenshots; new screenshots
   for M1 and M2). STARTER_GUIDE gains section 7, "How a read works", with the details compaction changes.
+- Roadmap backlog gains review findings F-1–F-4, to fix later: WAL replay can cut confirmed events, start-up can
+  delete files the WAL can't rebuild, latency-ordered pages can skip or repeat runs, small search pages scan the
+  whole scope.
+- ROCKSDB_COMPARISON §10 rewritten for M4 as built: one level L0 → L1 by a prefix of the log, catalog file states,
+  versions across a swap (era tokens, grace period), and why the multi-version set isn't MVCC. Stale "not built"
+  lines in §1, §2, §8 and §11–§14 fixed.
 - **M4 tasks trimmed to essentials**: 8 open tasks left (U4–U6); `smithling compact` CLI, bench rows and the payload
   lookup by source file deferred (K10, K11, D-033). The plan gains the delta key, compaction diagrams, key decisions
   A1–A8 and a failure table; a job whose swap gives up is settled by a restart (K12 for in-process).

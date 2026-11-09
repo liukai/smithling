@@ -26,16 +26,16 @@ built (yet).
 | File list | MANIFEST (log of VersionEdits) | **SQL catalog** (SQLite / Postgres), one transaction per flush |
 | Reader snapshot | SuperVersion + sequence-number snapshot | pinned `Version` + copies of memtable rows |
 | Combining versions | newest seqno wins, or a merge operator | built-in **field-by-field merge** at read time |
-| Compaction | leveled / universal / FIFO | **not built**; proposed for M4: leveled by start time (§10) |
+| Compaction | leveled / universal / FIFO | **one level** (M4): settled flush files (L0) merged into hour-window L1 files, never rewritten (§10) |
 | Query engine | iterators | **Apache DataFusion** scans + smithling's own merge and filter |
 
 The short version: smithling is an LSM whose SSTs are Parquet files, sorted by trace for locality, pruned by time
 through a SQL manifest, merged per run field by field, and read by an analytics engine instead of an iterator.
-Every file today is effectively L0.
+Flush files are L0; compaction merges a prefix of them into L1 files, one per project per hour.
 
 ---
 
-## 2. The shape, side by sidtrace_id, dotted_ordere
+## 2. The shape, side by side
 
 ```mermaid
 flowchart TB
@@ -49,7 +49,7 @@ flowchart TB
         direction TB
         T1["Upload batch (HTTP)"] --> T2["WAL + fsync"] --> T3["Active memtable (hash map)"]
         T3 --> T4["One frozen memtable"] --> T5["Flush → Parquet segment"]
-        T5 -.-> T6["Compaction (M4, not built): see §10"]
+        T5 --> T6["Compaction → L1 (M4): see §10"]
     end
 ```
 
@@ -224,10 +224,11 @@ flowchart TB
 | File set held by a reader | Version, ref-counted | `Arc<Version>` ([memtable.rs](crates/ingest/src/memtable.rs)) | same (R-7) |
 | Memtables held | mem + imm in the SuperVersion | frozen memtable `Arc` + **copies** of active-memtable rows | **different** |
 | Point-in-time | seqno snapshot, any number of them | no seqno snapshots; consistency comes from taking files + memtables under one lock (D-015) | **different** |
-| Obsolete files | deleted when no Version references them | same rule; nothing deletes files until compaction exists | same |
+| Obsolete files | deleted when no Version references them | deleted when no Version of that *era* is held **and** a grace period has passed (§10) | **different** |
 
 The copy is the price of the in-place merge: the active memtable's entries change, so a query copies what it needs
-instead of reading a versioned structure.
+instead of reading a versioned structure. How `Version` changes when compaction removes files is in
+[§10, Versions across a swap](#versions-across-a-swap).
 
 ---
 
@@ -266,106 +267,142 @@ the pre-filter, and the exact filter runs on merged runs.
 
 ---
 
-## 10. Compaction: not built yet, and how we would build it
+## 10. Compaction (M4): one level, and what it does to versions
 
-### Today: everything is L0
+Status: the job, the swap and the version changes are built (M4 units 1–3). Still open: the background timer
+(T017), the delete loop (T018) and the compaction crash points (T019). The plan is
+[specs/004-m4-compaction/plan.md](specs/004-m4-compaction/plan.md).
 
-smithling has no compaction. Every flush adds files that overlap in time with earlier ones, exactly like RocksDB's
-L0, and nothing ever merges them. The costs are the ones a RocksDB person would predict:
+### Why it was needed: everything was L0
+
+Before M4 every flush added files that overlap in time with earlier ones, like RocksDB's L0 with compaction turned
+off. The costs were the ones a RocksDB person would predict:
 
 | Symptom | RocksDB analogue | Effect in smithling |
 |---|---|---|
-| file count only grows | L0 file count growing with compaction disabled | every in-scope file's footer is read; more catalog entries to prune |
+| file count only grows | L0 file count growing with compaction disabled | every in-scope file's footer is read; single-run reads pass 50 ms at ~680 files |
 | a run whose start and end were flushed apart stays split | versions of a key spread over many L0 files | every read of it fetches and merges both versions |
 | memory held for split runs | — | the multi-version set and kept merged rows grow; the main reason idle memory is above target (D-028) |
 | deletes and retention can't free space | tombstones that never get compacted away | backlog B1 is blocked on compaction |
 
-### The idea: leveled compaction, where the "key" is time
-
-The master design sketches **time-tiered** compaction (T0 flushes → T1 ~15-minute files → T2 daily ~256 MB files).
-Seen from RocksDB, the cleanest reading of that sketch is **leveled compaction on `start_key`**, the run's own start
-time:
+### The design: L0 → L1, a prefix of the log
 
 ```mermaid
 flowchart TB
-    T0["T0 = L0: flush files, overlapping in start_key"]
-    T1["T1 = L1: non-overlapping start_key windows (~15 min)"]
-    T2["T2 = L2: non-overlapping day files (~256 MB)"]
+    L0["L0: flush files, overlapping in time"]
+    PICK["Pick: oldest whole flushes, while every window they touch has closed"]
+    L1["L1: one file per (project, hour of run start), never rewritten"]
     SW["Swap in one catalog transaction"]
-    DEL["Delete old files once no query pins them"]
-    T0 -->|"merge versions, partition by window"| T1
-    T1 -->|"when a day has settled"| T2
-    T2 --> SW --> DEL
+    DEL["Delete inputs after the grace period, once no query holds them"]
+    L0 --> PICK -->|"merge each run's versions"| L1 --> SW --> DEL
 ```
 
-Why `start_key` is the right key: **every version of a run carries the same `start_key`** (it comes from the run's
-`dotted_order`, which a late update also sends). So if a compaction job takes *every* file that overlaps a
-`start_key` window, it is guaranteed to see *every* stored version of every run in that window. RocksDB gets the same
-guarantee from user keys: all versions of a key fall in the same key range.
+| | RocksDB | smithling | |
+|---|---|---|---|
+| Levels | L0 … Ln, each level non-overlapping by key | L0 and L1 only; L1 files split by **time window** (1 h of run start time), not by key range | **different** |
+| Picking L0 inputs | oldest L0 files + overlapping L1 files | the oldest whole flushes in log order, **across all projects**, up to the first that still touches an open window (end + 15 min settle) | same idea (oldest first) |
+| Merging | `CompactionIterator` drops shadowed versions | `merge_versions` per run, in seq order; one row per run | same idea |
+| Output | SSTs cut at `target_file_size_base` | `cmp-*` files per (project, window), split at 256 MB, sorted by `(trace_id, dotted_order)` | same idea |
+| Install | VersionEdit to the MANIFEST | one guarded catalog transaction (below) | same idea |
+| Late writes to old data | land in L0, compacted down again | land in L0, then in a **small extra L1 file** for the old window; merged at query time (option a; K6 to fold them) | **different** |
+| Where it runs | background threads; remote compaction | one job at a time on a timer in the writer; its own service later (M5 B3) | **different** |
 
-### One compaction job, step by step
+Why a **prefix of the log**: the merge rule needs a run's versions to cover non-overlapping sequence ranges
+(`merge_versions` asserts it). Picking files per project could merge versions on both sides of one it skipped, and
+an older update would then override a newer one (problem C8). Taking a prefix means everything left out is newer
+than everything merged. RocksDB's L0 has the same constraint for the same reason: L0 files overlap, so they're
+compacted oldest first.
+
+**Never the memtables.** Compaction reads files only (A4: the catalog and files, not the writer's memory), so it can
+move to its own process later. A late update that arrives during a job lands in the memtable with a higher seq and
+merges on top of the compacted row at read time.
+
+**`needs_merge` marks.** An output row is marked as multi-version if the run is already in an L1 file of the same
+window, or its first version in this job is an update (its start is somewhere older). Unmarked rows skip the merge
+at read time.
+
+### The file's life: MANIFEST vs catalog states
+
+RocksDB's MANIFEST knows only live files; anything else on disk is obsolete. smithling's catalog keeps a state per
+file, so a crash at any point leaves a state the catalog describes:
+
+| State | Meaning | After a crash |
+|---|---|---|
+| `pending` | compaction output, registered **before** any byte is uploaded | start-up deletes the files, then the row |
+| `active` | in the live file set; queries read it | — |
+| `replaced` | a compaction input, `replaced_at` saved | the delete loop finishes it |
+| deleted | files removed, then the row | — |
+
+The swap is one transaction: every input `active → replaced`, every output `pending → active`. It's refused if any
+input isn't `active` any more, and retried with the same outputs if the reply was lost. This is RocksDB's
+`LogAndApply` for a compaction edit, with the "inputs still live?" check done by the database instead of under the
+DB mutex. Registering outputs before uploading is what lets start-up tell its own unswapped files from a stranger's
+(a wrong `--metastore` can't delete data).
+
+### Versions across a swap
+
+This is the part closest to RocksDB. Before M4 a `Version` only gained files; compaction is the first thing that
+removes them.
+
+| | RocksDB | smithling | |
+|---|---|---|---|
+| The file set | `Version`: files per level | `Version`: `segments`, `field_stats`, `flushed_seq`, an `id` and an `era` ([memtable.rs](crates/ingest/src/memtable.rs)) | same |
+| The current one | `VersionSet::current()` | `mem.version`, an `Arc<Version>` under the memtable lock | same |
+| A flush | `LogAndApply(edit)`: current + new L0 file | `with_flush`: current + new files, new `flushed_seq` | same |
+| A compaction | `LogAndApply(edit)`: current − inputs + outputs | `with_compaction`: current − inputs + outputs, **on the current Version**, so files flushed during the job are kept | same |
+| A reader's pin | ref on a Version (through the SuperVersion) | the query clones the `Arc<Version>` at start and reads only those files | same (R-7) |
+| Knowing old files are unread | each Version's ref count | **one era token per swap**: every Version between two swaps shares an `Arc<()>`; count 1 means none is held | **different** |
+| Deleting | as soon as no Version refs the file | era free **and** `replaced_at` + grace (24 h) passed; files first, then the row | **different** |
 
 ```mermaid
-flowchart TB
-    A["Pick: the oldest T0 files (a contiguous seq range)<br/>+ T1 files overlapping their start_key range"]
-    B["Read the core rows (DataFusion scan)"]
-    C["Group by run_id, merge each run's versions (the merge rule)"]
-    D["Partition by start_key window; sort each by (trace_id, dotted_order)"]
-    E["Write new core + payload + text index per window"]
-    F["Catalog txn: new files active, inputs tombstoned"]
-    A --> B --> C --> D --> E --> F
+sequenceDiagram
+    participant Q as Query
+    participant W as Writer
+    participant C as Catalog
+    Q->>W: pin Version v7 (era 3)
+    W->>C: swap: inputs replaced, outputs active
+    W->>W: publish v8 (era 4), keep era 3's token
+    Note over Q: still reads v7's files
+    W->>W: delete loop: era 3 held, skip
+    Q-->>W: query ends, v7 dropped
+    W->>W: era 3 free and grace passed: delete files, then rows
 ```
 
-| Step | RocksDB analogue | smithling detail |
+Why **eras** instead of a ref count per Version: flushes make a new Version every few minutes, and the question the
+delete loop asks is only "does anyone still hold a file set from before this swap?". One token per swap answers it
+with a single count. Eras are freed in order: a later era can't be free while an earlier one is held.
+
+Why a **grace period** on top: pins only see queries in this process. The grace period, stored in the catalog,
+covers readers in other processes (M5's read workers), which RocksDB doesn't have to think about.
+
+### "Multi-version" here is not MVCC
+
+The plan's "multi-version set" can sound like RocksDB's multi-versioning. It isn't:
+
+| | RocksDB | smithling |
 |---|---|---|
-| pick inputs | L0 → L1: all L0 files + overlapping L1 files | the oldest T0 files as a **contiguous sequence range** (see rule 1 below) + T1 files overlapping their `start_key` span |
-| merge | `CompactionIterator` dropping shadowed versions | `merge_versions` per run; output is **one row per run** with `first_seq..last_seq` covering its inputs |
-| output | SSTs cut at `target_file_size_base` | one file per (project, window), cut by row count; payload rows rewritten in the same order; text index and field stats rebuilt |
-| install | VersionEdit to the MANIFEST | one catalog transaction (same shape as a flush); new `Version` swapped in |
-| cleanup | obsolete files deleted when no Version refs them | files marked `tombstoned`, deleted when no pinned `Version` holds them (R-7, already built and tested) |
+| What "versions" are | every write of a key, kept for seqno snapshots | a run's start and its updates, stored in **different files** |
+| Why they're kept | readers at older snapshots may need them | they haven't been merged into one row yet |
+| Nearest RocksDB idea | — | unmerged **merge operands**, folded at read time until compaction folds them |
+| The in-memory set | — | the run ids with versions in several files, plus their kept merged rows (`VersionRows`, D-023, D-029) |
 
-### The rules it has to follow
+After a swap the set shrinks, job by job in swap order, once that swap's era is free: merged runs leave unless a
+memtable or a `needs_merge` row in an active file still has them. Kept merged rows are reset when the Version lost
+files, and rebuilt on the next request. That's where the memory of late-updated runs comes back (C2).
 
-1. **Contiguous by sequence, oldest first.** The merge rule requires a run's versions to cover disjoint sequence
-   ranges (`merge_versions` asserts it). If a job merged flushes 1 and 3 but skipped flush 2, the merged row's range
-   would straddle flush 2's version of the same run. RocksDB has the same constraint for L0: files overlap, so L0
-   compaction takes the oldest files in order.
-2. **Never include the memtables.** Compaction only rewrites files. A late update that arrives during a job lands
-   in the memtable with a higher sequence number and merges on top of the compacted row at read time.
-3. **Clear `needs_merge` only when it's true.** A compacted row is single-version only if no other version exists:
-   not in the memtables, not in a T0 file outside the job. Runs that still have a version elsewhere stay in the
-   multi-version set; the rest can leave it, which is where the memory comes back.
-4. **Crash-safe like flush.** Write files, then one catalog transaction; a crash before it leaves orphans (deleted
-   on start) and the old files still active.
+### What triggers a job
 
-### Late updates to old windows: the write-amplification trade
-
-A late end for a run from yesterday arrives today. It lands in a T0 file; the next job that covers yesterday's
-window must rewrite yesterday's T1 (or T2) file to fold it in. That's RocksDB's write amplification, with a
-twist: the "hot" keys here are *recent* windows, so the policy should be
-
-- **recent windows**: compact lazily (they still change; avoid rewriting them every few minutes);
-- **settled windows** (no new versions for, say, a few hours): fold into T2 once and leave them;
-- **a rare late update to a settled day**: leave it in T0 until enough accumulate, or rewrite only the affected
-  file. Reads stay correct either way, because the run is in the multi-version set.
-
-### What would trigger a job
-
-| Trigger | RocksDB analogue | Why |
+| Trigger | RocksDB analogue | smithling (M4) |
 |---|---|---|
-| T0 file count over a limit | `level0_file_num_compaction_trigger` | bounds read amplification |
-| share of `needs_merge` rows over a limit | — | bounds merge work and memory |
-| a window has settled | — | promote T1 → T2 once |
-| periodic check while idle | periodic compaction, TTL | retention and deletes must free space even on a quiet server |
-| T0 count far over the limit | `level0_slowdown_writes_trigger` | feed into the existing `429` write slowdown |
+| periodic check | periodic compaction | every 60 s (T017, open) |
+| enough settled input | `level0_file_num_compaction_trigger` | any whole flush whose windows have all closed |
+| ingest under pressure | compaction yields to writes | skipped while writes are slowed down (R-8) |
+| bounded work | `max_compaction_bytes` | at most 1M rows per job; the next job continues the prefix |
+| tests and demos | `CompactRange` | `force` takes every flush regardless of windows |
 
-### What it buys
-
-Fewer, bigger, non-overlapping files (footer reads and pruning get cheaper as data grows); split runs become single
-rows (no merge on read, memory back, which closes the idle-memory waiver); and a place to apply deletes and
-retention. Open questions for the M4 spec: window sizes against real flush sizes (a flush already holds minutes of
-data), the exact "settled" rule, CPU/I/O budget next to ingest, and how compaction runs in cloud mode (RocksDB has
-remote compaction; SmithDB runs compaction as its own service).
+Defaults (window 1 h, settle 15 min, target 256 MB, grace 24 h) are starting values to tune later (K10). Multi-tier
+compaction (T0 → T1 → T2 in the design notes) and splitting L1 by trace-id range, which would be more like RocksDB
+levels, are backlog K6 and a rejected M4 option.
 
 ---
 
@@ -377,7 +414,7 @@ remote compaction; SmithDB runs compaction as its own service).
 |---|---|---|
 | delete one thing | point tombstone, shadows older versions until compaction drops both | **delete vector**: per file, a bitmap of deleted row numbers in the catalog; applied as a row filter at scan time |
 | delete by condition | `DeleteRange` (key ranges only) | `DELETE /runs?filter=…`: run the filter once, record the matching rows per file; works for any condition, not just key ranges |
-| time to live | compaction filter, FIFO / periodic compaction with TTL | per-project `ttl_days`; queries hide expired runs at once; whole T1/T2 windows past the cutoff are **dropped as files** (cheap, because compacted windows don't overlap) |
+| time to live | compaction filter, FIFO / periodic compaction with TTL | per-project `ttl_days`; queries hide expired runs at once; whole L1 window files past the cutoff are **dropped as files** (cheap, because they're cut by time window) |
 | space comes back | when compaction rewrites the tombstoned range | when compaction rewrites a file without its deleted rows |
 
 Delete vectors (the Iceberg / Delta Lake approach) suit columnar files better than tombstones: a columnar file can't
@@ -385,14 +422,15 @@ cheaply shadow one key, and deletes here come by filter ("this trace contained a
 
 The tricky case is a **late update after a delete**: RocksDB happily resurrects a key that is `Put` again after a
 `Delete`, and so would smithling's merge, producing a partial run. One option is to keep deleted run ids for the dedup
-window and drop late events for them; the M4/B1 spec has to decide.
+window and drop late events for them; the B1 spec has to decide (M4 left deletes out, K8).
 
 ### Snapshots by sequence number
 
 RocksDB snapshots pin a seqno so old versions survive compaction. smithling doesn't need them for queries (the pin
 gives each query a consistent view). Where they'd help is **long exports or paging** across compaction: the simplest
 design is to pin the `Version` (the file set) for the export's lifetime, rather than seqno snapshots, since compaction
-deletes files only when no `Version` holds them.
+deletes files only when no `Version` of their era is held. Across processes the grace period has to outlast the
+export, or M5's leases take over.
 
 ### More than one immutable memtable
 
@@ -409,9 +447,9 @@ adopted" in the roadmap.
 
 ### Compaction I/O limits
 
-RocksDB has a rate limiter. smithling would start simpler: one compaction job at a time, on its own thread, paused
-while ingest is under write slowdown, and preferring idle periods. A real limiter waits until measurements show
-compaction hurting ingest or query latency.
+RocksDB has a rate limiter. M4 starts simpler: one compaction job at a time, on a timer thread in the writer,
+skipped while ingest is under write slowdown, with a row cap per job (A8). A real limiter waits until measurements
+show compaction hurting ingest or query latency (SC-07, K11).
 
 ---
 
@@ -422,7 +460,7 @@ compaction hurting ingest or query latency.
 | Block cache | LRU / HyperClock for data, index, filter blocks | 32 MB memory cache for footers, page indexes, text-index pages, payload ranges ([cache.rs](crates/storage/src/cache.rs)) | same idea |
 | Column families | separate memtables + SSTs, shared WAL | projects: **shared** memtable and WAL, separate files per project | **different** |
 | Recovery | replay WAL from the MANIFEST's log number | replay WAL records with seq > the catalog's `flushed_seq` | same |
-| DB lock | `LOCK` file | `<data>/LOCK`, held for the process's life | same |
+| DB lock | `LOCK` file | `<data>/LOCK`, held for the process's life; plus `<storage>/LOCK` for a local store (T017), a catalog lease in M5 | same |
 | Bloom filters | per SST (or per block) | Parquet blooms on `run_id`, `trace_id` per file (R-9) | same idea |
 | Object storage | via env / remote compaction | data files on a folder or S3 (`object_store`), catalog in Postgres, WAL stays local | **different** |
 | Text search | — | per-file inverted index (dictionary + postings), no positions | smithling-specific |
@@ -435,7 +473,7 @@ From the roadmap's backlog of LSM ideas ([roadmap](specs/000-smithling-master-pl
 
 | # | RocksDB idea | smithling |
 |---|---|---|
-| R-7 | pinned versions for readers | `Arc<Version>`; files deleted only when unpinned |
+| R-7 | pinned versions for readers | `Arc<Version>`; since M4, compaction deletes files only when their era is unpinned |
 | R-8 | write slowdown | `429` + `Retry-After` when the frozen memtable is still flushing and the new one is full, or the unflushed WAL is over its cap |
 | R-9 | key bloom filters | Parquet blooms on `run_id`, `trace_id` |
 | R-10 | two memtables | active + frozen, so ingest never pauses for a flush |
@@ -453,8 +491,9 @@ compaction.
 | `log::Writer` | [crates/ingest/src/wal.rs](crates/ingest/src/wal.rs) |
 | `MemTable` | [crates/ingest/src/store.rs](crates/ingest/src/store.rs), [memtable.rs](crates/ingest/src/memtable.rs) |
 | `FlushJob` | [crates/ingest/src/flush.rs](crates/ingest/src/flush.rs) |
+| `CompactionJob`, `CompactionPicker` | [crates/ingest/src/compact.rs](crates/ingest/src/compact.rs) |
 | `BlockBasedTableBuilder` | [crates/storage/src/segment.rs](crates/storage/src/segment.rs) |
-| `VersionSet` / MANIFEST | [crates/storage/src/metastore.rs](crates/storage/src/metastore.rs) + `Version` in memtable.rs |
+| `VersionSet` / MANIFEST | [crates/storage/src/metastore.rs](crates/storage/src/metastore.rs) (file states, the swap) + `Version` in memtable.rs (`with_flush`, `with_compaction`, `era`) |
 | `DBImpl::Recover` | [crates/ingest/src/recover.rs](crates/ingest/src/recover.rs) |
 | `MergingIterator`, merge operator | [crates/query/src/scan.rs](crates/query/src/scan.rs), [crates/model/src/merge.rs](crates/model/src/merge.rs) |
 | `BlockCache` | [crates/storage/src/cache.rs](crates/storage/src/cache.rs) |
