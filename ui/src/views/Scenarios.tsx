@@ -47,7 +47,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     n: 6, title: "Rebuild the conversation", question: "All turns of one chat, in order.",
-    expect: "", missing: "Threads come in M4; the demo data has no chats yet.",
+    expect: "", missing: "Threads are in the backlog; the demo data has no chats yet.",
   },
   {
     n: 7, title: "Add it up", question: "Error rate, p95 latency and cost per step name in batch a.",

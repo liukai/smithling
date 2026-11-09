@@ -127,12 +127,14 @@ cargo run --release -p smithling-tools --example columnar_tour   # rows vs colum
 | **M1** See an agent trace live | uploads, crash-safe log, live browser view | ✅ built |
 | **M2** Durable storage + query builder | data on disk (Parquet), filters by clicking, trace conditions | ✅ built |
 | **M3** Search, aggregates, speed | text search, stats and charts, batch comparison | ✅ built |
-| **M4** Follow-through | compaction, conversation threads, export, feedback from the UI | planned |
-| **M5** Disaggregated trace database | ingest, readers and compaction as separate services that scale out | spec drafted |
+| **M4** Compaction | merges small files into larger ones, one row per run, so reads touch fewer files | in progress |
+| **M5** Disaggregated trace database | ingest, readers and compaction as separate services that scale out | spec and plan drafted (step 1: read workers) |
 | **M6** Agents debugging agents | import Claude Code sessions, agent tools over MCP | planned |
 
-Also deferred: a full 2M-run benchmark and the idle-memory target (both before M4), delete and retention. Status and
-plans: [roadmap](specs/000-smithling-master-plan/roadmap.md) · what changed: [CHANGELOG.md](CHANGELOG.md).
+Also deferred: conversation threads, export, feedback from the UI and "what stands out" (moved out of M4,
+[D-038](specs/000-smithling-master-plan/decisions.md#d-038)); a full 2M-run benchmark and the idle-memory target
+(re-evaluated before M5's plan); delete and retention. Status and plans:
+[roadmap](specs/000-smithling-master-plan/roadmap.md) · what changed: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -150,17 +152,79 @@ ask each of them, and see the answer, on your laptop.
 
 Then open **http://localhost:7070/scenarios**: one card per question, one click each.
 
-| # | Question | Example in the demo data | In Smithling |
-|---|---|---|---|
-| 1 | **Show me this one** | open the slowest failed task of batch a, then any step's full input | ✅ trace tree, waterfall, step inputs and outputs |
-| 2 | **Narrow it down** | failed steps in batch a that took longer than 2 s | ✅ filters on any field, by clicking or as text |
-| 3 | **Find the text** | runs mentioning "429 Too Many Requests" (31, all `fetch_url`) | ✅ text search with highlighted excerpts |
-| 4 | **Look inside the JSON** | runs on `metadata.prompt_version = v7` whose output had `status_code = 429` | ✅ filters on metadata, input and output fields |
-| 5 | **Think in trees** | tasks that finished ok although a step inside them failed (23 of them) | ✅ conditions on a trace's root or on any run in it |
-| 6 | **Rebuild the conversation** | all turns of one chat, in order | ⏳ not yet: threads come in M4 |
-| 7 | **Add it up** | per step name: `fetch_url` fails 14% of the time, p95 31 s; batch a cost $4.12 | ✅ stats, time series, distribution |
+The screenshots below come from that demo data: an overnight evaluation of a research agent in two batches, `a`
+before a bug fix and `b` after. Orange boxes mark what to look at.
 
-A last card, **Did the fix work?**, compares batch a with batch b after the fix (14% → 2% errors, 31 s → 9 s).
+### 1. Show me this one ✅
+
+Open the slowest failed task of batch a, then any step's full input. Smithling shows the trace tree, a timing
+waterfall, and each step's inputs and outputs.
+
+![A failed research_task: five research_step chains with their tool calls; in the last one, fetch_url fails after 31 s](docs/images/q1-trace-waterfall.png)
+
+*A failed task, 24 steps in 3m 56s. The red `fetch_url` in the last step is where it broke; the long `llm` bar
+beside it is where the time went.*
+
+![A successful trace with one llm step open: latency, tokens, model, tags, inputs, outputs and metadata](docs/images/q1-step-detail.png)
+
+*Click any step to read it whole: 2.44 s, 4,750 tokens on `gpt-4o-mini`, its inputs, outputs and metadata.*
+
+### 2. Narrow it down ✅
+
+Failed steps in batch a that took longer than 2 s. Filter on any field, by clicking or as text.
+
+![Three filter chips (batch a, status = error, latency > 2) and the matching runs: fetch_url steps and the failed tasks above them](docs/images/q2-narrow-down.png)
+
+*Three clicks, three conditions: the `fetch_url` steps that hit a 429 or a 30 s timeout, and the failed tasks above
+them (56 runs; the list stops at the page limit of 50).*
+
+### 3. Find the text ✅
+
+Runs mentioning "429 Too Many Requests". Smithling searches inputs, outputs and errors, and highlights each match.
+
+![Text search for "429 Too Many Requests": 31 runs, all fetch_url, the match highlighted in each error](docs/images/q3-text-search.png)
+
+*31 hits, every one a `fetch_url` failing with `HTTPError: 429`. The agent is being rate limited.*
+
+### 4. Look inside the JSON ✅
+
+Runs on `metadata.prompt_version = v7` whose output had `status_code = 429` (19 in batch a). Filter on fields inside
+the metadata, input and output JSON. The step opened under question 5 is one of them.
+
+### 5. Think in trees ✅
+
+Tasks that finished ok although a step inside them failed (23 of them). Put conditions on a trace's root or on any run
+in it.
+
+![Root-only research_task runs with status ok, filtered on any run in the trace having status error: 23 runs, all ok](docs/images/q5-quiet-failures-list.png)
+
+*Two rows of conditions: the root says `status = ok`, and some run in its trace says `status = error`. 23 tasks, every
+one marked ✓ ok. Open one:*
+
+![A research_task marked ok, with one failed fetch_url inside it open: HTTPError 429, outputs.status_code 429, metadata.prompt_version v7](docs/images/q5-quiet-failure.png)
+
+*The task says ✓ ok, but one `fetch_url` inside it failed with a 429. Its `outputs.status_code` and
+`metadata.prompt_version` are the fields question 4 filters on.*
+
+### 6. Rebuild the conversation ⏳
+
+All turns of one chat, in order. Not yet: conversation threads are in the backlog.
+
+### 7. Add it up ✅
+
+Per step name: how often it fails, how slow it is, what it costs. Smithling shows stats, time series and distributions.
+
+![Batch a grouped by step name: error rate over time per step, and a table with runs, error rate, p95 latency and cost](docs/images/q7-stats-by-step.png)
+
+*`fetch_url` fails 14% of the time with a p95 of 31 s; the model calls cost $4.12 for the batch.*
+
+### Bonus: did the fix work?
+
+Compare batch a with batch b, after the fix, side by side.
+
+![Batch a vs batch b: p95 latency of llm over time, and a table with both batches side by side](docs/images/compare-batches.png)
+
+*`fetch_url` errors drop from 14% to 2% and its p95 from 31 s to 9 s; failed tasks go from 7% to none.*
 
 ---
 
@@ -177,3 +241,44 @@ and test details are in [USAGE.md](USAGE.md#building-and-developing).
 
 [MIT](LICENSE). Smithling is a local, single-user tool with no login: read [SECURITY.md](SECURITY.md) before exposing
 it beyond `127.0.0.1`.
+
+---
+
+## Personal notes: why I'm doing this experiment
+
+I've worked on low-level storage engines like RocksDB, and when I read the SmithDB post I recognized the skeleton:
+an LSM with a log, memtables and immutable files. But a columnar database bends each of those pieces toward a
+different job. The two worlds share a lot of interesting ideas, and each has problems of its own. I wanted to see
+exactly where they meet and where they part.
+
+I've also always been amazed by how fast columnar systems are. With tools like Facebook's Scuba, you ask a question
+over a huge pile of events and the aggregation comes back almost before you've finished typing. I wanted to know how
+that works from the inside. AI agents gave me the perfect excuse: they produce deep, tree-shaped traces of spans that
+arrive in pieces, which is a fresh and slightly awkward shape for a database. That felt like the right problem to
+learn on.
+
+I started with something small: one program, one folder, on my laptop. Each milestone fixed one thing that was
+broken:
+
+- ✅ **M1, see an agent trace live**: you can't fix what you can't see. Point an unchanged agent at Smithling, watch
+  every step appear, and lose nothing on a crash.
+- ✅ **M2, durable storage and a query builder**: memory forgets; disk remembers. Keep millions of runs on disk and find
+  any of them by clicking.
+- ✅ **M3, search, aggregates and speed**: find the needle, then count the haystack. Search the text, add it up, compare
+  batches.
+- 🔜 **M4, compaction**: every flush leaves a crumb. Merge small files into big ones and store each run whole. Planned
+  and scoped.
+- 🔜 **M5, a disaggregated trace database**: reads and writes stop fighting over one box. Ingest, read workers and
+  compaction as separate services over shared storage. Planned and scoped.
+- 💭 **M6, agents debugging agents**: let an agent answer "why did batch a fail?" and cite the runs. Not started.
+
+Then, with a slightly inflated ego, I started asking: what if this had to scale? What would have to change? That
+question became M5. It's specced, not built, and it has already made me think harder about the problem than anything
+else in this project: storage and compute on separate machines, each scaling on its own.
+
+My favorite rule in system design has always been **think big, but start incrementally**. Smithling started light,
+and building it raised the interesting questions on its own, one step at a time: why the memtable shouldn't be
+sorted, why files should be grouped by trace instead of by time, why bloom filters can't find words. I think that's
+the best way to learn anything.
+
+If you know RocksDB, [ROCKSDB_COMPARISON.md](ROCKSDB_COMPARISON.md) is the long version of this note.

@@ -28,6 +28,8 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Changed
 
+- README "What's next" and the Scenarios page's question 6 follow [D-038](specs/000-smithling-master-plan/decisions.md#d-038): M4 is compaction only;
+  threads, export, feedback from the UI and "what stands out" are backlog.
 - **Renamed to Smithling** (was tracedb): crates `smithling-*`, binary `smithling`, `SMITHLING_*` environment
   variables, default data folder `./.smithling`. Existing `./.tracedb` folders can be renamed or passed with `--data`
   ([D-037](specs/000-smithling-master-plan/decisions.md#d-037)). Entries below use the old name.
@@ -45,6 +47,8 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- README: a screenshot under each of the seven questions, with orange boxes on what to look at, and a closing
+  section of personal notes on why I'm building Smithling.
 - README credits the SmithDB post by name (what came from it, what is Smithling's own) and lists the post's seven
   questions with how to ask each in the demo.
 - README rewritten as a front door: what you get and a five-minute tour (serve, `smithling demo --url`, the
