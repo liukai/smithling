@@ -11,8 +11,27 @@ your laptop: same design, one folder, and your agent's data never leaves the mac
 | learn how a trace database works | [Learn from it](#learn-from-it) |
 | know where this is going | [What's next](#whats-next) |
 
-> An independent open-source project modeled on the design LangChain described for SmithDB. Not affiliated with or
-> endorsed by LangChain; LangSmith is LangChain's trademark. Smithling speaks its SDK's upload protocol.
+## Credit: SmithDB
+
+Smithling is named after **SmithDB** and exists because of it. The LangChain team described SmithDB, the storage
+engine they built for LangSmith, in [Introducing SmithDB](https://www.langchain.com/blog/introducing-smithdb). That
+post laid out the problem (seven kinds of questions people ask about agent traces, listed
+[below](#the-seven-questions-from-the-smithdb-post)) and a design for answering them fast. Smithling is my attempt to
+learn that design by rebuilding it, small enough to run on a laptop: hence the name, a *little* Smith.
+
+**From the post**: the seven workloads; the architecture (Rust and Apache DataFusion, a log-structured write path
+with memtables, immutable columnar segments and compaction, object storage plus a small metadata catalog, ingestion,
+query and compaction as separate services); late materialization of large payloads; an inverted text index built for
+object storage; progressive answers; time-tiered compaction.
+
+**Smithling's own**: all of the code (no SmithDB code is used, and none is public as far as I know), the local-first
+packaging as one program and one folder, the APIs, query syntax and UI, and the places where it differs from SmithDB,
+each written down with a reason in the [design notes](specs/000-smithling-master-plan/design-notes.md) and
+[decision log](specs/000-smithling-master-plan/decisions.md).
+
+Thank you to the LangChain team for writing the design up in the open. Smithling is an independent project, not
+affiliated with or endorsed by LangChain; LangSmith is LangChain's trademark, and Smithling speaks its SDK's upload
+protocol so existing agents work unchanged.
 
 ---
 
@@ -54,7 +73,7 @@ Now open **http://localhost:7070/scenarios** and click any question. Things to t
 | Question | What you'll see |
 |---|---|
 | Find the text | 31 runs mentioning "429 Too Many Requests", each with the match highlighted |
-| Think in trees | tasks that succeeded although a step inside them failed |
+| Think in trees | tasks that finished ok although a step inside them failed (23 of them) |
 | Add it up | `fetch_url` fails 14% of the time in batch a, with p95 latency of 31 s |
 | Did the fix work? | batch b after the fix, side by side: 2% errors and 9 s |
 
@@ -114,6 +133,34 @@ cargo run --release -p smithling-tools --example columnar_tour   # rows vs colum
 
 Also deferred: a full 2M-run benchmark and the idle-memory target (both before M4), delete and retention. Status and
 plans: [roadmap](specs/000-smithling-master-plan/roadmap.md) · what changed: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## The seven questions from the SmithDB post
+
+The SmithDB post names seven questions a trace store has to answer quickly. Smithling's demo data is built so you can
+ask each of them, and see the answer, on your laptop.
+
+**Run the demo**:
+
+```bash
+./target/release/smithling serve                               # terminal 1
+./target/release/smithling demo --url http://localhost:7070    # terminal 2: loads the data, checks 10 numbers
+```
+
+Then open **http://localhost:7070/scenarios**: one card per question, one click each.
+
+| # | Question | Example in the demo data | In Smithling |
+|---|---|---|---|
+| 1 | **Show me this one** | open the slowest failed task of batch a, then any step's full input | ✅ trace tree, waterfall, step inputs and outputs |
+| 2 | **Narrow it down** | failed steps in batch a that took longer than 2 s | ✅ filters on any field, by clicking or as text |
+| 3 | **Find the text** | runs mentioning "429 Too Many Requests" (31, all `fetch_url`) | ✅ text search with highlighted excerpts |
+| 4 | **Look inside the JSON** | runs on `metadata.prompt_version = v7` whose output had `status_code = 429` | ✅ filters on metadata, input and output fields |
+| 5 | **Think in trees** | tasks that finished ok although a step inside them failed (23 of them) | ✅ conditions on a trace's root or on any run in it |
+| 6 | **Rebuild the conversation** | all turns of one chat, in order | ⏳ not yet: threads come in M4 |
+| 7 | **Add it up** | per step name: `fetch_url` fails 14% of the time, p95 31 s; batch a cost $4.12 | ✅ stats, time series, distribution |
+
+A last card, **Did the fix work?**, compares batch a with batch b after the fix (14% → 2% errors, 31 s → 9 s).
 
 ---
 

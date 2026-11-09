@@ -37,6 +37,8 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- README credits the SmithDB post by name (what came from it, what is Smithling's own) and lists the post's seven
+  questions with how to ask each in the demo.
 - README rewritten as a front door: what you get and a five-minute tour (serve, `smithling demo --url`, the
   Scenarios page), a learning path through the guides, and the plan. The full reference moved to [USAGE.md](USAGE.md).
 - Guides for newcomers: [STARTER_GUIDE.md](STARTER_GUIDE.md) (problem, architecture, milestones),
