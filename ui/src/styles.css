@@ -132,6 +132,8 @@ td.excerpt mark { background: #cce9ff; color: var(--fg); }
 .chip.side-b .swatch { margin: 0 2px 0 6px; }
 .compare-filter { min-width: 320px; }
 header nav { display: flex; gap: 12px; margin-left: 12px; }
+header .storage-line { margin-left: auto; font-size: 12px; color: #99d3ff; opacity: 0.85; }
+header .storage-line .warn { color: #ffb38a; opacity: 1; }
 header nav a { color: var(--muted); text-decoration: none; } header nav a.on, header nav a:hover { color: var(--fg); }
 .btn { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--row); color: var(--fg); cursor: pointer; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; } .btn:disabled { opacity: 0.5; cursor: default; }

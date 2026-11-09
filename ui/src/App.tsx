@@ -1,5 +1,6 @@
 import { navigate, useLocation } from "./route";
 import { TraceView } from "./TraceView";
+import { StorageLine } from "./StorageLine";
 import { RunsPage } from "./views/Runs";
 import { ScenariosPage } from "./views/Scenarios";
 
@@ -18,6 +19,7 @@ export function App() {
           <a href="/scenarios" onClick={(e) => { e.preventDefault(); navigate("/scenarios"); }}
             className={url.pathname === "/scenarios" ? "on" : undefined}>Scenarios</a>
         </nav>
+        <StorageLine />
       </header>
       <main>
         {trace ? (

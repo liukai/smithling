@@ -133,6 +133,8 @@ async fn healthz_has_every_contract_field() {
         "orphan_feedback",
         "cache_bytes",
         "dedup_keys",
+        "files",
+        "compaction",
     ] {
         assert!(h.get(k).is_some(), "/healthz lacks {k}: {h}");
     }
@@ -140,4 +142,26 @@ async fn healthz_has_every_contract_field() {
     assert_eq!(h["frozen"], false);
     assert_eq!(h["corrupt_segments"], json!([]));
     assert_eq!(h["orphan_feedback"], 0);
+}
+
+#[tokio::test]
+async fn compact_runs_now_and_reports_files_before_and_after() {
+    let server = common::start().await;
+    let http = reqwest::Client::new();
+    for body in ["", "{}", r#"{"force": true}"#] {
+        let r = http.post(server.url("/api/compact")).body(body).send().await.unwrap();
+        assert_eq!(r.status(), 200, "body {body:?}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["jobs"], 0, "nothing to compact in an empty store: {v}");
+        for k in ["l0", "l1", "replaced"] {
+            assert!(v["files_before"][k].is_u64() && v["files_after"][k].is_u64(), "{v}");
+        }
+    }
+    let r = http
+        .post(server.url("/api/compact"))
+        .body(r#"{"forse": true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
 }

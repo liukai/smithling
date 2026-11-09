@@ -297,10 +297,13 @@ them into about **a tenth as many**, and every answer stays exactly the same. A 
 late still shows the right result. Kill Smithling in the middle of a merge and nothing is lost; a long query left
 running finishes normally, even though the files under it were replaced.
 
-**The demo, once M4 is done**: run `smithling demo --url http://localhost:7070 --compact`. You'll see the same 10
-checks pass with the same numbers as before, plus a line with the file count before and after compaction (the target is
-a tenth or less). In the browser, a new storage line shows how many files there are and whether compaction is up to
-date. Step by step: [the M4 demo](specs/004-m4-compaction/plan.md#the-m4-demo-what-youll-see).
+**Try it**: start `smithling serve --memtable 256KB` and run `smithling demo --url http://localhost:7070 --compact`.
+The 10 checks pass, compaction runs, they pass again with **all the same answers**, and the demo reports
+**83 data files → 8** (9% of before). In the browser, a new storage line shows it:
+
+![The header's storage line after the demo: 8 data files, compacted just now, 83 old files waiting for deletion](docs/images/m4-storage-line.png)
+
+Step by step: [the M4 demo](specs/004-m4-compaction/plan.md#the-m4-demo-what-youll-see).
 
 ### M5: Read workers (spec and plan drafted)
 

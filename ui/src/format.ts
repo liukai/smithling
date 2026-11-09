@@ -23,6 +23,16 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** How long ago, roughly: "just now", "5 min ago", "3 h ago", "2 days ago". */
+export function fmtAgo(iso: string, now: number): string {
+  const s = Math.max(0, (now - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  const d = Math.floor(s / 86400);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
 export function elapsedSince(iso: string | null, now: number): number | null {
   return iso ? Math.max(0, now - new Date(iso).getTime()) : null;
 }

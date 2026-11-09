@@ -106,6 +106,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/traces/{trace_id}", get(routes::api::trace))
         .route("/api/runs/{run_id}", get(routes::api::run))
         .route("/api/tail", get(routes::tail::tail))
+        .route("/api/compact", post(routes::api::compact))
         .fallback(routes::ui::static_or_index)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)

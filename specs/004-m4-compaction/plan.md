@@ -12,10 +12,11 @@ One file on purpose: the design, the key decisions, the data and API changes, an
 | 🟠 **Improved** | orange | exists from M1–M3; M4 extends or changes it |
 | ⚪ **Existing** | grey | built in M1–M3; M4 uses it as is |
 
-**Status** marks where each part stands: ✅ built (U1–U3 in `f9dee0a`, U4 in `c1e48fd`), ⏳ not built yet (U5–U6).
+**Status** marks where each part stands: ✅ built (U1–U3 in `f9dee0a`, U4 in `c1e48fd`, U5 after it), ⏳ not built yet (U6).
 
-**Progress as of 2026-11-09**: U1–U4 done and verified (`cargo test --workspace` 314 passed; crash harness 40/40
-rounds, 0 lost). **Next: U5** (`POST /api/compact`, UI storage line, `demo --compact`), then U6 (cloud CI, close M4).
+**Progress as of 2026-11-09**: U1–U5 done. U4 verified by `cargo test --workspace` (314 passed) and the crash harness
+(40/40 rounds, 0 lost); U5 by the demo (11/11 checks, 83 → 8 files) and the UI tests. **Next: U6** (cloud CI job,
+close M4).
 Per-task detail: [tasks.md](tasks.md).
 
 ## Done when
@@ -39,9 +40,15 @@ anything: `serve` does it in the background every minute. The demo just makes it
 
 | Step | You run | You'll see | What it shows |
 |---|---|---|---|
-| 1 | `smithling serve` (terminal 1) | the usual `listening on http://localhost:7070` | nothing new yet |
-| 2 | `smithling demo --url http://localhost:7070 --compact` (terminal 2) | the same research-agent story as M3 (batch a fails, batch b has the fix), the same **10 checks, all ✓, same numbers** (14 failing tasks, 31 hits for "429 Too Many Requests", 14% → 2% errors), plus one new line: **files before → after compaction** | answers don't change (SC-02); the file count drops to ≤ 10% (SC-01) |
-| 3 | open **http://localhost:7070** | a new **storage line**: how many files, whether compaction is up to date, when it last ran. Clicking around gives the same answers as before | you can see compaction keeping up (Story 5) |
+| 1 | `smithling serve --memtable 256KB` (terminal 1) | the usual `listening on http://localhost:7070`. The small memtable makes a day of demo data land in many small files, as weeks of real use would | nothing new yet |
+| 2 | `smithling demo --url http://localhost:7070 --compact` (terminal 2) | the same research-agent story as M3 (batch a fails, batch b has the fix). The **10 checks run, all ✓** (14 failing tasks, 31 hits for "429 Too Many Requests", 14% → 2% errors). Then the demo compacts everything, runs them **again**, and adds one row: **`same answers after compaction  all 9 the same`**. Last line: **`compaction: 83 data files → 8 (9% of before; …)`** | answers don't change (SC-02); files drop to ≤ 10% (SC-01) |
+| 3 | open **http://localhost:7070** | top right, a new **storage line**: `8 data files · compacted just now · 83 old files waiting for deletion`. Clicking around gives the same answers as before | you can see compaction keeping up (Story 5) |
+
+![The header's storage line after the demo: 8 data files, compacted just now, 83 old files waiting for deletion](../../docs/images/m4-storage-line.png)
+
+The 83 old files are kept for the grace period (24 h by default) in case another reader still uses them, then
+deleted. One check, "across memtable and files", is about where the data sat while the checks ran, so it isn't
+compared. `smithling demo --compact` without `--url` does the same on its own temporary server.
 
 **What the demo doesn't show**, and where it is shown instead:
 
@@ -62,7 +69,7 @@ anything: `serve` does it in the background every minute. The demo just makes it
 | 🟠 | `Version` (writer's file list) | files only added | files removed by a swap; an era token per swap | ✅ |
 | 🟠 | Multi-version set, query kept rows | only grow | shrink after a swap once no query holds the old files | ✅ |
 | 🟠 | Crash harness | flush and WAL points | + `compact_after_put`, `compact_after_commit`, `compact_mid_delete` | ✅ T019 |
-| 🟠 | `/healthz`, UI, demo, CI | file counts; demo and cloud job without compaction | + compaction status (`/healthz` fields ✅); UI line, `demo --compact`, cloud job | ⏳ T021–T023 |
+| 🟠 | `/healthz`, UI, demo, CI | file counts; demo and cloud job without compaction | + compaction status; UI storage line, `demo --compact` ✅; cloud job | ✅ T021–T022, ⏳ T023 |
 | ⚪ | WAL, flush, query language, search, aggregates, UI views | M1–M3 | unchanged; same answers | — |
 
 ## How compaction works
@@ -203,10 +210,10 @@ logs the effective compaction settings.
 - 🟠 Catalog: `segments.replaced_at BIGINT NULL`; `state` gains `'pending'` and `'replaced'`; `tier = 1` for
   compacted files. One `schema_version` step, same SQL on SQLite and Postgres. ✅
 - 🟢 `smithling serve … [--compact on|off] [--compact-window 1h] [--settle 15m] [--compact-target 256MB] [--grace 24h]`. ✅
-- 🟢 `POST /api/compact` (`{force: true}` treats every window as closed; tests and demo). ⏳
+- 🟢 `POST /api/compact` (`{force: true}` treats every window as closed; tests and demo). ✅
 - 🟠 `/healthz`: `files: {l0, l1, replaced}`, `compaction: {last_run_at, last_error, backlog_files, running}`. UI: a
-  small storage line read from `/healthz`, as the feedback orphan count already is (`ui/src/api.ts:250`). ⏳
-- 🟠 `smithling demo --compact` forces compaction between steps and prints files before/after. ⏳
+  small storage line read from `/healthz`, as the feedback orphan count already is (`ui/src/api.ts:250`). ✅
+- 🟠 `smithling demo --compact` runs the checks, compacts, runs them again (same answers required) and prints files before/after. ✅
 
 ## Constitution Check
 
@@ -230,5 +237,5 @@ CHANGELOG line. Details in [tasks.md](tasks.md).
 | U2 | Job core: pick, read, merge, mark, write | unit tests for the prefix rule and windows; property test: merged rows equal merging all versions | ✅ |
 | U3 | Run a job: upload, swap, publish, multi-version rebuild, kept-rows reset | every query type returns the same before and after a forced compaction, incl. late updates after it | ✅ |
 | U4 | Timer, shutdown, store lock, delete loop with pins, crash points | crash harness 10/10 per point; a query across 100 swaps returns the same answer | ✅ |
-| U5 | `/api/compact`, `/healthz`, UI line, `demo --compact` with file counts | done-check commands above pass locally | ⏳ |
+| U5 | `/api/compact`, `/healthz`, UI line, `demo --compact` with file counts | done-check commands above pass locally | ✅ |
 | U6 | Cloud CI job with compaction; close M4 docs | CI config updated; docs say what was built | ⏳ |

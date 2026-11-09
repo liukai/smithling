@@ -106,7 +106,11 @@ describe("field browser", () => {
     const { calls } = setup("/");
     act(() => screen.getByRole("button", { name: "fields" }).click());
     await waitFor(() => expect(fieldRows()).toHaveLength(4));
-    await waitFor(() => expect(calls.filter((c) => c.startsWith("/api/feedback") || c === "/healthz")).toHaveLength(2));
+    // The feedback keys and the orphan count (`/healthz`, which the header's storage line reads too) have loaded.
+    await waitFor(() => {
+      expect(calls.filter((c) => c.startsWith("/api/feedback"))).toHaveLength(1);
+      expect(calls.filter((c) => c === "/healthz").length).toBeGreaterThanOrEqual(2);
+    });
     await act(async () => {});
     expect(within(browser()).queryByRole("region", { name: "feedback" })).toBeNull();
   });

@@ -38,8 +38,8 @@ Only what the done-check and M5's M4-REQ-1–4 need. Deferred items are listed a
 
 ## U5 Surface and demo
 
-- [ ] T021 `POST /api/compact` (`force`); `/healthz` gains `files` and `compaction`; UI storage line reads them (`ui/src`) with a component test
-- [ ] T022 `smithling demo --compact`: forces compaction between steps (through `POST /api/compact`, so it works with `--url`), same checks pass, prints files before/after (SC-01, SC-02); output as in [the M4 demo](plan.md#the-m4-demo-what-youll-see)
+- [X] T021 `POST /api/compact` (`force`); `/healthz` gains `files` and `compaction`; UI storage line reads them (`ui/src`) with a component test — *runs jobs until none is left, then the due deletes; replies with jobs, rows and `files_before`/`files_after`; the header's storage line polls `/healthz` every 30 s*
+- [X] T022 `smithling demo --compact`: forces compaction between steps (through `POST /api/compact`, so it works with `--url`), same checks pass, prints files before/after (SC-01, SC-02); output as in [the M4 demo](plan.md#the-m4-demo-what-youll-see) — *checks run before and after compaction and must match ("same answers after compaction"); its own server uses a 256 KB memtable; 83 → 8 files (9%) on seed 7*
 
 ## U6 CI and close
 

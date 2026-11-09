@@ -75,6 +75,31 @@ fn passes_every_m2_and_m3_check_on_its_own_server() {
 }
 
 #[test]
+fn compact_gives_the_same_answers_with_a_tenth_of_the_files() {
+    let (code, out, err) = demo(&["--seed", "7", "--compact"]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(
+        row(&out, "same answers after compaction").contains("✓ same answers after compaction"),
+        "{out}"
+    );
+    assert!(out.contains("all 11 checks passed"), "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("compaction: "))
+        .expect("a compaction line");
+    let pct: u64 = line
+        .split("% of before")
+        .next()
+        .unwrap()
+        .rsplit('(')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(pct <= 10, "files after ≤ 10% of before (M4 SC-01): {line}");
+}
+
+#[test]
 fn checks_m2_runs_only_the_m2_rows() {
     let (code, out, err) = demo(&["--seed", "7", "--memtable", "1MB", "--checks", "m2"]);
     assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");

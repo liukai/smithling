@@ -15,6 +15,8 @@ use smithling_server::{ServeConfig, app, parse_size};
 
 /// The demo's own server's memtable: small, so a few MB of background load forces the flushes it needs.
 const DEMO_MEMTABLE: u64 = 4 * MB;
+/// With `--compact`: small enough that a day of demo data lands in many small files, as weeks of use would.
+const DEMO_COMPACT_MEMTABLE: u64 = 256 * 1024;
 /// With `--url`, the largest server memtable the demo sizes its background load for (it builds up to 3×).
 const MAX_URL_MEMTABLE: u64 = 256 * MB;
 const MB: u64 = 1024 * 1024;
@@ -42,6 +44,10 @@ pub struct DemoArgs {
     /// Which checks to run: `m2`, `m3` or both.
     #[arg(long, default_value = "m2,m3", value_parser = parse_checks)]
     pub checks: CheckSet,
+    /// Run the checks, compact everything (`POST /api/compact`, every window), run them again: every answer must
+    /// be the same; prints the file count before and after (M4).
+    #[arg(long)]
+    pub compact: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,7 +146,11 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         (None, None) => unreachable!("either --url or the demo's own server"),
     };
     let memtable = match &own {
-        Some(_) => a.memtable.unwrap_or(DEMO_MEMTABLE),
+        Some(_) => a.memtable.unwrap_or(if a.compact {
+            DEMO_COMPACT_MEMTABLE
+        } else {
+            DEMO_MEMTABLE
+        }),
         None => match scenario::memtable_limit(&url).await {
             Ok(limit) => limit.or(a.memtable).unwrap_or(DEMO_MEMTABLE),
             Err(e) => {
@@ -171,13 +181,30 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
             return 1;
         }
     };
-    let checks = match checks(&url, a.checks, &s, &loaded).await {
+    let mut checks = match checks(&url, a.checks, &s, &loaded).await {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(err, "smithling demo: {e}");
             return 1;
         }
     };
+    let mut compacted = None;
+    if a.compact {
+        let again = match compact(&url).await {
+            Ok(c) => {
+                compacted = Some(c);
+                checks_again(&url, a.checks, &s, &loaded).await
+            }
+            Err(e) => Err(format!("compaction failed: {e}")),
+        };
+        match again {
+            Ok(after) => checks.push(same_answers(&checks, &after)),
+            Err(e) => {
+                let _ = writeln!(err, "smithling demo: {e}");
+                return 1;
+            }
+        }
+    }
     let header = format!(
         "smithling demo — {} checks  (seed {}, {} traces, {} flushes)",
         a.checks.title(),
@@ -186,6 +213,9 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         loaded.flushes
     );
     let ok = report(&header, &checks, out);
+    if let Some(c) = compacted {
+        let _ = writeln!(out, "{c}");
+    }
     if let Some(own) = own {
         own.stop().await;
     }
@@ -193,6 +223,65 @@ pub async fn run(a: &DemoArgs, out: &mut impl Write, err: &mut impl Write) -> u8
         Ok(true) => 0,
         _ => 1,
     }
+}
+
+/// The checks again, after compaction.
+async fn checks_again(url: &str, set: CheckSet, s: &Scenario, loaded: &Loaded) -> Result<Vec<Check>, String> {
+    checks(url, set, s, loaded).await
+}
+
+/// Whether every check gave the same answer after compaction as before. "Across memtable and files" says where
+/// the data was when the checks ran (the last flush may land while compaction runs), not what they answered.
+fn same_answers(before: &[Check], after: &[Check]) -> Check {
+    let pairs: Vec<_> = before
+        .iter()
+        .zip(after)
+        .filter(|(b, _)| b.name != "checks across memtable and files")
+        .collect();
+    let changed: Vec<String> = pairs
+        .iter()
+        .filter(|(b, a)| b.actual != a.actual)
+        .map(|(b, a)| format!("{}: {} → {}", b.name, b.actual, a.actual))
+        .collect();
+    let n = pairs.len();
+    let actual = if changed.is_empty() {
+        format!("all {n} the same")
+    } else {
+        format!("{} of {n} changed ({})", changed.len(), changed.join("; "))
+    };
+    Check::new(
+        "same answers after compaction",
+        &format!("all {n} the same"),
+        &actual,
+        None,
+    )
+}
+
+/// Compacts everything now and describes it: files before → after, and how many runs' rows were merged.
+async fn compact(url: &str) -> Result<String, String> {
+    let v: Value = reqwest::Client::new()
+        .post(format!("{url}/api/compact"))
+        .json(&serde_json::json!({"force": true}))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let files = |k: &str| v[k]["l0"].as_u64().unwrap_or(0) + v[k]["l1"].as_u64().unwrap_or(0);
+    let n = |k: &str| v[k].as_u64().unwrap_or(0);
+    let (before, after) = (files("files_before"), files("files_after"));
+    Ok(format!(
+        "compaction: {before} data files → {after} ({}% of before; {} small files merged into {}; {} stored versions \
+         → {} rows)",
+        (after * 100).checked_div(before).unwrap_or(0),
+        n("inputs"),
+        n("outputs"),
+        thousands(n("rows_in")),
+        thousands(n("rows_out"))
+    ))
 }
 
 struct Own {
@@ -224,7 +313,11 @@ async fn start(a: &DemoArgs) -> anyhow::Result<Own> {
         storage: a.storage.clone(),
         metastore: a.metastore.clone(),
         limits: Limits {
-            memtable_bytes: a.memtable.unwrap_or(DEMO_MEMTABLE),
+            memtable_bytes: a.memtable.unwrap_or(if a.compact {
+                DEMO_COMPACT_MEMTABLE
+            } else {
+                DEMO_MEMTABLE
+            }),
             ..Limits::default()
         },
         ui_dir: None,

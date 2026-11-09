@@ -20,6 +20,9 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- **Compaction you can see (M4, unit 5)**: `POST /api/compact` runs it now; the header shows a storage line (data
+  files, when compaction last ran, old files waiting for deletion, or an error). `smithling demo --compact` runs the
+  checks, compacts, runs them again and requires the same answers; on seed 7 it goes from 83 data files to 8.
 - The M4 plan gains "The M4 demo": what you run and what you'll see, in plain words. The M4 examples no longer promise
   single-run reads under 50 ms in M4; read speed at the bench load is measured later (K11, D-033).
 - **Compaction runs in the background (M4, unit 4)**: `serve` starts a compactor thread (on by default in `serve`, off

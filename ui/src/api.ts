@@ -247,4 +247,10 @@ export interface FeedbackKey { key: string; count: number; avg: number | null }
 
 export const getFeedbackKeys = (s: FieldScope) =>
   get<{ keys: FeedbackKey[] }>(`/api/feedback${qs({ keys: "true", project: s.project, time: s.time })}`);
+/** The parts of `/healthz` the storage line shows (M4). Missing on servers before M4. */
+export interface StorageHealth {
+  files?: { l0: number; l1: number; replaced: number };
+  compaction?: { enabled: boolean; running: boolean; last_run_at: string | null; last_error: string | null; stopped: boolean };
+}
+export const getStorageHealth = () => get<StorageHealth>("/healthz");
 export const getOrphanFeedbackCount = () => get<{ orphan_feedback?: number }>("/healthz").then((h) => h.orphan_feedback ?? 0);

@@ -515,3 +515,49 @@ pub async fn aggregate(
         Err(e) => query_error(e),
     }
 }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompactBody {
+    /// Treat every window as closed (tests and the demo); otherwise only settled windows are compacted.
+    #[serde(default)]
+    force: bool,
+}
+
+/// `POST /api/compact` (M4 T021): runs compaction jobs until nothing is left to do, then deletes the replaced
+/// files that are due. An empty body is `{}`. Blocks until done; the background job keeps running either way.
+pub async fn compact(State(st): State<AppState>, body: axum::body::Bytes) -> Response {
+    let body: CompactBody = if body.iter().all(u8::is_ascii_whitespace) {
+        CompactBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(b) => b,
+            Err(e) => return error(StatusCode::BAD_REQUEST, "bad_request", e.to_string()),
+        }
+    };
+    let ingest = st.ingest.clone();
+    let before = ingest.health().files;
+    let done = tokio::task::spawn_blocking(move || {
+        let (mut jobs, mut inputs, mut outputs, mut rows_in, mut rows_out) = (0, 0, 0, 0, 0);
+        while let Some(r) = ingest.compact(body.force)? {
+            jobs += 1;
+            (inputs, outputs) = (inputs + r.inputs, outputs + r.outputs);
+            (rows_in, rows_out) = (rows_in + r.rows_in, rows_out + r.rows_out);
+        }
+        let deleted = ingest.delete_replaced()?;
+        Ok::<_, smithling_storage::StorageError>(json!({
+            "jobs": jobs, "inputs": inputs, "outputs": outputs, "rows_in": rows_in, "rows_out": rows_out,
+            "deleted": deleted,
+        }))
+    })
+    .await;
+    match done {
+        Ok(Ok(mut out)) => {
+            out["files_before"] = json!(before);
+            out["files_after"] = json!(st.ingest.health().files);
+            Json(out).into_response()
+        }
+        Ok(Err(e)) => error(StatusCode::SERVICE_UNAVAILABLE, "storage", e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
