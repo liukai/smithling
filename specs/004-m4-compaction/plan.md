@@ -12,7 +12,11 @@ One file on purpose: the design, the key decisions, the data and API changes, an
 | 🟠 **Improved** | orange | exists from M1–M3; M4 extends or changes it |
 | ⚪ **Existing** | grey | built in M1–M3; M4 uses it as is |
 
-**Status** marks where each part stands: ✅ built (U1–U3, `f9dee0a`), ⏳ next (U4–U6).
+**Status** marks where each part stands: ✅ built (U1–U3 in `f9dee0a`, U4 in `c1e48fd`), ⏳ not built yet (U5–U6).
+
+**Progress as of 2026-11-09**: U1–U4 done and verified (`cargo test --workspace` 314 passed; crash harness 40/40
+rounds, 0 lost). **Next: U5** (`POST /api/compact`, UI storage line, `demo --compact`), then U6 (cloud CI, close M4).
+Per-task detail: [tasks.md](tasks.md).
 
 ## Done when
 
@@ -50,15 +54,15 @@ anything: `serve` does it in the background every minute. The demo just makes it
 | | Part | Before M4 | What M4 changes | Status |
 |---|---|---|---|---|
 | 🟢 | Compaction job (`ingest/src/compact.rs`) | none | pick, merge, write, swap, publish | ✅ |
-| 🟢 | Background timer | none | one thread in `serve`, a job every 60 s, clean shutdown, survives a panicking job | ⏳ T017 |
-| 🟢 | Delete loop | files never deleted | grace period + in-process pins | ⏳ T018 |
+| 🟢 | Background timer | none | one thread in `serve`, a job every 60 s, clean shutdown, survives a panicking job | ✅ T017 |
+| 🟢 | Delete loop | files never deleted | grace period + in-process pins | ✅ T018 |
 | 🟠 | Catalog (`segments`) | `active` rows only, added by flush | + `pending`, `replaced`, `replaced_at`; guarded swap | ✅ |
 | 🟠 | Start-up (`ingest/src/recover.rs`) | orphan files deleted under the WAL check | + removes `pending` outputs, keeps `replaced` rows for the delete loop | ✅ |
-| 🟠 | Writer lock | `<data_dir>/LOCK` | + `<storage>/LOCK` when the store is a local path | ⏳ T017 |
+| 🟠 | Writer lock | `<data_dir>/LOCK` | + `<storage>/LOCK` when the store is a local path | ✅ T017 |
 | 🟠 | `Version` (writer's file list) | files only added | files removed by a swap; an era token per swap | ✅ |
 | 🟠 | Multi-version set, query kept rows | only grow | shrink after a swap once no query holds the old files | ✅ |
-| 🟠 | Crash harness | flush and WAL points | + `compact_after_put`, `compact_after_commit`, `compact_mid_delete` | ⏳ T019 |
-| 🟠 | `/healthz`, UI, demo, CI | file counts; demo and cloud job without compaction | + compaction status; `demo --compact`; cloud job runs it | ⏳ T021–T023 |
+| 🟠 | Crash harness | flush and WAL points | + `compact_after_put`, `compact_after_commit`, `compact_mid_delete` | ✅ T019 |
+| 🟠 | `/healthz`, UI, demo, CI | file counts; demo and cloud job without compaction | + compaction status (`/healthz` fields ✅); UI line, `demo --compact`, cloud job | ⏳ T021–T023 |
 | ⚪ | WAL, flush, query language, search, aggregates, UI views | M1–M3 | unchanged; same answers | — |
 
 ## How compaction works
@@ -176,10 +180,10 @@ Short records of the choices that shape the design. Running decisions (scope, de
 | Swap fails 5 times (catalog down) | Job fails with `last_error` in `/healthz`. Outputs stay `pending` (never read); if the commit did land, later jobs are refused. A restart settles both (A6; K12 for doing it without one) | ✅ |
 | Crash after upload, before the swap | Start-up deletes the `pending` outputs, files then rows; inputs still active | ✅ |
 | Crash after the swap, before publish | Start-up loads the catalog (outputs active, inputs replaced) and rebuilds from files | ✅ |
-| Crash mid-delete | `replaced` row still there; the loop deletes again (deletes are idempotent) | ⏳ T018 |
-| Shutdown during a job | Stop flag checked between jobs; shutdown waits a bounded time for the running one; dropping it is safe (rows above) | ⏳ T017 |
-| A job panics | Caught per job, recorded as `last_error`, the thread keeps ticking; if the thread ever exits, `/healthz` shows compaction `stopped` | ⏳ T017 |
-| Second writer on the same store | Refused by `LOCK` (data folder; local store path in T017) | ✅ / ⏳ T017 |
+| Crash mid-delete | `replaced` row still there; the loop deletes again (deletes are idempotent) | ✅ T018, T019 |
+| Shutdown during a job | Stop flag checked between jobs; shutdown waits a bounded time for the running one; dropping it is safe (rows above) | ✅ T017 |
+| A job panics | Caught per job, counted in `/healthz` (`compaction.panics`) with `last_error`; the thread keeps ticking; if it ever exits, `/healthz` shows compaction `stopped` | ✅ T017 |
+| Second writer on the same store | Refused by `LOCK` (data folder, and a local store path) | ✅ T017 |
 
 Every step logs at `info` with ids (job picked, swap committed or refused, each delete); start-up
 logs the effective compaction settings.
@@ -198,7 +202,7 @@ logs the effective compaction settings.
 
 - 🟠 Catalog: `segments.replaced_at BIGINT NULL`; `state` gains `'pending'` and `'replaced'`; `tier = 1` for
   compacted files. One `schema_version` step, same SQL on SQLite and Postgres. ✅
-- 🟢 `smithling serve … [--compact on|off] [--compact-window 1h] [--settle 15m] [--compact-target 256MB] [--grace 24h]`. ⏳
+- 🟢 `smithling serve … [--compact on|off] [--compact-window 1h] [--settle 15m] [--compact-target 256MB] [--grace 24h]`. ✅
 - 🟢 `POST /api/compact` (`{force: true}` treats every window as closed; tests and demo). ⏳
 - 🟠 `/healthz`: `files: {l0, l1, replaced}`, `compaction: {last_run_at, last_error, backlog_files, running}`. UI: a
   small storage line read from `/healthz`, as the feedback orphan count already is (`ui/src/api.ts:250`). ⏳
@@ -225,6 +229,6 @@ CHANGELOG line. Details in [tasks.md](tasks.md).
 | U1 | Catalog: `replaced_at`, guarded swap, start-up handling of `pending` and `replaced` | metastore tests on SQLite: swap refused if an input changed; restart after a crash before/after the swap is clean | ✅ |
 | U2 | Job core: pick, read, merge, mark, write | unit tests for the prefix rule and windows; property test: merged rows equal merging all versions | ✅ |
 | U3 | Run a job: upload, swap, publish, multi-version rebuild, kept-rows reset | every query type returns the same before and after a forced compaction, incl. late updates after it | ✅ |
-| U4 | Timer, shutdown, store lock, delete loop with pins, crash points | crash harness 10/10 per point; a query across 100 swaps returns the same answer | ⏳ |
+| U4 | Timer, shutdown, store lock, delete loop with pins, crash points | crash harness 10/10 per point; a query across 100 swaps returns the same answer | ✅ |
 | U5 | `/api/compact`, `/healthz`, UI line, `demo --compact` with file counts | done-check commands above pass locally | ⏳ |
 | U6 | Cloud CI job with compaction; close M4 docs | CI config updated; docs say what was built | ⏳ |
