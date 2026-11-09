@@ -1,12 +1,12 @@
 # Implementation Plan: M5 — Disaggregated trace database, step 1: read workers over shared storage
 
-**Branch**: `005-m5-disaggregated-trace-db` | **Date**: 2026-11-08 | **Status**: Proposed; units start only when the
+**Branch**: `005-m5-disaggregated-trace-db` | **Date**: 2026-11-08, revised 2026-11-09 | **Status**: Proposed; units start only when the
 decisions they name are Decided | **Spec**: [spec.md](spec.md) | **Design and decisions**: [design.md](design.md) |
 **Research**: [research.md](research.md) | **Code check**: [review.md](review.md)
 
 **Input**: Feature specification from `specs/005-m5-disaggregated-trace-db/spec.md`. Master:
-[000 plan](../000-smithling-master-plan/plan.md). Builds on: M4 (compaction in the writer process, meeting the spec's
-M4-REQ-1–4; spec folder `004-` reserved, not yet written).
+[000 plan](../000-smithling-master-plan/plan.md). Builds on: M4 (compaction in the writer process; the M4 spec maps
+M4-REQ-1–4 to M4-FR-03, -05, -07, -10; units 1–5 merged).
 
 **Delta key**: 🟢 New · 🟠 Improved · ⚪ Existing (as in [spec.md](spec.md)).
 
@@ -26,6 +26,32 @@ status panel.
 - 🟠 **Deletion safety**: replaced files stay for a grace period; reader queries have a time limit ([KD-6](design.md#kd-6-grace-period-and-reader-query-time-limit)).
 - 🟢 **One writer**: a lease row checked in every publish ([KD-7](design.md#kd-7-writer-lease)).
 - 🟢 **Status**: each reader reports how current it is; the writer's panel lists readers ([KD-10](design.md#kd-10-reader-status-and-check-ins)).
+- 🟠 **Snapshots and freshness**: each snapshot carries `catalog_version` and `published_through_seq` (today's
+  `flushed_seq`); every reader answer names it; acknowledgment, publication and observation lags are measured
+  separately before a freshness target is chosen ([KD-13](design.md#kd-13-what-a-snapshot-carries), spec
+  [Freshness](spec.md#freshness-three-points-measured-separately)).
+- 🟢 *(Optional)* **`min_seq` reads**: confirmations return `seq`; readers wait up to a deadline or answer "still
+  publishing" ([KD-14](design.md#kd-14-the-min_seq-read-contract)).
+
+The write path is unchanged: confirm after the WAL fsync (group commit as today, [KD-15](design.md#kd-15-group-commit-interval)),
+upload files, then one catalog transaction. A shared WAL tail and a replicated WAL are separate later decisions
+(backlog B2, B1; [research §7](research.md#7-the-neon-boundary-and-a-shared-wal-tail)).
+
+### What exists and what M5 adds
+
+| | Piece | Where |
+|---|---|---|
+| ⚪ | WAL + group commit, confirm after fsync | `ingest/src/wal.rs`, `writer.rs` |
+| ⚪ | Upload files, then one catalog transaction moving `flushed_seq`; idempotent retry; orphan removal at start | `ingest/src/flush.rs`, `recover.rs` |
+| ⚪ | Live view from writer memory | `ingest/src/hub.rs`, `server/src/routes/tail.rs` |
+| ⚪ | Guarded compaction swap, 24 h grace, in-process holds | `ingest/src/compact.rs` |
+| ⚪ | S3 + Postgres in CI | `.github/workflows/ci.yml`, `ci/cloud.yml` |
+| 🟢 | `catalog_version`, snapshot lookup, writer lease | U1 |
+| 🟢 | Readers: pin, read S3 directly, never list storage | U2 |
+| 🟢 | Reader state from files alone (multi-version runs) | U3 |
+| 🟢 | Cross-process pin: reader query time limit < grace | U4 |
+| 🟢 | Three lags measured; boundary cases A–C in CI | U6 |
+| 🟢 | `seq` in confirmations, `min_seq` reads (optional) | U8 |
 
 Everything else from the full disaggregation design is in the spec's backlog (B1–B10).
 
@@ -57,8 +83,8 @@ split demo.
 
 **Project Type**: one binary with roles (server + CLI + embedded UI).
 
-**Performance Goals** (spec SC-02, SC-03, SC-07; measured, may be deferred under D-033): reader data within flush
-age + 5 s for 99% of steps; writer confirmation P99 within 10% of the no-read baseline when readers carry the reads;
+**Performance Goals** (spec SC-02, SC-03, SC-07; measured, may be deferred under D-033): the three freshness lags
+reported as P50/P99, with acknowledgment P99 ≤ 1 s and the reader target chosen afterwards (spec OQ-5); writer confirmation P99 within 10% of the no-read baseline when readers carry the reads;
 2 readers ≥ 1.7× one reader's read throughput; a new reader serves within 60 s at 2M runs.
 
 **Constraints**: one binary, no required external service in one-process mode (constitution I); zero outbound in
@@ -68,7 +94,8 @@ local mode (III); same tests on local and cloud storage (V); readers never conta
 
 **Open items**: none blocks the plan's shape. The ones that block units are the design register's Open entries:
 [KD-4](design.md#kd-4-how-do-readers-know-which-runs-have-several-versions) (blocks U3),
-[KD-9](design.md#kd-9-the-live-view-on-a-reader) (blocks U2's live endpoint), [KD-11](design.md#kd-11-reader-cache-on-object-storage) (measured in U6).
+[KD-9](design.md#kd-9-the-live-view-on-a-reader) (blocks U2's live endpoint), [KD-11](design.md#kd-11-reader-cache-on-object-storage) (measured in U6),
+[KD-14](design.md#kd-14-the-min_seq-read-contract) (blocks U8, or defers it).
 
 ## Constitution Check
 
@@ -144,15 +171,17 @@ PR-sized, each ends in something checkable. "Needs" lists the decisions that mus
 | Unit | What | Needs | Done when |
 |---|---|---|---|
 | U0 | **M4 check**: M4's spec meets M4-REQ-1–4 | — | M4 spec reviewed against the four requirements; gaps fixed there |
-| U1 | 🟢 Catalog version counter + writer lease | KD-2, KD-7 | Every publish path bumps the version (test per path); a second writer refuses to start; a writer that lost its lease can't publish |
-| U2 | 🟢 `serve --role reader`: read-only open, refuse writes, serve every read API from the catalog version at start | KD-1, KD-8, KD-9 | Reader started after the scenario is flushed passes `smithling demo --url <reader>` with the writer's counts |
-| U3 | 🟢 Reader state refresh: per-query version check, incremental refresh, multi-version rule, feedback | KD-2, KD-3, KD-4, KD-5 | Property test: reader answers equal the writer's at every version under random late updates and flush timing; P9 demo passes |
-| U4 | 🟠 Grace period on deletes + reader query time limit | KD-6 | P7 demo: reader queries across 100 swaps return the same answers, zero missing-file errors |
+| U1 | 🟢 Catalog version counter + writer lease; snapshot lookup returns `catalog_version`, `published_through_seq` and files together | KD-2, KD-7, KD-13 | Every publish path bumps the version (test per path); `published_through_seq` moves only on flush; a second writer refuses to start; a writer that lost its lease can't publish |
+| U2 | 🟢 `serve --role reader`: read-only open, refuse writes, pin one snapshot per query, files only through the catalog | KD-1, KD-8, KD-9 | Reader passes `smithling demo --url <reader>` with the writer's counts; **Case A** (upload without publish; lost reply; lost lease) as a multi-process test |
+| U3 | 🟢 Reader state refresh: per-query version check, incremental refresh, multi-version rule, feedback | KD-2, KD-3, KD-4, KD-5 | Property test: reader answers equal the writer's at every version under random late updates and flush timing; **Case C** (late update changes a match); P9 demo passes |
+| U4 | 🟠 Reader query time limit under M4's grace period | KD-6 | **Case B** and the P7 demo: reader queries across 100 swaps return the same answers, zero missing-file errors |
 | U5 | 🟢 Status: `/healthz` fields, check-ins, UI panel, `smithling status` | KD-10 | P12 demo: a blocked reader shows as behind within one check |
-| U6 | 🟠 Split demo in CI (local folder + SQLite, MinIO + Postgres), problem demos, bench rows; reader cache measured | KD-11 | CI green on both; SC-02/03/07 reported |
+| U6 | 🟠 Split demo in CI (local folder + SQLite, MinIO + Postgres), problem demos, Cases A–C, bench rows for the three lags; reader cache measured | KD-11 | CI green on both; SC-02/03/07 and SC-11 reported; OQ-5 ready to decide |
 | U7 | 🟠 Docs: starter guide for M5, roadmap STATE | — | Guide follows one query through a reader with line links |
+| U8 | 🟢 *(Optional)* `seq` in confirmations; `min_seq` + deadline on read APIs; "still publishing" | KD-14 | US6 scenarios; SC-10: zero stale answers across a load with random deadlines |
 
-U1 and U2 can start once their decisions are Decided; U3 waits on KD-4.
+U1 and U2 can start once their decisions are Decided; U3 waits on KD-4. U8 can follow U2 at any point, or be deferred
+without changing the other units.
 
 ## Complexity Tracking
 

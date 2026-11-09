@@ -8,6 +8,7 @@ catalog migrations that run the same on SQLite and Postgres (constitution V), in
 | | Table / column | Fields | Written by | Read by | Decision |
 |---|---|---|---|---|---|
 | 🟠 | `state.catalog_version` | `BIGINT NOT NULL DEFAULT 0` | every publishing transaction: flush, compaction swap, text-index sidecar, feedback write | readers, at the start of each query | KD-2 |
+| ⚪ | `state.flushed_seq`, reported as `published_through_seq` | as M2: every event with `seq ≤` it is in active files | flush transaction only (not compaction, not feedback) | readers, in the same lookup as `catalog_version`; every reader answer; `min_seq` waits | KD-13 |
 | 🟢 | `writer_lease` (one row) | `holder TEXT` (host, pid, start time), `number BIGINT`, `expires_at` | writer: take (raises `number`), renew | writer at every publish (`WHERE number = $mine`); `/healthz` | KD-7 |
 | 🟢 | `reader_checkins` | `id TEXT PRIMARY KEY`, `address`, `catalog_version`, `data_up_to`, `seen_at` | each reader every 10 s | writer's status panel (rows seen in the last minute); stale rows pruned after a day | KD-10 |
 | 🟠 | `feedback.updated_version` | `BIGINT`, the `catalog_version` of its last write | feedback writes | readers reload rows with `updated_version > their version` | KD-5 |

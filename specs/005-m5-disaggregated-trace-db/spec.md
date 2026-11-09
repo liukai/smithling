@@ -2,7 +2,9 @@
 
 **Feature Branch**: `005-m5-disaggregated-trace-db`
 
-**Created**: 2026-11-08 · **Revised**: 2026-11-08 (problems first; then cut to the P0 problems, the rest to the backlog)
+**Created**: 2026-11-08 · **Revised**: 2026-11-08 (problems first; then cut to the P0 problems, the rest to the backlog);
+2026-11-09 (write and read paths, three freshness points, optional `min_seq` reads, boundary acceptance cases; shared
+WAL tail and full disaggregation as researched backlog)
 
 **Status**: Draft. Spec only; implementation not started.
 
@@ -70,6 +72,11 @@ So M5 is **step 1 of a disaggregated trace database: read workers over shared st
 | 2026-11-08 | **The writer stays a full node**: it ingests, flushes, runs M4 compaction and serves every read, including the live view (~1 s, as today) | Watching a run live keeps M1's freshness; heavy reads move to readers |
 | 2026-11-08 | **Single tenant, no sharding.** If sharding comes later, the preferred key is the trace id | Keeps M5 to the split itself; every event already carries its trace id ([research §4](research.md#4-upper-bound-of-one-machine-and-shard-keys)) |
 | 2026-11-08 | *Changed the same day*: "a confirmed write survives loss of the writer's machine" (log batch in shared storage before confirming) moves to **backlog B1**. M5 keeps today's guarantee: a confirmed write survives a crash of any process, on the writer's disk | Durability, not read scaling; it's the first follow-up after M5 |
+| 2026-11-09 | **Baseline**: one ingest writer, independently scalable readers. The writer confirms after the WAL sync and serves the live view; in the background it uploads immutable files to S3, then publishes the whole set in one Postgres transaction that advances `published_through_seq`. Each reader pins one catalog snapshot per query and reads its files from S3 directly | Matches the M5 decisions above; it names the boundary ([Write and read paths](#write-and-read-paths)) |
+| 2026-11-09 | **Freshness is three separate points**: acknowledged, published, observed by a reader. Measure each lag before choosing a target ([OQ-5](#oq-5-freshness-target-for-readers)) | Don't promise a number the code hasn't shown |
+| 2026-11-09 | **Fresher readers and machine-loss durability are separate decisions.** A shared WAL tail (B2) is evaluated only if measured publication lag is too slow for readers; replicated WAL (B1) only if acknowledged writes must survive loss of the writer's disk before publication | Neon's boundary: durable WAL and the read path catching up are different problems ([research §7](research.md#7-the-neon-boundary-and-a-shared-wal-tail)) |
+| 2026-11-09 | **Full disaggregation is research, not M5**: reads apart from writes (M5), compaction apart from the writer (B3), storage apart from compute (B11) | Heavy; kept as a researched backlog item with triggers |
+| 2026-11-09 | **Preferred research direction for B11: an external log as the source of truth** (Rockset, Materialize, Pinot-on-Kafka style). M5 scope unchanged | Owner's preference: decouples writers from publishing and readers, and can reuse an existing log system. Smithling's WAL → flusher → catalog is already this shape inside one process; correctness questions and trade-offs in [research §9](research.md#9-an-external-log-as-the-source-of-truth) |
 
 ## What breaks as we scale (the north star)
 
@@ -109,7 +116,7 @@ out of CPU. M4 compaction handles the files and merged copies; **M5 handles read
 | P3 | The live change feed drops changes when a subscriber falls behind | Readers follow the feed | Missing runs, no way to catch up | Not needed in M5 (readers don't follow the feed); B2 |
 | P4 | The write log is deleted right after each flush | Anything other than the writer needs the log | Nothing to replay from | Not needed in M5; B1, B2 |
 | P5 | A write is confirmed once it's on the writer's local disk | That disk or machine is lost | Up to one flush of confirmed steps lost | **Backlog B1** (first follow-up) |
-| P6 | One "covered through N" number, used only in-process | Readers combine files with unflushed data | Runs missing or counted twice around a flush | Not needed in M5 (whole catalog versions only); B2 |
+| P6 | One "covered through N" number (`flushed_seq`), used only in-process | Readers combine files with unflushed data, or a caller needs a particular write | Runs missing or counted twice around a flush; no way to wait for a write | **M5 (light)**: stored per snapshot as `published_through_seq` and reported by readers; optional `min_seq` reads. Combining with unflushed data is B2 |
 | P7 | A query holds its files with in-memory references | Compaction (on the writer) replaces files a reader is using | A reader's query fails mid-way | **M5 (P0)**: grace period + query time limit |
 | P8 | Startup deletes any file not in the catalog | Several services upload to the same storage | One service deletes another's upload | Not needed in M5 (only the writer uploads); B3 |
 | P9 | Feedback, field stats and merged copies are loaded once at startup | Readers run for days | Stale or wrong answers until a restart | **M5 (P0)** |
@@ -144,7 +151,78 @@ flowchart TB
 | 🟠 | File deletion | in-process references keep files a query uses | replaced files also kept for a grace period; reader queries have a time limit | P7 |
 | 🟢 | Writer guard | implicit | a second writer on the same store refuses to start | P10 |
 | 🟢 | Freshness view | none | each reader reports its catalog version and how far behind it is | P12 |
+| 🟠 | `published_through_seq` | `flushed_seq`, in the catalog `state` row, read only by the writer | part of each catalog snapshot; every reader answer says which one it used | P6 |
+| 🟢 | `min_seq` reads (optional) | none; confirmations don't return a seq | confirmations return `seq`; read APIs take `min_seq` + a deadline and may answer "still publishing" | P6 |
 | ⚪ | Writer, write log, flush, compaction, live view, data files, query language, UI views | M1–M4 | unchanged | — |
+
+## Write and read paths
+
+### Write path (one writer)
+
+| # | Step | Today | M5 |
+|---|---|---|---|
+| W1 | Validate, dedup, number each event with a rising `seq` | ⚪ `writer.rs` | — |
+| W2 | Append to the WAL; one fsync per group of waiting requests (group commit, no fixed wait) | ⚪ `wal.rs`, `writer.rs` | — |
+| W3 | Apply to the memtable and the live hub; **confirm** | ⚪ | 🟢 the confirmation returns the batch's highest `seq` (for `min_seq`) |
+| W4 | In the background, at the flush age (2 min) or when the memtable is full: write immutable Parquet files and sidecars to storage (S3 or a folder) | ⚪ `flush.rs` | — |
+| W5 | **Publish**: one catalog transaction registers the whole set and advances `published_through_seq` to the frozen memtable's highest `seq` | ⚪ as `flushed_seq` (one flusher, in `seq` order, so contiguous) | 🟠 also bumps `catalog_version` and checks the writer lease (KD-2, KD-7) |
+| W6 | Trim the WAL up to `published_through_seq` | ⚪ | — |
+| W7 | Compaction swaps files in one guarded transaction; replaced files deleted after the grace period | ⚪ M4 `compact.rs` | 🟠 the swap bumps `catalog_version`; `published_through_seq` doesn't move |
+
+### Read path (each read worker, each query)
+
+| # | Step | Today | M5 |
+|---|---|---|---|
+| R1 | Look up the newest snapshot: `catalog_version`, `published_through_seq`, the active file set | — (the writer reads its own memory) | 🟢 one lookup per query (KD-2) |
+| R2 | **Pin** that snapshot for the whole query; refresh reader state to it if it's new (field stats, multi-version runs, merged copies, feedback) | — | 🟢 KD-3, KD-4, KD-5 |
+| R3 | Read only the pinned files, straight from S3 (cached footers and pages); never list storage | ⚪ the writer reads files the same way | 🟢 files are found only through the catalog |
+| R4 | Merge each run's versions to its latest values, *then* filter, group and count | ⚪ the writer's rule (D-023, D-029) | 🟢 the same rule on readers, from files alone (KD-4) |
+| R5 | Answer, saying which `published_through_seq` it used; stop at the query time limit | — | 🟢 FR-15; time limit (KD-6) |
+
+### Freshness: three points, measured separately
+
+For one event with sequence number `s`:
+
+| Point | True when | Tracked where | Lag to measure |
+|---|---|---|---|
+| **Acknowledged** | its WAL group is fsynced and the confirmation sent; the writer's live view and queries see it | writer memory (last `seq`) | request → confirmation (group commit) |
+| **Published** | `published_through_seq ≥ s` in the catalog | catalog `state` (today's `flushed_seq`) | confirmation → publish: up to the flush age plus flush time |
+| **Observed** by reader *r* | *r* pins a snapshot with `published_through_seq ≥ s` | reader memory and its check-in row (KD-10) | publish → first query on *r* that pins it, including state refresh |
+
+What each reader is promised:
+
+| Reader | Sees a confirmed write | Guarantee |
+|---|---|---|
+| ⚪ Writer live view | within ~1 s, from memory | Sees its own writes; a subscriber that falls behind may miss changes (P3) |
+| ⚪ Writer queries | at confirmation | Read-your-writes on the writer |
+| 🟢 Read worker | once published and observed | One whole snapshot per query (never partial); staleness ≤ flush age + one catalog check + refresh (FR-08); says which `published_through_seq` it answered from |
+| 🟢 Read worker with `min_seq = s` (optional) | only from a snapshot with `published_through_seq ≥ s` | Waits up to the caller's deadline, then answers **"still publishing"** with the `seq` it has reached. Never an answer that is silently stale |
+| 🟢 Feedback on a read worker | at the next `catalog_version` | Feedback isn't numbered with `seq` (D-027), so `min_seq` doesn't cover it ([OQ-8](#oq-8-feedback-and-min_seq)) |
+
+The proposal's "one-second WAL group-commit interval" is treated as a **ceiling on acknowledgment lag**, not a wait:
+today's writer already fsyncs as soon as the previous fsync ends ([OQ-7](#oq-7-group-commit-interval)).
+
+### What already exists and what M5 adds
+
+| Piece | Status | Where |
+|---|---|---|
+| WAL with group commit; confirm after fsync | ⚪ exists | `crates/ingest/src/wal.rs`, `writer.rs` |
+| Live view from the writer's memory | ⚪ exists | `crates/ingest/src/hub.rs`, `crates/server/src/routes/tail.rs` |
+| Files uploaded before one catalog transaction; idempotent retry; orphans deleted at start | ⚪ exists | `crates/ingest/src/flush.rs` |
+| Contiguous "published through" number | ⚪ exists as `flushed_seq` | `flush.rs`, `memtable.rs` |
+| S3 + Postgres storage and catalog, tested in CI | ⚪ exists | `crates/storage`, `.github/workflows/ci.yml` (MinIO + Postgres) |
+| Guarded compaction swap, grace-period deletes | ⚪ exists (M4) | `crates/ingest/src/compact.rs` |
+| Merge before filter, on the writer | ⚪ exists | D-023, D-029; `query/src/scan.rs`, `fields.rs` |
+| `catalog_version`; `published_through_seq` per snapshot | 🟢 M5 | KD-2, KD-13 |
+| Read workers that pin a snapshot and read S3 directly | 🟢 M5 | KD-1, KD-3 |
+| Multi-version runs known from files alone | 🟢 M5 | KD-4 |
+| Cross-process pin: grace period + reader query time limit | 🟢 M5 | KD-6 |
+| Writer lease checked at publish | 🟢 M5 | KD-7 |
+| The three freshness lags measured and reported | 🟢 M5 | SC-02, FR-15 |
+| `seq` in confirmations; `min_seq` reads; "still publishing" | 🟢 M5, optional (may be deferred) | KD-14 |
+| Shared WAL tail for readers | Backlog B2 (research) | KD-16 |
+| Replicated WAL (survives loss of the writer's disk) | Backlog B1 | KD-17 |
+| Compaction pool; storage and compute fully apart | Backlog B3, B11 (research) | research §7 |
 
 ## End state
 
@@ -159,6 +237,8 @@ flowchart TB
 - 🟢 As an **agent** or **agent developer**, I can send heavy queries to readers and see data at most one flush age
   old (2 min by default), with feedback and field statistics as current as the files. (P2, P9)
 - ⚪ As an agent developer, I can still watch a running trace live on the writer, within ~1 s as today.
+- 🟢 *(Optional)* As an agent, I can ask a reader for an answer that includes my own write (`min_seq` from the
+  confirmation) and get either that answer or an explicit "still publishing" by my deadline. (P6)
 - 🟠 As an agent developer, my long queries on a reader finish correctly even while compaction replaces files. (P7)
 - 🟢 As an operator, I can't accidentally start a second writer on the same store. (P10)
 - 🟢 As an operator, I can see in the browser and in `/healthz` how far behind each reader is. (P12)
@@ -279,6 +359,64 @@ reader shows itself behind, with the age of its newest data.
 
 ---
 
+### 🟢 User Story 6 - Wait for a particular write on a reader (Priority: P3, optional)
+
+**Fixes**: P6 (light).
+
+An agent that just wrote a step asks a reader for an answer that includes it, and is told plainly if the reader
+isn't there yet.
+
+**Why this priority**: useful for agents that write then investigate, but readers already say which
+`published_through_seq` they used. It can be deferred by decision without changing anything else in M5.
+
+**Independent Test**: confirm a batch and keep its `seq`; query a reader with `min_seq = seq` and a 5 s deadline
+before the flush (answer: "still publishing"), then with a deadline past the next flush (answer includes the step).
+
+**Acceptance Scenarios**:
+
+1. **Given** a confirmation, **When** it returns, **Then** it carries `seq`, the highest sequence number given to the batch; a batch that was all duplicates carries the writer's current confirmed `seq` (a safe upper bound).
+2. **Given** a read with `min_seq = s` on a reader whose snapshot has `published_through_seq ≥ s`, **When** it runs, **Then** it answers at once from that snapshot.
+3. **Given** a reader behind `s`, **When** the read's deadline passes before a snapshot reaches `s`, **Then** it returns "still publishing" with the `published_through_seq` it reached and no rows.
+4. **Given** the same read sent to the writer, **When** it runs, **Then** it answers at once (every confirmed `seq` is in its memory).
+5. **Given** a read without `min_seq`, **When** it runs, **Then** it behaves exactly as US1.
+
+---
+
+### Acceptance cases at the write/read boundary
+
+The three cases the baseline must survive. Each runs as a multi-process test on MinIO + Postgres in CI (SC-11).
+
+**Case A: the upload succeeds, the catalog publish doesn't.** (US1, US4; FR-05, FR-10, FR-13, FR-14)
+
+1. **Given** the writer has uploaded flush F's files for `seq` (N, M] and the catalog still says `published_through_seq = N`, **When** the writer is killed before the publish transaction, **Then** every reader keeps answering from snapshots ≤ N, never reads F's files, and a `min_seq = M` read returns "still publishing".
+2. **Given** that state, **When** the writer restarts, **Then** it replays the WAL past N, publishes (N, M] in one transaction, deletes F's orphan files, and readers' next queries give counts equal to one-process mode; nothing counted twice.
+3. **Given** the publish landed but its reply was lost, **When** the writer retries, **Then** the retry is "already committed" and nothing is registered twice.
+4. **Given** the writer lost its lease between upload and publish, **When** it tries to publish, **Then** the transaction is rejected, the writer stops, and its files stay invisible until the new writer removes them.
+
+- *Exists*: files before the transaction, idempotent retries, orphan removal at start (`flush.rs`). *M5 adds*: readers that find files only through the catalog, the lease check, `published_through_seq` per snapshot, the cross-process test.
+
+**Case B: a reader pinned across compaction.** (US3; FR-05, FR-09)
+
+1. **Given** a reader query pinned to snapshot V and reading from S3, **When** the writer's compaction swaps V's files and later flushes publish V+1, V+2, **Then** the query reads only V's files and finishes with V's answer.
+2. **Given** the swapped-out files, **When** less than the grace period (24 h) has passed since the swap, **Then** they are still in storage; the reader query time limit (1 h) is shorter than the grace period.
+3. **Given** the next query on that reader, **When** it pins the newest snapshot, **Then** it reads the compacted files and gets the same counts as before compaction for the same `published_through_seq`.
+4. **Given** a query running past the time limit, **When** the limit is hit, **Then** it fails with "query took too long, retry"; it never reads a deleted object.
+
+- *Exists*: guarded swap, `replaced_at`, 24 h grace and in-process holds (`compact.rs`). *M5 adds*: the pin across processes (grace + time limit only, since in-process holds don't reach readers), reader state rebuild after removals (KD-3).
+
+**Case C: a late span update changes whether a query matches.** (US2; FR-06, FR-17)
+
+Run R started in published file F1 as `status = running`. A late update setting `status = error` and its end time is confirmed as `seq = s`.
+
+1. **Given** a snapshot with `published_through_seq < s`, **When** `status = running` and `status = error` are queried, **Then** R matches the first only.
+2. **Given** a snapshot with `published_through_seq ≥ s` (the update in a new file F2, or merged into a compacted file), **When** the same queries run, **Then** R matches `status = error` only: never both, never neither, and it is counted once in aggregates and field counts.
+3. **Given** the writer, **When** the same queries run right after the confirmation, **Then** R already matches `status = error`.
+4. **Given** a reader with `min_seq = s`, **When** it answers, **Then** R matches `status = error`.
+
+- *Exists*: merge-before-filter on the writer (D-023, D-029), `needs_merge` rows, compaction merges. *M5 adds*: readers that know multi-version runs from files alone (KD-4); a property test over random late updates and flush timing. A future WAL tail (B2) must keep the same rule: merge tail updates onto snapshot rows before filtering.
+
+---
+
 ### Edge Cases
 
 - A trace whose root finishes last, after days: readers show it as running until the flush that carries the root's end, then finished.
@@ -308,6 +446,14 @@ Each requirement names the problem it fixes.
 - 🟢 **M5-FR-06** (P2): A reader's answer MUST equal the writer's answer for the same catalog version, over files only (data not yet flushed is absent, never partial).
 - 🟠 **M5-FR-07** (P9): Feedback, field statistics, merged copies of late-updated runs and other state loaded from the catalog or files MUST follow each new catalog version, including compaction swaps, without a restart.
 - 🟢 **M5-FR-08** (P2): Freshness on readers MUST be at most the writer's flush age plus one catalog check, and the flush age MUST stay configurable (2 min default).
+- 🟠 **M5-FR-13** (P6): Each catalog snapshot MUST carry `catalog_version` and `published_through_seq`, both advanced in the transaction that registers files; every event with `seq ≤ published_through_seq` MUST be in the snapshot's files.
+- 🟢 **M5-FR-14** (P2, P8): Read workers MUST find files only through the pinned snapshot, never by listing storage, so files uploaded but not published are never read.
+- 🟢 **M5-FR-15** (P6, P12): Every reader answer MUST say the `published_through_seq` it used; the writer MUST report its confirmed `seq` and `published_through_seq`, so the three lags (acknowledged, published, observed) can be measured.
+- 🟠 **M5-FR-17** (P2): Readers MUST apply each run's merged latest values before filtering, grouping or counting, as the writer does.
+
+**Waiting for a write (optional; may be deferred by decision)**
+
+- 🟢 **M5-FR-16** (P6): Confirmations MUST return `seq`; read APIs MUST accept `min_seq` and a deadline, and MUST answer only from a snapshot with `published_through_seq ≥ min_seq` or return "still publishing" with the reached `seq`.
 
 **Deletion safety**
 
@@ -339,13 +485,16 @@ So that compaction can later become its own service (backlog B3) without rework:
 - **Writer lease**: a catalog row naming the current writer, with an expiry and a number that rises on each new writer.
 - **Grace period**: how long replaced files stay readable; longer than the reader query time limit.
 - **Reader status**: per reader, its catalog version, the age of its newest data, whether it's current, when it last checked in.
+- **`published_through_seq`**: the highest `seq` N such that every event with `seq ≤ N` is in published files. Today's `flushed_seq`.
+- **Snapshot**: what a query pins: `catalog_version`, `published_through_seq` and the active file set.
+- **Freshness points**: acknowledged (WAL synced, confirmed), published (in the catalog), observed (pinned by a reader).
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
 - 🟢 **SC-01** (P1, P2): With 1 writer and 2 readers, `smithling demo` against each reader passes every M2–M4 check with counts identical to one-process mode, on local shared storage and on cloud-style storage.
-- 🟢 **SC-02** (P2): On a reader, data is visible within the flush age plus 5 s, for 99% of confirmed steps.
+- 🟢 **SC-02** (P2, P6): At the bench write load, the three lags (request → acknowledged, acknowledged → published, published → observed on a reader) are measured and reported as P50/P99. The reader freshness target is chosen after that ([OQ-5](#oq-5-freshness-target-for-readers)); FR-08's bound holds meanwhile.
 - 🟢 **SC-03** (P1): With 2 readers taking the read load, the writer's confirmation P99 under the bench write load stays within 10% of its value with no reads; read throughput with 2 readers is ≥ 1.7× one reader's.
 - 🟢 **SC-04** (P9): Across a full demo load with late updates and compaction, readers' answers equal the writer's at every catalog version checked (zero mismatches).
 - 🟠 **SC-05** (P7): Reader queries across 100 compaction swaps return the same answers as without compaction; zero queries fail from a missing file.
@@ -353,6 +502,8 @@ So that compaction can later become its own service (backlog B3) without rework:
 - 🟢 **SC-07**: A new reader on a store of 2M runs serves within 60 s.
 - 🟢 **SC-08** (P12): A reader that falls behind shows as behind within one catalog check.
 - ⚪ **SC-09**: All M1–M4 success criteria still pass in one-process mode.
+- 🟢 **SC-10** (P6, optional with FR-16): 100% of `min_seq` reads either answer from a snapshot with `published_through_seq ≥ min_seq` or return "still publishing" within the deadline + 1 s; zero stale answers.
+- 🟢 **SC-11**: Boundary cases A, B and C pass as multi-process tests on MinIO + Postgres in CI.
 
 ### Problem demos
 
@@ -394,6 +545,30 @@ Rebuilding merged copies of late-updated runs and per-file statistics on every n
 writer does today at each flush), or rebuild in the background while serving the previous version. Plan-level, but
 it decides whether SC-02 and SC-04 hold together.
 
+### OQ-5: Freshness target for readers
+
+Measure first (SC-02): with a 2 min flush age, publication lag is up to ~2 min; observation adds one catalog check
+and the state refresh (OQ-4). Then pick the target: keep the flush age, shorten it (research §5 option B, more small
+files and compaction), or open B2. Decide after U6.
+
+### OQ-6: Shape of the `min_seq` contract
+
+Proposed (KD-14): `?min_seq=&wait_ms=` on every read API, `wait_ms` capped (30 s); "still publishing" as HTTP 503
+with `Retry-After` and a body naming the reached `seq`. Open: the cap; whether exports and live streams accept it;
+whether to ship FR-16 in M5 or defer it.
+
+### OQ-7: Group commit interval
+
+The proposal names a one-second group-commit interval. Today's writer has no fixed wait: requests that queue during
+one fsync go into the next (`writer.rs`), so confirmations usually take one fsync. Proposed (KD-15): keep that, and
+treat 1 s as the ceiling for acknowledgment P99 in SC-02 rather than a wait added to every write.
+
+### OQ-8: Feedback and `min_seq`
+
+Feedback is written straight to the catalog without a `seq` (D-027), so `min_seq` can't wait for it. Options: return
+`catalog_version` from feedback writes and accept `min_version` too; or leave feedback out of the contract. Proposed:
+leave it out in M5, note it in the API contract.
+
 ## Backlog with triggers
 
 Everything below was in the full M5 design and is deferred on purpose. Each item says what brings it back. The
@@ -401,8 +576,8 @@ reasoning and options stay in [research.md](research.md).
 
 | # | Item | Problems | Trigger to pick it up | Starting design (research) |
 |---|---|---|---|---|
-| B1 | **Durable log off the writer's machine**: log batch in shared storage before confirming; optional fast-confirm mode | P5 | First follow-up after M5; or any deployment where losing the writer's disk is unacceptable | Log batches created only if absent, ownership number in the catalog (§1, option 2) |
-| B2 | **Readers see unflushed data** (sub-flush freshness on readers) | P3, P4, P6 | Readers need fresher than the flush age (e.g. agents investigating a run still in progress), or the live view needs to move off the writer | Options: shorter flush + compaction; narrow live path from the writer; readers ask the writer (SmithDB); readers follow the log (Tempo) (§2, §5) |
+| B1 | **Replicated WAL: durable log off the writer's machine**: log batch in shared storage (or a quorum of log nodes) before confirming; optional fast-confirm mode | P5 | Acknowledged writes must survive loss of the writer's disk before publication. A separate decision from B2: fresher readers don't need it and it doesn't make readers fresher | Log batches created only if absent, ownership number in the catalog (§1, option 2); Neon safekeepers (§7) |
+| B2 | **Readers see unflushed data through a shared WAL tail** | P3, P4, P6 | Measured publication lag (SC-02) is slower than readers need, e.g. `min_seq` reads often answer "still publishing", or agents investigate runs still in progress | A query reads snapshot N plus committed WAL records in (N, U], U fixed at query start, and merges span updates onto snapshot rows before filtering or aggregating (§7). Where the tail comes from (the writer, or a shared log from B1) is the main open question. Earlier options: shorter flush, narrow live path, ask the writer (§2, §5) |
 | B3 | **Compaction as its own service pool** | P1 (compaction part), P8 | Compaction measurably slows ingest on the writer, or needs more than one machine | Inputs from the catalog only, guarded swap, grace-period delete, pending-upload rows and ownership number in file names (§3); needs M4-REQ-1–4 |
 | B4 | **Writer handoff and full fencing** (planned move, automatic takeover) | P10 | The writer must be replaced without an operator, or with < 1 min of write downtime | Lease row with ownership number checked in every commit (§3) |
 | B5 | **Sharding** (several writers) | P11 | Sustained writes near one writer's ~30–40k events/s | Trace-id hash; small projects on a few shards (§4) |
@@ -411,12 +586,13 @@ reasoning and options stay in [research.md](research.md).
 | B8 | **Tenants**: what a tenant is, isolation, limits; tenant id on data | — | A second tenant, or per-tenant limits needed | Options A–C (§6) |
 | B9 | **Queries across projects** (rollups, comparisons, search everywhere) | — | Users ask for "all my agents" views | §6; with trace-id sharding these cost the same as one-project queries |
 | B10 | **Long exports past the query time limit** | P7 | Exports need more than the reader time limit | Explicit hold rows with expiry (§3) |
+| B11 | **Research: the fully disaggregated end state.** Reads apart from writes (M5), compaction apart from the writer (B3), storage apart from compute. **Preferred direction: an external log as the source of truth**, which would deliver B1 (durable ack) and B2 (log tail) together, with indexers, compactors and readers as consumers | P1, P5, P8, P11 | After M5's measurements, and before planning any of B1–B4. Research only: produces a design note and a revised order, not code | Landscape (§8); external log, correctness questions L1–L10 and log options (§9); Neon comparison (§7) |
 
 ## Assumptions
 
 - **Order**: M4 (compaction in the writer process, meeting M4-REQ-1–4) is built first. The agents milestone (Claude Code import, agent tools) is M6.
 - **One binary, roles by configuration** (constitution I). Split mode needs a shared catalog database (Postgres) and shared storage (a folder all processes see, or object storage). SQLite works only when all processes share one machine's folder, for tests.
-- **Freshness on readers is the flush age** (2 min default). Agents investigating recorded traces can work with that; watching a run live stays on the writer.
+- **Freshness on readers is bounded by the flush age** (2 min default) until measured (OQ-5). Agents investigating recorded traces can work with that; watching a run live stays on the writer; `min_seq` makes the wait explicit.
 - **Readers keep a cache** of file footers and pages, as the writer does (32 MB default, configurable); on object storage they'll likely want more, since every footer read is a request.
 - **Durability is unchanged from M4**: a confirmed write survives any process crash, on the writer's disk (B1 for machine loss).
 - **Trust boundary**: services run on a private network or localhost; no service-to-service authentication in M5. Defaults still bind to localhost.

@@ -1,6 +1,6 @@
 # M5 design: options and key decisions (open for discussion)
 
-**Status**: Proposed, 2026-11-08. Nothing here is decided until its entry in the [decision register](#key-decision-register)
+**Status**: Proposed, 2026-11-08; KD-13 to KD-17 added 2026-11-09. Nothing here is decided until its entry in the [decision register](#key-decision-register)
 says **Decided**. Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Options from other systems: [research.md](research.md).
 
 ## How we use this document
@@ -25,8 +25,8 @@ Four levels of disaggregation, from least to most. Each later step adds to the o
 | Option | What runs where | Fixes | Doesn't fix | Status |
 |---|---|---|---|---|
 | **A1. Read workers over files** | Writer: ingest, flush, compaction, live view, all reads. Readers: reads from published files and the catalog only | P1 (reads), P2, P7, P9; P10, P12 light | P5, writer is one machine, readers ≤ flush age | **Proposed for M5** (spec Decisions) |
-| A2. A1 + fresher readers | A1, plus readers see unflushed data: shorter flush, a narrow live path from the writer, or readers following the log | + P3, P4, P6 | P5 | Backlog B2 |
-| A3. Full disaggregation | A2, plus the write log in shared storage before confirming, compaction as its own service, writer handoff | + P5, P8, P10 full, P1 (compaction) | write rate of one writer | Backlog B1, B3, B4 |
+| A2. A1 + fresher readers | A1, plus readers see unflushed data: snapshot through N plus a shared WAL tail (N, U], merged before filtering (research §7); or a shorter flush | + P3, P4, P6 | P5 | Backlog B2 (research) |
+| A3. Full disaggregation | A2, plus a replicated WAL before confirming, compaction as its own service, writer handoff; storage and compute fully apart | + P5, P8, P10 full, P1 (compaction) | write rate of one writer | Backlog B1, B3, B4; researched as B11 |
 | A4. Sharded | A3 with several writers, by trace id | + P11 | — | Backlog B5 |
 
 ```mermaid
@@ -55,7 +55,8 @@ Colours: 🟢 new in M5 · 🟠 changed · ⚪ as M4.
 | Job | Today | M5 change | Decisions |
 |---|---|---|---|
 | Ingest (validate, dedup, log, fsync, apply, confirm) | as M1–M3 | none | — |
-| Flush and publish | one catalog commit per flush | also bumps the catalog version; checked against the writer lease | KD-2, KD-7 |
+| Confirm | after the group's WAL fsync, no fixed wait | also returns the batch's highest `seq` (optional) | KD-14, KD-15 |
+| Flush and publish | one catalog commit per flush, moves `flushed_seq` | also bumps the catalog version; checked against the writer lease; `flushed_seq` is reported as `published_through_seq` | KD-2, KD-7, KD-13 |
 | Compaction (M4) | background task in the writer | must meet M4-REQ-1–4; its swaps bump the catalog version | KD-2, KD-4 |
 | Delete replaced files | M4 design | after the grace period | KD-6 |
 | Lease | none | take at start, renew on a timer, stop if lost | KD-7 |
@@ -68,7 +69,8 @@ Colours: 🟢 new in M5 · 🟠 changed · ⚪ as M4.
 | Start | Open storage and catalog read-only; load the newest catalog version and build its state; serve once ready | KD-1, KD-8 |
 | Check for a new version | At the start of each query (and on a timer when idle) | KD-2, OQ-3 |
 | Refresh state | New files' stats, multi-version runs, merged copies, feedback; files removed by compaction | KD-3, KD-4, KD-5 |
-| Serve reads | Every read API from one catalog version per query, with a time limit | KD-6, KD-9 |
+| Serve reads | Every read API from one pinned snapshot per query, with a time limit; says which `published_through_seq` it used | KD-6, KD-9, KD-13 |
+| Wait for a write (optional) | `min_seq` + deadline: re-check the catalog until a snapshot reaches it, else "still publishing" | KD-14 |
 | Report status | Catalog version, age of newest data, current or behind; check in to the catalog | KD-10 |
 
 ### Catalog (🟠)
@@ -102,6 +104,11 @@ larger cache on S3 (KD-11).
 | [KD-10](#kd-10-reader-status-and-check-ins) | How readers report status | `/healthz` + a check-in row in the catalog | Proposed | U5 |
 | [KD-11](#kd-11-reader-cache-on-object-storage) | Reader cache on object storage | Same cache, larger default on S3 | Open | U6 |
 | [KD-12](#kd-12-constitution-ii-record) | Record files-only reads as a staged SmithDB difference? | Yes, Principle II (c), B2 as the revisit | Proposed (spec OQ-1) | plan gate |
+| [KD-13](#kd-13-what-a-snapshot-carries) | What does a snapshot carry, and where does `published_through_seq` live? | `catalog_version` + today's `flushed_seq`, read in one lookup | Proposed | U1 |
+| [KD-14](#kd-14-the-min_seq-read-contract) | `min_seq` read contract | Query params, capped wait, 503 "still publishing"; optional in M5 | Open (spec OQ-6) | U8 |
+| [KD-15](#kd-15-group-commit-interval) | Group commit: fixed 1 s interval or as today? | As today; 1 s is the ack P99 ceiling | Proposed (spec OQ-7) | — |
+| [KD-16](#kd-16-shared-wal-tail) | Shared WAL tail for readers | Measure first; evaluate only if publication lag is too slow | Deferred → B2 | — |
+| [KD-17](#kd-17-replicated-wal) | Replicated WAL durability | Separate decision, on durability needs | Deferred → B1 | — |
 
 ### KD-1: How does a reader exist without a writer?
 
@@ -244,6 +251,54 @@ The cache is 32 MB by default (D-028). On S3 every miss is a request of tens of 
 SmithDB queries the ingestion node for fresh data; M5 readers read files only. **Recommendation**: record as
 Principle II (c), deliberately staged (simpler first), revisit with backlog B2. Listed in [plan.md](plan.md#constitution-check).
 
+### KD-13: What a snapshot carries
+
+A query pins one snapshot: `catalog_version`, `published_through_seq` and the active file set. `flushed_seq` already
+means "every event with `seq ≤ N` is in published files" (`ingest/src/memtable.rs:26`), and it is contiguous because
+one flusher publishes frozen memtables in `seq` order (`ingest/src/flush.rs`).
+
+| Option | For | Against |
+|---|---|---|
+| **a. Keep the `flushed_seq` column; expose it as `published_through_seq`; read it with `catalog_version` in one lookup** | No migration of meaning; already tested by the crash harness | Two names for one number (document it) |
+| b. Rename the column | One name | A migration for a name |
+| c. A snapshots table, one row per version | History for debugging | Grows; nothing needs history yet |
+
+**Criteria**: exact, contiguous, one lookup. **Recommendation**: (a). Compaction swaps and feedback writes bump
+`catalog_version` but leave `published_through_seq` alone.
+
+### KD-14: The `min_seq` read contract
+
+Neon's pageserver waits for the requested LSN (research §7); `min_seq` is the same idea at flush granularity.
+
+| Part | Options | Recommendation |
+|---|---|---|
+| Where `seq` comes from | a. confirmation body field; b. response header | (a), as an **opaque write token** (today the batch's highest `seq`; all-duplicate batch → current confirmed `seq`), so per-partition log offsets later (research §9, L7) don't break the API |
+| How to ask | a. `?min_seq=&wait_ms=` on read APIs; b. a header | (a), `wait_ms` capped at 30 s |
+| When behind at the deadline | a. 503 + `Retry-After`, body `still_publishing` with reached `seq`; b. 200 with a stale flag; c. 425 Too Early | (a): no rows, so nothing stale is shown |
+| Waiting | a. re-check the catalog every ~250 ms; b. LISTEN/NOTIFY (OQ-3) | (a) first |
+| On the writer | always satisfied at once | — |
+
+**Status**: Open: the owner decides whether FR-16 ships in M5 (U8) or is deferred.
+
+### KD-15: Group commit interval
+
+Today a group is whatever queued during the previous fsync, up to 1 MB (`ingest/src/writer.rs:27`); there is no fixed
+wait. A fixed 1 s interval would add up to 1 s to every confirmation for no gain on one disk.
+
+**Recommendation**: keep today's group commit; record "acknowledgment P99 ≤ 1 s" as the ceiling in SC-02.
+Revisit only with B1, where each group becomes a shared-storage write and batching by time can pay off.
+
+### KD-16: Shared WAL tail
+
+Deferred to backlog B2. Design sketch and open questions in research §7: snapshot through N + committed tail
+(N, U], U fixed at query start, merge span updates before filtering. **Trigger**: SC-02's measured publication lag
+is slower than readers need.
+
+### KD-17: Replicated WAL
+
+Deferred to backlog B1. Decided by one question: must an acknowledged write survive loss of the writer's disk
+before publication? Not by reader freshness (research §7).
+
 ## Risks
 
 | Risk | Where | Mitigation |
@@ -253,7 +308,13 @@ Principle II (c), deliberately staged (simpler first), revisit with backlog B2. 
 | Reader refresh can't keep up at 2M runs | KD-3 | Incremental refresh; measure refresh time per flush in the bench |
 | M4 compaction relies on writer memory | M4-REQ-1 | Review M4's spec against M4-REQ-1–4 before it's planned |
 | SQLite opened by several processes | KD-8 | Readers open read-only; refuse network filesystems |
+| A reader reads a file that was uploaded but never published | KD-13 | Readers find files only through the snapshot (FR-14); spec Case A test |
+| `min_seq` waits forever for a `seq` lost with the writer's disk | KD-14 | Every wait has a deadline; B1 removes the loss |
 
 ## Discussion log
 
 - 2026-11-08: Register created. KD-4 raised as a correctness risk found in `query/src/fields.rs:92`.
+- 2026-11-09: Owner's baseline added (one writer, readers pin a snapshot and read S3, three freshness points,
+  optional `min_seq`, Neon boundary). KD-13 to KD-17 added; KD-16 and KD-17 deferred to B2 and B1.
+- 2026-11-09: Owner prefers an external log as the source of truth as the B11 research direction (research §9).
+  KD-14 now returns an opaque write token.

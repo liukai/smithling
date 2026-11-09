@@ -20,6 +20,11 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ### Added
 
+- **M5 spec and plan, write/read boundary**: one writer, readers pin a catalog snapshot (`published_through_seq`) and
+  read S3 directly; freshness tracked as acknowledged / published / observed; optional `min_seq` reads; acceptance
+  cases for upload-before-publish, a reader pinned across compaction and a late update. Shared WAL tail (B2),
+  replicated WAL (B1) and the full disaggregated end state (B11) stay researched backlog; B11's preferred research
+  direction is an external log as the source of truth (research §8–§9).
 - **Compaction you can see (M4, unit 5)**: `POST /api/compact` runs it now; the header shows a storage line (data
   files, when compaction last ran, old files waiting for deletion, or an error). `smithling demo --compact` runs the
   checks, compacts, runs them again and requires the same answers; on seed 7 it goes from 83 data files to 8.

@@ -17,6 +17,10 @@ evidence they draw on:
 | Reader cache on S3 | KD-11 | §1 (request latency), design-notes §2 (SmithDB memory + SSD) |
 | Constitution II record | KD-12 | §2 (SmithDB reads the ingestion node) |
 | Durable log off the writer (backlog B1) | spec B1 | §1; SmithDB's post doesn't say when it confirms a write or what survives losing an ingestion node (re-read 2026-11-08) |
+| Snapshot, `min_seq`, group commit (added 2026-11-09) | KD-13, KD-14, KD-15 | §7 (Neon's wait-for-LSN); code: `flush.rs`, `writer.rs` |
+| Shared WAL tail, end state (backlog B2, B11) | KD-16, KD-17 | §7 |
+| Landscape of disaggregated designs (B11) | spec B11 | §8 |
+| External log as the source of truth: the owner's preferred research direction (B11) | spec B11, KD-14 | §9 |
 
 
 Input to the [spec](spec.md)'s open questions and the plan. Gathered 2026-11-08 by read-only research (web sources and
@@ -281,3 +285,208 @@ Sources: [LangSmith admin](https://docs.langchain.com/langsmith/administration-o
 [Loki multi-tenancy](https://grafana.com/docs/loki/latest/operations/multi-tenancy/) ·
 [Mimir config](https://grafana.com/docs/mimir/latest/references/configuration-parameters/) ·
 [Weave quickstart](https://docs.coreweave.com/weave/quickstart).
+
+## 7. The Neon boundary and a shared WAL tail
+
+Added 2026-11-09 for the baseline in the spec's [Write and read paths](spec.md#write-and-read-paths), backlog B2 and
+B11. Neon facts checked 2026-11-09 against [Neon's architecture overview](https://neon.com/docs/introduction/architecture-overview),
+[GetPage@LSN](https://neon.com/blog/get-page-at-lsn) and `wait_lsn` in the pageserver source.
+
+**What Neon separates [V].** Postgres compute streams WAL to a quorum of *safekeepers*; a commit is acknowledged once
+a majority has it. *Pageservers* consume the WAL from safekeepers, build page versions, and upload layer files to
+object storage. Compute asks a pageserver for "page P as of LSN L", and the pageserver **waits until it has applied
+WAL through L** (with a timeout) before answering. Read replicas do the same at their own replay LSN.
+
+So Neon has two separate questions:
+
+| Question | Neon | Smithling today | Smithling later |
+|---|---|---|---|
+| What survives losing the writer's disk? | WAL on a safekeeper quorum before acknowledgment | Nothing between the WAL sync and publication (P5) | B1: replicated WAL |
+| How does a reader catch up to a write? | The pageserver waits for LSN L | Readers see published snapshots only | M5: `min_seq` waits for a snapshot; B2: a WAL tail |
+
+The M5 `min_seq` contract has the same shape as wait-for-LSN, with `published_through_seq` as the reader's applied
+LSN. The difference is granularity: Neon's pageserver applies WAL continuously, while a Smithling reader moves forward
+one published flush at a time.
+
+**A shared WAL tail (B2), sketched.** For a query on a reader:
+
+1. Pin snapshot N (`published_through_seq = N`), as in M5.
+2. Fix an upper watermark U at query start: the highest *committed* `seq` the tail source has (acknowledged on the
+   writer, or durable in the shared log if B1 exists).
+3. Read the tail records in (N, U] for the query's projects and time range.
+4. Merge span updates per run: snapshot rows + tail updates in `seq` order, the same `merge_versions` rule as
+   D-023/D-029. Only then filter, group and count, so a late update that changes `status` moves the run between
+   matches exactly once (spec Case C).
+5. Answer, reporting both N and U.
+
+| Design question | Options | Note |
+|---|---|---|
+| Where the tail comes from | a. the writer serves (N, U] over a narrow API; b. a shared log in S3 or a log service (needs B1); c. readers subscribe to the writer's change feed | (a) brings back a reader-to-writer link (against the M5 rule); (b) pairs with B1; (c) has P3's dropped-changes problem |
+| What U means | acknowledged on the writer vs durable off the writer | If the tail is the writer's memory, U can include writes that a lost disk takes away (P5); readers would show then un-show them |
+| Cost per query | tail size × queries | Bounded by the flush age: at 20k events/s and 2 min, up to ~2.4M records; needs per-project or per-trace indexing in the tail |
+| Field stats, counts | merged on the fly, or approximate for the tail | Field suggestions may exclude the tail; aggregates must not |
+| Interaction with compaction | none: compaction works on published files only, below N | Snapshot pin rules unchanged |
+
+**Why separate decisions.** A WAL tail (B2) makes readers fresher; it doesn't make acknowledged writes safer. A
+replicated WAL (B1) makes them safer; it doesn't make readers fresher by itself, though it gives B2 a tail source (b)
+that doesn't need a link to the writer. Decide B1 on durability needs and B2 on measured publication lag.
+
+**Research questions for the end state (B11).**
+
+1. Ownership: which service owns each step: sequencing, WAL durability, publication, compaction, deletion? Which
+   need the writer lease's ownership number?
+2. With compaction as its own pool (B3), who removes orphans (P8), and how do pending-upload rows replace "delete
+   anything not in the catalog" at start?
+3. Is the tail source a separate service (like safekeepers) or part of the writer with replication?
+4. Cost model on S3: requests per published flush, per reader query (footers, pages), per tail read; at what reader
+   count does a shared SSD cache tier (KD-11 c) pay off?
+5. Failure matrix: writer, log node, compactor, reader, catalog, S3 each lost; what each reader is then promised.
+6. Is there a version of this that stays one binary with roles (constitution I)?
+
+## 8. The landscape of disaggregated designs
+
+Added 2026-11-09 for B11. Five families, split by **when a write counts as durable** and **how readers see data not
+yet in files**. Family-4 and Neon facts were checked 2026-11-09 (§7, §9); the rest of the table is [U].
+
+| Family | Examples | Ack point | Reader freshness | Stateful services | Complexity |
+|---|---|---|---|---|---|
+| 1. The log is the database | Neon, Aurora, Azure SQL Hyperscale, AlloyDB | a log quorum | ~instant (wait for LSN) | log quorum, page servers, object store | very high |
+| 2. Immutable files + consistent catalog | Snowflake, Datadog Husky, Quickwit, WarpStream, turbopuffer, Iceberg/Delta | catalog commit (or a local WAL) | commit interval (0.25–60 s, §5) | catalog, object store | low |
+| 3. Ingesters + object store | Tempo, Loki, Mimir, Cortex, Druid/Pinot real-time | replicated ingester WAL | ~1 s, readers also ask ingesters | ingesters on a hash ring, object store | medium-high |
+| 4. External log as the source of truth | Rockset, Materialize, Pinot on Kafka, FoundationDB internally, Delos | the log | tail lag | log, consumers (indexers), object store, catalog | high, but each piece is simple |
+| 5. Shared cache tier over object storage | ClickHouse Cloud, StarRocks/Doris shared-data, BigQuery, Firebolt | catalog commit | commit interval | catalog, object store, caches | medium |
+
+Shared-nothing systems (CockroachDB, TiDB, Spanner, Elasticsearch) replicate data on the compute nodes; they scale
+but are not disaggregated.
+
+**Levers every family trades**: ack point · freshness mechanism · one sequencer or one per shard · metadata store
+(Postgres, FoundationDB, embedded Raft) · where compaction runs · file size vs freshness (the small-files cost) ·
+cache strategy · garbage collection of files (grace period or reference tracking) · merge late updates on read or on
+write.
+
+**Where Smithling sits**: M5 is family 2 with one writer. B1 and B2 each borrow one piece from family 1, 3 or 4.
+
+## 9. An external log as the source of truth
+
+Added 2026-11-09. **The owner's preferred research direction for B11** (spec Decisions). Research only, not M5
+scope. Facts about other systems checked 2026-11-09; sources at the end of this section.
+
+### Smithling is already this shape, inside one process
+
+| Family 4 part | Smithling today | Where |
+|---|---|---|
+| The log | the WAL: numbered, fsynced batches | `ingest/src/wal.rs` |
+| A consumer that builds files | the flusher: frozen memtable → Parquet → one catalog transaction | `ingest/src/flush.rs` |
+| The consumer's committed offset | `flushed_seq`, in the same transaction as the files | `flush.rs` |
+| Log truncation after consumption | WAL trimmed up to `flushed_seq` | `flush.rs` |
+| A live consumer | the hub feeding the live view | `ingest/src/hub.rs` |
+
+So the move is to **take the log out of the writer** and make it shared and durable, so several consumers can read
+it. The flush transaction's rule stays the same: *files for offsets (N, M] and the new offset M commit together*.
+
+```mermaid
+flowchart TB
+    F["Ingest front<br/>validate, append, ack"]:::revised
+    L["Shared log<br/>source of truth"]:::new
+    I["Indexers<br/>files + offset, one txn"]:::revised
+    S["S3 files + catalog"]:::old
+    R["Readers<br/>snapshot ≤ N + log tail"]:::new
+    C["Compactors"]:::revised
+    F --> L --> I --> S --> R
+    L --> R
+    S --> C
+    classDef new fill:#c8e6c9,stroke:#2e7d32,color:#1b1b1b
+    classDef revised fill:#ffe0b2,stroke:#ef6c00,color:#1b1b1b
+    classDef old fill:#eeeeee,stroke:#9e9e9e,color:#1b1b1b
+```
+
+Colours: 🟢 new service · 🟠 a role that exists today, split out · ⚪ as M5.
+
+### What gets simpler
+
+| | Today / M5 | With a shared log |
+|---|---|---|
+| Ack | the WAL on the writer's disk (P5: lost with that disk) | a durable append to the log; **B1 comes with it** if the log is replicated |
+| Writer | full node: dedup, WAL, memtable, flush, compaction, live view | a thin front that validates and appends; replaceable (B4 becomes fencing on the log) |
+| Publishing | the writer's flusher | any indexer: idempotent, restartable from its last committed offset |
+| Fresh reads (B2) | not possible without a link to the writer | readers tail the log from N: **the shared WAL tail comes with it** |
+| New consumers | each needs code in the writer | add a consumer: live view, exports, M6 agent feeds, rolled-up aggregates |
+| Rebuild | from files only | replay the log within its retention |
+
+### What needs a new correctness answer
+
+| # | Question | Today | With a log: options | Lean |
+|---|---|---|---|---|
+| L1 | **Exactly-once publish** | the offset commits with the files | keep the offset in the catalog transaction, not in the log's consumer group; Kafka's exactly-once covers Kafka outputs only, and an external sink must store "its offset in the same place as its output" [V] | keep today's rule |
+| L2 | **Order and the meaning of `seq`** | one global `seq` | one partition: total order, but one partition's throughput cap; many partitions: per-partition offsets, so `published_through_seq` becomes one watermark per partition | partition by trace id (§4), so a run's late updates stay in order in one partition |
+| L3 | **Dedup** | writer memory, before numbering | a. at the front, before appending (the front holds state again); b. at the consumer, deterministic from the log, so replays agree | b |
+| L4 | **Validation and the project map** | in the writer | at the front (reject early, needs the identity rules) or at consume (accept, then drop) | front, stateless checks only |
+| L5 | **Retention** | the WAL is kept until flushed | retention must exceed the worst-case publish lag plus a reader rebuild; a consumer past retention loses data | alert, and push back on the front, well before that |
+| L6 | **Fencing** | writer lease (KD-7) | two indexers on one partition: the catalog transaction checks a per-partition ownership number | same rule as KD-7, per partition |
+| L7 | **Read-your-writes** | `seq` in the confirmation (KD-14) | the ack returns (partition, offset); `min_seq` waits on that partition's watermark | make the API token opaque now (KD-14) |
+| L8 | **Merge before filter on the tail** | Case C on files | tail updates merge onto snapshot rows before filtering; the tail needs per-trace lookup | required for B2 in any form |
+| L9 | **Feedback** | straight to the catalog, no `seq` (D-027) | through the log too, so it gets an offset (closes OQ-8), at the cost of revisiting D-027 | open |
+| L10 | **Availability** | writes need the writer | writes need the log; the log becomes the most critical service | pick a log with replication and a known failure story |
+
+### Which log
+
+| Option | For | Against |
+|---|---|---|
+| a. Kafka (with tiered storage, KIP-405: early access in 3.6, production-ready since 3.9) [V] | mature; large ecosystem; exactly-once tools | heavy to run (JVM, brokers); an external service |
+| b. Redpanda [V] | Kafka API; Raft group per partition; no JVM or ZooKeeper; tiered storage to S3/GCS | still an external service |
+| c. A Kafka-compatible log on object storage (WarpStream-style) [V] | no broker disks; acks after the object write *and* the metadata commit; 250 ms default batch timeout | ~0.5–1 s end to end (§5); vendor or self-built |
+| d. **Smithling's own log in S3**: WAL batches as objects created only if absent, with the head in the catalog (§1, option 2) | stays one binary; same storage as the files; is B1 | ack waits for an S3 PUT (tens to hundreds of ms); we build retention and tailing |
+| e. Postgres as the log (a batches table) | nothing new to run | low throughput; grows the catalog |
+
+**A `Log` interface** (append → offset, read from an offset, fence) lets one-process mode keep the local WAL while
+split mode plugs in (a), (b) or (d). That's how Delos swaps log implementations ("Loglets") under one VirtualLog API, which let Meta change its consensus protocol in production without downtime [V]. It keeps
+constitution I (one binary; external services optional) and still lets us reuse an existing system.
+
+### What M5 already keeps so this stays cheap
+
+No M5 scope change is needed. These M5 and M4 rules are what a later move to a shared log relies on:
+
+- `published_through_seq` commits with the files in one transaction (FR-13): it becomes the indexer's offset.
+- Flush jobs reuse file names and segment ids on retry: indexers stay idempotent.
+- Readers find files only through the catalog (FR-14), and compaction takes its inputs from the catalog only
+  (M4-REQ-1): neither cares who wrote the files.
+- Merge before filter (FR-17) is the rule a log tail needs too.
+
+One cheap addition for M5: if U8 ships, make the confirmation's `seq` an **opaque write token**, so a later move to
+per-partition offsets doesn't break the API (KD-14).
+
+### Research questions for B11
+
+1. One partition or many? At what write rate does one partition (or one writer's log) cap out (§4: ~30–40k events/s
+   today)?
+2. Dedup at the consumer (L3): how large a key window, kept where, and how it rebuilds on replay.
+3. Log choice (a)–(e): ack latency budget, cost at 20k and 200k events/s, and what one-process mode keeps.
+4. Retention sizing (L5) against the worst publish lag and a reader rebuild.
+5. Tail reads (L8): per-trace indexing of the tail, and how much of the tail a query may read.
+6. Feedback through the log (L9): worth reopening D-027?
+7. Failure matrix: front, log, indexer, compactor, reader, catalog and S3, each lost; what each reader is then
+   promised.
+8. Rockset's tailer/leaf/aggregator split: its blog post now redirects to OpenAI's acquisition page; find another
+   primary source or drop it as an example.
+
+### How others answer L1, L2 and L6 [V]
+
+| System | Exactly-once publish (L1) | Order (L2) | Fencing (L6) |
+|---|---|---|---|
+| Materialize persist | shard state in a consensus store (Postgres, or CockroachDB in their cloud) updated by compare-and-set; data in blob storage | versioned by timestamps, with `since` and `upper` frontiers per shard | compare-and-set on the shard state |
+| Pinot real-time | the controller has replicas agree on the end offset, one replica commits the segment (COMMIT_START → upload to deep store → COMMIT_END_METADATA) | per Kafka partition | the controller picks the single committer |
+| FoundationDB | TLogs fsync before a commit is acknowledged; storage servers pull from them asynchronously | one global version | — |
+| Kafka transactions | offsets written to Kafka in the same transaction as the outputs | per partition | producer epochs |
+
+Read-your-writes differs: Neon's pageserver **waits** for the requested LSN (§7); FoundationDB's storage server
+returns `future_version` and **the client retries**. KD-14's `min_seq` wait with a deadline sits between the two.
+
+**Sources (§9)**: [Kafka design](https://kafka.apache.org/39/design/design/) ·
+[KIP-405](https://cwiki.apache.org/confluence/display/KAFKA/KIP-405%3A+Kafka+Tiered+Storage) ·
+[Redpanda architecture](https://docs.redpanda.com/current/get-started/architecture/) ·
+[WarpStream architecture](https://docs.warpstream.com/warpstream/overview/architecture) ·
+[Delos, OSDI '20](https://www.usenix.org/conference/osdi20/presentation/balakrishnan) ·
+[Materialize persist design](https://github.com/MaterializeInc/materialize/blob/main/doc/developer/design/20220330_persist.md) ·
+[Pinot real-time consumption](https://cwiki.apache.org/confluence/display/PINOT/Consuming+and+Indexing+rows+in+Realtime) ·
+[FoundationDB read/write path](https://apple.github.io/foundationdb/read-write-path.html) ·
+[RocksDB-Cloud](https://github.com/rockset/rocksdb-cloud).
