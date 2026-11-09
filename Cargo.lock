@@ -3471,6 +3471,7 @@ dependencies = [
 name = "smithling-ingest"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "crc32fast",
  "proptest",
  "serde",

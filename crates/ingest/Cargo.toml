@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 smithling-model.workspace = true
 smithling-storage.workspace = true
 tokio.workspace = true

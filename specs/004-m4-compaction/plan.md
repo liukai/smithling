@@ -27,13 +27,13 @@ window is still open. It merges each run's versions into one row, and writes **o
 
 | Step | What | Reuses |
 |---|---|---|
-| 1. Pick | From the pinned `Version`: tier-0 segments ordered by `min_seq`, grouped by flush (same seq range). Take groups while every file's newest window (`max_start_key`) has closed (end + settle age ≤ now). Stop at a damaged file or at the job's size cap (rows / bytes); both keep it a prefix | `Version`, `SegmentMeta` |
+| 1. Pick | From the pinned `Version` plus damaged files: tier-0 segments ordered by `min_seq` (not the wall clock), grouped by flush (same `created_at`). Take groups while every file's newest window (`max_start_key`) has closed (end + settle age ≤ now). Stop at a damaged file or at the job's size cap (rows / bytes); both keep it a prefix | `Version`, `SegmentMeta` |
 | 2. Read | Every core + payload row of the inputs | `segment` readers |
 | 3. Merge | Group rows by `run_id`; `merge_versions` in seq order (disjoint ranges hold because it's a prefix) | `model::merge_versions` |
-| 4. Mark | An output row is `needs_merge` if its run id is in an existing L1 file of the same window (any project; read only those files' run ids, i.e. windows that got late rows) | `segment::run_ids` |
+| 4. Mark | An output row is `needs_merge` if its run id is in an existing L1 file of the same window (any project; read only those files' run ids, i.e. windows that got late rows), or if its first version here is an update (its start is elsewhere) | `segment::run_ids` |
 | 5. Write | Group by (project of the merged run, window); `segment::write` per group with `tier = 1`, names `cmp-<ulid>.*` | `segment::write` (core, payload, text index, stats) |
-| 6. Upload | `put_new` each file; crash point `compact_after_put` | flush's upload loop |
-| 7. Swap | One transaction: `UPDATE segments SET state='replaced', replaced_at=now WHERE id IN (inputs) AND state='active'` must touch every input, else roll back; insert outputs and their field stats; bump nothing else. Crash point `compact_after_commit` | `Metastore` |
+| 6. Upload | Register the outputs as `pending` in the catalog, then `put_new` each file; crash point `compact_after_put` | flush's upload loop |
+| 7. Swap | One transaction: inputs `active → replaced` (must touch every input, else roll back), outputs `pending → active`, their field stats in. Retried with the same outputs on a lost reply. Crash point `compact_after_commit` | `Metastore` |
 | 8. Publish | `Version::with_compaction(removed, added, stats)`; rebuild the multi-version set (below); reset the query's kept rows | `Mem` lock |
 | 9. Delete | Later loop: a replaced file whose `replaced_at + grace ≤ now` and that no pinned `Version` still holds is deleted (files first, then its catalog row). Crash point `compact_mid_delete` | in-process pins (R-7) |
 
@@ -44,15 +44,15 @@ project: K5 for free in that case.
 
 | Part | Change | Why |
 |---|---|---|
-| Multi-version set (writer memory) | After a swap: rebuild as {run ids of `needs_merge` rows in active files} ∪ {old members that still have a version in a memtable}. Same source as start-up | C2: merged runs leave the set, so their kept copies go |
-| Query kept rows (`VersionRows`, D-023/D-029) | Reset when the `Version` lost files; rebuilt lazily on the next request (now small) | They assume files only get added (`query/src/fields.rs:86`) |
+| Multi-version set (writer memory) | After a swap, once no file set from before it is held (every `Version` of that *era* is gone; eras end at each swap and are released in order): merged runs leave the set unless they have a version in a memtable or a `needs_merge` row in an active file | C2: merged runs leave the set, so their kept copies go |
+| Query kept rows (`VersionRows`, D-023/D-029) | Reset when the `Version` lost files or a kept run left the multi-version set; rebuilt on the next request (now small) | They assumed files only get added and the set only grows |
 | Single-run payload lookup (`query/src/scan.rs:920`) | Keep the source segment id on rows read from files, and read the payload from that file | C5: L1 files have wide seq ranges, so the range filter would match many |
-| Start-up (`ingest/src/recover.rs`) | `replaced` rows count as registered (deleted by the loop, not as orphans); unregistered `cmp-*` files are deleted without the WAL-coverage check (their data is still in the active inputs) | Otherwise a crash between upload and swap blocks the restart |
+| Start-up (`ingest/src/recover.rs`) | `replaced` rows count as registered (deleted by the loop, not as orphans); `pending` outputs are deleted, files then rows (their inputs are still active). Any other unknown file, `cmp-*` included, stays under the WAL-coverage check | A crash between upload and swap restarts cleanly, and a wrong `--metastore` can never delete compacted data |
 | Flush | Nothing. Test only: every run with versions in several files has at least one marked row once all its versions are flushed | M4-FR-04 holds already (the newer version is always marked) |
 
 ### Data and API changes
 
-- Catalog: `segments.replaced_at BIGINT NULL`; `state` gains `'replaced'`; `tier` = 1 for compacted files. One
+- Catalog: `segments.replaced_at BIGINT NULL`; `state` gains `'pending'` and `'replaced'`; `tier` = 1 for compacted files. One
   `schema_version` step, same SQL on SQLite and Postgres.
 - `smithling serve … [--compact on|off] [--compact-window 1h] [--settle 15m] [--compact-target 256MB] [--grace 24h]`.
 - `POST /api/compact` (`{force: true}` treats every window as closed; tests and demo) and `smithling compact [--url]`.

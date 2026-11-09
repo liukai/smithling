@@ -114,6 +114,7 @@ fn meta(fts_path: &str) -> SegmentMeta {
         created_at: 0,
         fts_path: Some(fts_path.into()),
         fts_bytes: 0,
+        tier: 0,
     }
 }
 

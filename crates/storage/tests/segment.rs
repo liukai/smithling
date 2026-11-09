@@ -429,3 +429,30 @@ fn only_missing_or_undecodable_files_count_as_damaged() {
     assert_eq!(damage(&StorageError::Format("no run_id".into())), Some("unreadable"));
     assert_eq!(damage(&StorageError::Metastore("down".into())), None);
 }
+
+#[test]
+fn a_whole_file_reads_back_with_payloads_and_tier_1_files_are_named_cmp() {
+    let posts: Vec<RunState> = (1..=20).map(|n| state(n, (n % 60) as u32, true)).collect();
+    let patches: Vec<RunState> = (1..=20).map(|n| state(n, (n % 60) as u32, false)).collect();
+    let rows: Vec<Version> = posts.iter().chain(&patches).cloned().map(version).collect();
+    let w = segment::write_tier("eval-agent", rows, Ts(1_700_000_000_000_000), 1).unwrap();
+    assert_eq!(w.meta.tier, 1);
+    assert!(segment::is_compacted(&w.meta.core_path), "{}", w.meta.core_path);
+    assert!(!segment::is_compacted("p/2026-11-05/seg-1.core.parquet"));
+
+    let back = segment::read_all(w.core.clone(), w.payload.clone()).unwrap();
+    assert_eq!(back.len(), 40);
+    for n in 1..=20u128 {
+        let versions: Vec<RunState> = back
+            .iter()
+            .filter(|v| v.state.run.run_id == uid(n))
+            .map(|v| v.state.clone())
+            .collect();
+        let want = merge_versions(vec![posts[n as usize - 1].clone(), patches[n as usize - 1].clone()]).unwrap();
+        assert_eq!(merge_versions(versions).unwrap(), want, "run {n}, payloads included");
+    }
+    assert!(
+        segment::read_all(w.core, w.payload.slice(0..0)).is_err(),
+        "an empty payload file doesn't pair up"
+    );
+}

@@ -168,6 +168,7 @@ fn segment(n: u128, seq: u64) -> (SegmentMeta, Vec<FieldStat>) {
         created_at: 1_762_300_000_000_000,
         fts_path: n.is_multiple_of(2).then(|| format!("eval-agent-1/2026-11-05/{id}.fts")),
         fts_bytes: if n.is_multiple_of(2) { 1_234 } else { 0 },
+        tier: 0,
     };
     let stats = vec![FieldStat {
         segment_id: id,
@@ -279,6 +280,7 @@ async fn metastore_contract(url: &str) {
     assert_eq!(m.dedup_keys().await.unwrap(), vec![keys(70, 1_900)]);
     assert_eq!(m.flushed_seq().await.unwrap(), 70);
     feedback_contract(&m).await;
+    compaction_contract(&m).await;
 }
 
 fn fb_row(id: &str, run: &str, score: Option<f64>, at: i64) -> FeedbackRow {
@@ -299,6 +301,102 @@ fn fb_row(id: &str, run: &str, score: Option<f64>, at: i64) -> FeedbackRow {
 }
 
 /// Rows keyed by `id` (a retry replaces), read by run and id, listed for the index.
+/// M4 swap: inputs replaced by outputs in one commit, refused if an input changed, idempotent on a lost reply;
+/// replaced files listed until deleted; flushes committed meanwhile untouched.
+async fn compaction_contract(m: &Metastore) {
+    let before = m.active_segments().await.unwrap();
+    let (a, fa) = segment(1_001, 1_010);
+    let (b, fb) = segment(1_002, 1_020);
+    m.commit_flush(
+        &[a.clone(), b.clone()],
+        &[fa, fb].concat(),
+        1_020,
+        &keys(1_020, 9_000),
+        0,
+    )
+    .await
+    .unwrap();
+    let (mut out, mut fo) = segment(1_003, 1_020);
+    out.tier = 1;
+    out.id = format!("cmp-{}", ulid::Ulid::new());
+    fo[0].segment_id = out.id.clone();
+    // A flush lands between the job's pick and its swap.
+    let (c, fc) = segment(1_004, 1_030);
+    m.commit_flush(std::slice::from_ref(&c), &fc, 1_030, &keys(1_030, 9_100), 0)
+        .await
+        .unwrap();
+
+    // Outputs are registered as pending before their upload, and never served until the swap.
+    m.register_pending(std::slice::from_ref(&out)).await.unwrap();
+    assert_eq!(m.pending_segments().await.unwrap(), vec![out.clone()]);
+    assert!(!m.active_segments().await.unwrap().iter().any(|s| s.id == out.id));
+    m.commit_compaction(&[a.id.clone(), b.id.clone()], std::slice::from_ref(&out), &fo, 5_000)
+        .await
+        .unwrap();
+    assert!(m.pending_segments().await.unwrap().is_empty());
+    let ids = |v: Vec<SegmentMeta>| v.into_iter().map(|s| s.id).collect::<Vec<_>>();
+    let active = ids(m.active_segments().await.unwrap());
+    assert!(
+        active.contains(&out.id) && active.contains(&c.id),
+        "output and the meanwhile flush are active"
+    );
+    assert!(!active.contains(&a.id) && !active.contains(&b.id), "inputs are not");
+    assert_eq!(
+        m.active_segments()
+            .await
+            .unwrap()
+            .iter()
+            .find(|s| s.id == out.id)
+            .unwrap()
+            .tier,
+        1
+    );
+    let replaced = m.replaced_segments().await.unwrap();
+    assert_eq!(
+        replaced.iter().map(|(s, at)| (s.id.clone(), *at)).collect::<Vec<_>>(),
+        vec![(a.id.clone(), 5_000), (b.id.clone(), 5_000)]
+    );
+    assert!(
+        !m.field_stats().await.unwrap().iter().any(|f| f.segment_id == a.id),
+        "a replaced file's stats are not counted"
+    );
+
+    // A retry after a lost reply: already committed.
+    m.commit_compaction(&[a.id.clone(), b.id.clone()], std::slice::from_ref(&out), &fo, 5_000)
+        .await
+        .unwrap();
+
+    // An input that's no longer active (already replaced) refuses the whole swap.
+    let (out2, fo2) = segment(1_005, 1_030);
+    m.register_pending(std::slice::from_ref(&out2)).await.unwrap();
+    let err = m
+        .commit_compaction(&[a.id.clone(), c.id.clone()], std::slice::from_ref(&out2), &fo2, 6_000)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains(smithling_storage::metastore::SWAP_CONFLICT),
+        "{err}"
+    );
+    let active = ids(m.active_segments().await.unwrap());
+    assert!(active.contains(&c.id) && !active.contains(&out2.id), "nothing changed");
+    assert_eq!(m.pending_segments().await.unwrap(), vec![out2.clone()], "still pending");
+    m.delete_pending(&out2.id).await.unwrap();
+    assert!(m.pending_segments().await.unwrap().is_empty());
+
+    // Deleting forgets replaced files only.
+    m.delete_replaced(&a.id).await.unwrap();
+    m.delete_replaced(&c.id).await.unwrap();
+    assert_eq!(
+        ids(m.replaced_segments().await.unwrap().into_iter().map(|r| r.0).collect()),
+        vec![b.id.clone()]
+    );
+    assert!(
+        ids(m.active_segments().await.unwrap()).contains(&c.id),
+        "an active file isn't deleted"
+    );
+    assert_eq!(m.active_segments().await.unwrap().len(), before.len() + 2);
+}
+
 async fn feedback_contract(m: &Metastore) {
     assert!(m.feedback_keys().await.unwrap().is_empty());
     m.put_feedback(&[fb_row("f1", "r1", Some(0.0), 2), fb_row("f2", "r1", None, 1)])
@@ -409,7 +507,7 @@ async fn migration_contract(url: &str, pg: bool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(v, 2, "schema_version 1 → 2, in place");
+    assert_eq!(v, 3, "schema_version 1 → 3, in place");
     sqlx::query(
         "INSERT INTO feedback (id, run_id, trace_id, key, score, value, comment, correction, source, created_at,
              modified_at, raw)
@@ -438,9 +536,15 @@ async fn migration_contract(url: &str, pg: bool) {
     );
     pool.close().await;
 
-    // Reopening a v2 catalog changes nothing.
+    // Reopening a v3 catalog changes nothing.
     let m = Metastore::open(url).await.unwrap();
-    assert_eq!(m.active_segments().await.unwrap()[0].fts_bytes, 777);
+    let segs = m.active_segments().await.unwrap();
+    assert_eq!(
+        (segs[0].fts_bytes, segs[0].tier),
+        (777, 0),
+        "an M2 file is a flush file"
+    );
+    assert!(m.replaced_segments().await.unwrap().is_empty());
 }
 
 #[tokio::test]

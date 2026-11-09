@@ -18,6 +18,14 @@ Milestones, key decisions and changes someone would look up later, newest first.
 
 ## Unreleased
 
+### Added
+
+- **Compaction (M4, units 1–3)**: `Ingest::compact` merges a prefix of the log (whole flushes whose hour windows
+  have closed) into one `cmp-*` file per project per hour, one row per run; one catalog commit swaps them in
+  (refused if an input changed); merged runs leave the multi-version set once no query holds the old file set.
+  Catalog schema 3 adds `replaced_at` and `tier`; start-up keeps replaced files and removes unswapped outputs.
+  Not yet run in the background or deleting replaced files (units 4–5).
+
 ### Changed
 
 - **Renamed to Smithling** (was tracedb): crates `smithling-*`, binary `smithling`, `SMITHLING_*` environment

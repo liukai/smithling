@@ -63,6 +63,20 @@ pub struct SegmentMeta {
     pub fts_path: Option<String>,
     #[serde(default)]
     pub fts_bytes: u64,
+    /// 0 = written by a flush; 1 = written by compaction (never rewritten).
+    #[serde(default)]
+    pub tier: u8,
+}
+
+/// Names of files written by compaction start with this, so start-up can tell an unregistered one (a crash
+/// before its swap: the data is still in the active inputs) from a flush's.
+pub const COMPACTED_PREFIX: &str = "cmp-";
+
+/// Whether a stored path is a compaction output.
+pub fn is_compacted(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with(COMPACTED_PREFIX))
 }
 
 /// Per segment, per path and type: how many rows have it, and its most common values.
@@ -194,16 +208,22 @@ fn json_text(v: &Value) -> String {
 }
 
 /// Writes one project's versions as a segment. Rows are sorted by `(trace_id, dotted_order)` first.
-pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Written, StorageError> {
+pub fn write(project: &str, rows: Vec<Version>, created_at: Ts) -> Result<Written, StorageError> {
+    write_tier(project, rows, created_at, 0)
+}
+
+/// [`write`] for a given tier; tier 1 files are named `cmp-<id>`.
+pub fn write_tier(project: &str, mut rows: Vec<Version>, created_at: Ts, tier: u8) -> Result<Written, StorageError> {
     rows.sort_by(|a, b| {
         (a.state.run.trace_id, &a.state.run.dotted_order).cmp(&(b.state.run.trace_id, &b.state.run.dotted_order))
     });
     let id = ulid::Ulid::new().to_string();
     let day = created_at.to_string().get(..10).unwrap_or("1970-01-01").to_string();
     let dir = folder(project);
-    let core_path = format!("{dir}/{day}/seg-{id}.core.parquet");
-    let payload_path = format!("{dir}/{day}/seg-{id}.payload.parquet");
-    let fts_path = format!("{dir}/{day}/seg-{id}.fts");
+    let stem = if tier == 0 { "seg-" } else { COMPACTED_PREFIX };
+    let core_path = format!("{dir}/{day}/{stem}{id}.core.parquet");
+    let payload_path = format!("{dir}/{day}/{stem}{id}.payload.parquet");
+    let fts_path = format!("{dir}/{day}/{stem}{id}.fts");
 
     let core = encode_core(&rows)?;
     let payload = encode_payload(&rows)?;
@@ -228,6 +248,7 @@ pub fn write(project: &str, mut rows: Vec<Version>, created_at: Ts) -> Result<Wr
         created_at: created_at.0,
         fts_path: Some(fts_path),
         fts_bytes: fts.bytes(),
+        tier,
     };
     Ok(Written {
         meta,
@@ -841,6 +862,45 @@ pub fn sidecar_of(core: Bytes, payload: Bytes) -> Result<fts::Sidecar, StorageEr
         },
     });
     fts::build(texts)
+}
+
+/// Every version in a file, with its payload loaded (compaction reads whole inputs): core rows paired with their
+/// payload rows by row number.
+pub fn read_all(core: Bytes, payload: Bytes) -> Result<Vec<Version>, StorageError> {
+    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let mut rows: Vec<StoredRow> = Vec::new();
+    for b in ParquetRecordBatchReaderBuilder::try_new(core)?.build()? {
+        rows.extend(decode_core(&b?)?);
+    }
+    rows.sort_by_key(|r| r.payload_row);
+    let mut payloads = Vec::with_capacity(rows.len());
+    for b in ParquetRecordBatchReaderBuilder::try_new(payload)?.build()? {
+        payloads.extend(decode_payload(&b?)?);
+    }
+    let paired = rows.len() == payloads.len()
+        && rows
+            .iter()
+            .zip(&payloads)
+            .enumerate()
+            .all(|(i, (r, (id, _)))| r.payload_row as usize == i && *id == r.state.run.run_id);
+    if !paired {
+        return Err(StorageError::Format("core and payload rows don't pair up".into()));
+    }
+    Ok(rows
+        .into_iter()
+        .zip(payloads)
+        .map(|(r, (_, p))| {
+            let mut state = r.state;
+            state.run.inputs = p.inputs;
+            state.run.outputs = p.outputs;
+            state.run.events = p.events;
+            Version {
+                state,
+                attrs: r.attrs,
+                needs_merge: r.needs_merge,
+            }
+        })
+        .collect())
 }
 
 /// Rows with the path, and value (as JSON text) → (value, count).

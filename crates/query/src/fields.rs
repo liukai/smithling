@@ -150,6 +150,15 @@ impl Kept {
 }
 
 impl VersionRows {
+    /// Whether some file these rows were read from isn't in `files`.
+    pub(crate) fn lost_files(&self, files: &[Arc<SegmentMeta>]) -> bool {
+        if self.segments.is_empty() {
+            return false;
+        }
+        let now: HashSet<&str> = files.iter().map(|s| s.id.as_str()).collect();
+        self.segments.iter().any(|s| !now.contains(s.id.as_str()))
+    }
+
     pub(crate) async fn update(
         &mut self,
         q: &Query,
@@ -157,6 +166,11 @@ impl VersionRows {
         frozen: Option<&Arc<RunStore>>,
         multi: &HashSet<RunId>,
     ) -> Result<(), QueryError> {
+        // A file they were read from is gone (replaced by compaction, or found damaged), or a kept run left the
+        // multi-version set (compaction merged it): start over from `files`.
+        if self.lost_files(files) || self.rows.ids.iter().any(|id| !multi.contains(id)) {
+            *self = VersionRows::default();
+        }
         let new: Vec<Arc<SegmentMeta>> = files.iter().filter(|s| !self.known.contains(&s.id)).cloned().collect();
         let new_ids: Vec<RunId> = multi.iter().filter(|id| !self.rows.ids.contains(id)).copied().collect();
         let none = scan::Scope::default();

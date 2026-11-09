@@ -4,6 +4,7 @@
 
 mod backfill;
 pub mod budget;
+pub mod compact;
 pub mod dedup;
 pub mod feedback;
 pub mod flush;
@@ -91,6 +92,7 @@ pub struct IngestConfig {
     pub test_flush_delay: Option<Duration>,
     /// Tests only: the first this many flush commits that land report an error, as if the reply were lost.
     pub test_lost_commit_replies: u32,
+    pub compact: compact::CompactConfig,
 }
 
 impl IngestConfig {
@@ -105,6 +107,7 @@ impl IngestConfig {
             hub_capacity: hub::DEFAULT_CAPACITY,
             test_flush_delay: None,
             test_lost_commit_replies: 0,
+            compact: compact::CompactConfig::default(),
         }
     }
 
@@ -216,6 +219,16 @@ pub struct Health {
     pub dedup_keys: u64,
     /// Bytes in the data cache.
     pub cache_bytes: u64,
+    /// Data files by kind: written by flushes, by compaction, and replaced files waiting for deletion.
+    pub files: FileCounts,
+    pub compaction: compact::CompactHealth,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct FileCounts {
+    pub l0: usize,
+    pub l1: usize,
+    pub replaced: usize,
 }
 
 /// A registered segment that can't be served (M3-FR-18).
@@ -461,9 +474,12 @@ struct Inner {
     flush_health: Arc<Mutex<FlushHealth>>,
     counters: Arc<Counters>,
     storage: Arc<Storage>,
-    damaged: RwLock<BTreeMap<String, Damaged>>,
+    damaged: Arc<RwLock<BTreeMap<String, Damaged>>>,
     flushed: Arc<Mutex<FlushedIds>>,
     feedback: FeedbackStore,
+    /// Files compaction replaced, waiting for their grace period before deletion, with when (µs).
+    replaced: compact::Replaced,
+    compactor: Arc<compact::Compactor>,
     /// Held for the life of the process: a second process on the same folder would delete our files as orphans.
     _lock: std::fs::File,
 }
@@ -523,6 +539,7 @@ impl Ingest {
             flushed,
             version,
             damaged,
+            replaced,
             stats: open_stats,
         } = recover::recover(&cfg, &storage)?;
         let flushed_seq = version.flushed_seq;
@@ -600,6 +617,24 @@ impl Ingest {
                 })
                 .map_err(OpenError::Thread)?
         };
+        let damaged = Arc::new(RwLock::new(damaged.into_iter().map(|d| (d.id.clone(), d)).collect()));
+        let replaced = Arc::new(Mutex::new(
+            replaced.into_iter().map(|(s, at)| (Arc::new(s), at)).collect(),
+        ));
+        let compactor = Arc::new(compact::Compactor {
+            mem: mem.clone(),
+            mvset: mvset.clone(),
+            storage: storage.clone(),
+            damaged: damaged.clone(),
+            replaced: replaced.clone(),
+            health: Mutex::new(compact::CompactHealth {
+                enabled: cfg.compact.enabled,
+                ..Default::default()
+            }),
+            cfg: cfg.compact.clone(),
+            job: Mutex::new(()),
+            shrink: Mutex::new(Vec::new()),
+        });
         let inner = Inner {
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
@@ -617,12 +652,19 @@ impl Ingest {
             flush_health,
             counters,
             storage,
-            damaged: RwLock::new(damaged.into_iter().map(|d| (d.id.clone(), d)).collect()),
+            damaged,
             flushed,
             feedback,
+            replaced,
+            compactor,
             _lock: lock,
         };
         Ok((Ingest { inner: Arc::new(inner) }, open_stats))
+    }
+
+    /// Runs one compaction job now (`force`: every window counts as closed). Blocking; one job at a time.
+    pub fn compact(&self, force: bool) -> Result<Option<compact::CompactReport>, StorageError> {
+        self.inner.compactor.run(force)
     }
 
     /// Validates each item, then waits until the valid ones are durable and applied.
@@ -800,6 +842,12 @@ impl Ingest {
             orphan_feedback,
             dedup_keys: self.inner.counters.dedup_keys.load(Ordering::Relaxed),
             cache_bytes,
+            files: FileCounts {
+                l0: mem.version.segments.iter().filter(|s| s.tier == 0).count(),
+                l1: mem.version.segments.iter().filter(|s| s.tier > 0).count(),
+                replaced: self.inner.replaced.lock().unwrap().len(),
+            },
+            compaction: self.inner.compactor.health.lock().unwrap().clone(),
         }
     }
 }

@@ -25,7 +25,13 @@ pub struct Version {
     pub field_stats: Vec<Arc<FieldStat>>,
     /// Every event with `seq ≤ flushed_seq` is in `segments`.
     pub flushed_seq: u64,
+    /// Shared by every version since the last compaction swap: while any is held (a query's pin), the
+    /// multi-version set keeps the runs that swap merged (M4).
+    pub era: Era,
 }
+
+/// A token whose count says whether any version of an era is still alive.
+pub type Era = Arc<()>;
 
 impl Version {
     pub fn with_flush(&self, segments: Vec<SegmentMeta>, stats: Vec<FieldStat>, flushed_seq: u64) -> Version {
@@ -47,6 +53,23 @@ impl Version {
             meta.fts_bytes = fts_bytes;
             *s = Arc::new(meta);
         }
+        v
+    }
+
+    /// A compaction's swap: `removed` files out (and their stats), its outputs in.
+    pub fn with_compaction(
+        &self,
+        removed: &std::collections::HashSet<String>,
+        added: Vec<SegmentMeta>,
+        stats: Vec<FieldStat>,
+    ) -> Version {
+        let mut v = self.clone();
+        v.id += 1;
+        v.era = Era::default();
+        v.segments.retain(|s| !removed.contains(&s.id));
+        v.field_stats.retain(|f| !removed.contains(&f.segment_id));
+        v.segments.extend(added.into_iter().map(Arc::new));
+        v.field_stats.extend(stats.into_iter().map(Arc::new));
         v
     }
 

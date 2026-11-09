@@ -30,16 +30,20 @@ pub(crate) struct Recovered {
     pub version: Version,
     /// Registered segments whose files are missing or unreadable; left out of `version`.
     pub damaged: Vec<Damaged>,
+    /// Files compaction replaced, not yet deleted, with when (µs); the delete loop takes them after the grace period.
+    pub replaced: Vec<(SegmentMeta, i64)>,
     pub stats: OpenStats,
 }
 
 pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered, OpenError> {
     let started = Instant::now();
     let (store, meta) = (storage.store.clone(), storage.meta.clone());
-    let (flushed_seq, segments, field_stats, saved_keys, objects) = storage.block(async move {
+    let (flushed_seq, segments, replaced, pending, field_stats, saved_keys, objects) = storage.block(async move {
         Ok::<_, StorageError>((
             meta.flushed_seq().await?,
             meta.active_segments().await?,
+            meta.replaced_segments().await?,
+            meta.pending_segments().await?,
             meta.field_stats().await?,
             meta.dedup_keys().await?,
             store.list().await?,
@@ -49,7 +53,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
     // Files written by a flush that crashed before its catalog commit were never registered.
     let present: HashSet<&str> = objects.iter().map(String::as_str).collect();
     let mut registered: HashSet<String> = HashSet::new();
-    for s in &segments {
+    for s in segments.iter().chain(replaced.iter().map(|(s, _)| s)).chain(&pending) {
         registered.extend([s.core_path.clone(), s.payload_path.clone()]);
         if let Some(stem) = &s.fts_path {
             registered.extend([fts::dict_path(stem), fts::post_path(stem)]);
@@ -68,18 +72,19 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
     // A text index sidecar holds nothing the data files don't, so an unregistered one (a crash mid-flush or
     // mid-backfill) is always safe to delete.
     let sidecar = |p: &str| p.rsplit('/').next().is_some_and(|name| name.contains(".fts"));
+    let safe = sidecar;
     // A crashed flush's events are still in the WAL (it is trimmed only after the commit), so its files are safe
     // to delete. If the WAL doesn't reach back to `flushed_seq`, the catalog doesn't match these files (lost or
     // wrong `--metastore`): deleting them could lose data, so refuse instead.
     let wal_covers = crate::wal::first_seq(&cfg.data_dir.join("wal"))
         .map_err(crate::wal::WalError::from)?
         .is_some_and(|f| f <= flushed_seq + 1);
-    if orphans.iter().any(|p| !sidecar(p)) && !wal_covers {
+    if orphans.iter().any(|p| !safe(p)) && !wal_covers {
         return Err(StorageError::Config(format!(
             "{} data files are not in the catalog and the WAL doesn't cover them (e.g. {}); is --metastore the \
              catalog for this --storage? Not deleting them",
-            orphans.iter().filter(|p| !sidecar(p)).count(),
-            orphans.iter().find(|p| !sidecar(p)).expect("one")
+            orphans.iter().filter(|p| !safe(p)).count(),
+            orphans.iter().find(|p| !safe(p)).expect("one")
         ))
         .into());
     }
@@ -94,6 +99,27 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
             Ok::<_, StorageError>(())
         })?;
     }
+
+    // Compaction outputs of a job that crashed before its swap: their inputs are still active, so they hold
+    // nothing that would be lost. Files first, then the rows.
+    if !pending.is_empty() {
+        let (store, meta, pending) = (storage.store.clone(), storage.meta.clone(), pending.clone());
+        storage.block(async move {
+            for s in pending {
+                tracing::warn!(segment = %s.id, "removing a compaction output that was never swapped in");
+                let mut files = vec![s.core_path.clone(), s.payload_path.clone()];
+                if let Some(stem) = &s.fts_path {
+                    files.extend([fts::dict_path(stem), fts::post_path(stem)]);
+                }
+                for f in files {
+                    store.delete(&f).await?;
+                }
+                meta.delete_pending(&s.id).await?;
+            }
+            Ok::<_, StorageError>(())
+        })?;
+    }
+    let orphans_removed = orphans_removed + pending.len();
 
     let found_at = Ts::now();
     let mut damaged = Vec::new();
@@ -231,6 +257,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         segments: readable.into_iter().map(Arc::new).collect(),
         field_stats,
         flushed_seq,
+        era: Default::default(),
     };
     Ok(Recovered {
         wal,
@@ -242,6 +269,7 @@ pub(crate) fn recover(cfg: &IngestConfig, storage: &Storage) -> Result<Recovered
         flushed,
         version,
         damaged,
+        replaced,
         stats,
     })
 }

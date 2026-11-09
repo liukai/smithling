@@ -61,7 +61,8 @@ pub(crate) fn walk(
             .collect();
         merge_group(owned, true)
     };
-    // Every kept id is in the set (it only grows); runs only in memory are walked below.
+    // Every kept id is in the set (kept rows are reset when one leaves it, M4); runs only in memory are walked
+    // below.
     for (id, file) in files.into_iter().flatten() {
         let vs = mem.remove(id);
         if !pick.takes(id) {

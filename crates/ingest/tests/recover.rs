@@ -374,3 +374,93 @@ async fn start_checks_every_files_footer_and_reports_damage() {
     assert_eq!(h.segment_rows, total - garbled.row_count - lost.row_count);
     assert_eq!(stats.segments, h.segments);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_compaction_output_is_removed_and_a_strange_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let small_wal = |d: &Path| {
+        let mut c = cfg(d, 0);
+        c.wal_roll_bytes = 4096;
+        c
+    };
+    let url = small_wal(dir.path()).metastore_url();
+    {
+        let (ingest, _) = Ingest::open(small_wal(dir.path())).unwrap();
+        upload(&ingest, 1, 200).await;
+        wait_all_flushed(&ingest).await;
+    }
+    // A crash after a compaction registered and uploaded an output, before the swap: its data is still in the
+    // active inputs, so it is removed.
+    let m = smithling_storage::Metastore::open(&url).await.unwrap();
+    let mut out = m.active_segments().await.unwrap().remove(0);
+    out.id = format!("cmp-{}", out.id.trim_start_matches("seg-"));
+    out.core_path = out.core_path.replace("seg-", "cmp-");
+    out.payload_path = out.payload_path.replace("seg-", "cmp-");
+    out.fts_path = None;
+    out.tier = 1;
+    m.register_pending(std::slice::from_ref(&out)).await.unwrap();
+    drop(m);
+    let file = dir.path().join("data").join(&out.core_path);
+    std::fs::write(&file, b"uploaded, never swapped in").unwrap();
+    let (ingest, stats) = Ingest::open(small_wal(dir.path())).unwrap();
+    assert_eq!(stats.orphans_removed, 1);
+    assert!(!file.exists());
+    assert_eq!(ingest.health().segment_rows, 200);
+    drop(ingest);
+    let m = smithling_storage::Metastore::open(&url).await.unwrap();
+    assert!(m.pending_segments().await.unwrap().is_empty());
+    drop(m);
+
+    // Steady state later: flushed files deleted after their grace period, only compacted files left. Then the
+    // catalog is lost (or `--metastore` points elsewhere): the compacted files are the only copy, so they stay.
+    for f in walk(&dir.path().join("data")) {
+        std::fs::remove_file(f).unwrap();
+    }
+    std::fs::write(&file, b"the only copy").unwrap();
+    for f in ["meta.sqlite", "meta.sqlite-wal", "meta.sqlite-shm", "LOCK"] {
+        let _ = std::fs::remove_file(dir.path().join(f));
+    }
+    let err = Ingest::open(small_wal(dir.path())).err().expect("refuses to start");
+    assert!(err.to_string().contains("not in the catalog"), "{err}");
+    assert!(file.exists(), "nothing deleted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replaced_files_survive_a_restart_until_the_delete_loop_takes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = cfg(dir.path(), 0);
+    let url = c.metastore_url();
+    {
+        let (ingest, _) = Ingest::open(cfg(dir.path(), 0)).unwrap();
+        upload(&ingest, 1, 100).await;
+        wait_all_flushed(&ingest).await;
+    }
+    // Swap one file for a copy of itself, as a compaction would.
+    let m = smithling_storage::Metastore::open(&url).await.unwrap();
+    let input = m.active_segments().await.unwrap().remove(0);
+    let mut out = input.clone();
+    out.id = format!("cmp-{}", input.id.trim_start_matches("seg-"));
+    out.tier = 1;
+    out.fts_path = None;
+    let copy = |p: &str| {
+        let to = p.replace("seg-", "cmp-");
+        std::fs::copy(dir.path().join("data").join(p), dir.path().join("data").join(&to)).unwrap();
+        to
+    };
+    out.core_path = copy(&input.core_path);
+    out.payload_path = copy(&input.payload_path);
+    m.register_pending(std::slice::from_ref(&out)).await.unwrap();
+    m.commit_compaction(std::slice::from_ref(&input.id), std::slice::from_ref(&out), &[], 1)
+        .await
+        .unwrap();
+    drop(m);
+    let rows = |d: &Path| walk(&d.join("data")).len();
+    let before = rows(dir.path());
+    let (ingest, stats) = Ingest::open(cfg(dir.path(), 0)).unwrap();
+    assert_eq!(stats.orphans_removed, 0, "replaced files are registered, not orphans");
+    assert_eq!(rows(dir.path()), before);
+    assert!(dir.path().join("data").join(&input.core_path).exists());
+    let h = ingest.health();
+    assert_eq!(h.segment_rows, 100, "the output serves; the input doesn't");
+    assert_eq!((h.files.l1, h.files.replaced), (1, 1));
+}

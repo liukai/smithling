@@ -669,9 +669,9 @@ impl Query {
             return Ok(scan::pin_text(&self.ingest, scope, searches));
         };
         let (mut pinned, frozen, multi) = scan::pin_for_kept(&self.ingest, scope, searches);
-        // A file dropped since (found damaged) is still in the kept rows: they're read again without it, in the
-        // background.
-        if cache.segments.len() > pinned.version.segments.len() {
+        // A file dropped since (found damaged, or replaced by compaction) is still in the kept rows: they're read
+        // again without it, in the background.
+        if cache.lost_files(&pinned.version.segments) || cache.rows.ids.iter().any(|id| !multi.contains(id)) {
             *cache = Default::default();
             drop(cache);
             self.warm_aggregates();

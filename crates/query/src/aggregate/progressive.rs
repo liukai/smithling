@@ -356,6 +356,7 @@ mod tests {
             created_at: 0,
             fts_path: None,
             fts_bytes: 0,
+            tier: 0,
         }
     }
 

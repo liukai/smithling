@@ -230,7 +230,8 @@ pub(crate) fn pin_for_kept(
     searches: &[(&[String], Side)],
 ) -> (Pinned, Option<Arc<RunStore>>, HashSet<RunId>) {
     let (pinned, frozen, _) = pin_inner(ingest, scope, false, searches);
-    // The set only grows, so a copy taken now holds every run the pin marks.
+    // The set only shrinks once no query holds a file set from before a compaction's swap (M4), so a copy
+    // taken now holds every run the pin marks.
     let mv = ingest.multi_version().read().unwrap().clone();
     (pinned, frozen, mv)
 }

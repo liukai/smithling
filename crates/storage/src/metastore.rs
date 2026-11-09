@@ -1,5 +1,6 @@
 //! The catalog of data files and their field statistics: SQLite locally, Postgres in cloud mode, same SQL
-//! (data-model §5). A flush registers its files, saves its dedup keys and moves `flushed_seq` in one transaction.
+//! (data-model §5). A flush registers its files, saves its dedup keys and moves `flushed_seq` in one transaction;
+//! a compaction swaps its inputs for its outputs in one transaction (M4 plan, step 7).
 
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::{AnyPool, Row};
@@ -7,7 +8,7 @@ use sqlx::{AnyPool, Row};
 use crate::StorageError;
 use crate::segment::{FieldStat, SegmentMeta};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const MIGRATION: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS state (
@@ -66,6 +67,16 @@ const V2: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS feedback_run ON feedback (run_id)",
     "CREATE INDEX IF NOT EXISTS feedback_key ON feedback (key)",
 ];
+
+/// schema_version 2 → 3 (M4): when compaction replaced a file; `state` gains `'pending'` (a compaction output
+/// registered before its upload, not yet swapped in) and `'replaced'`.
+const V3: &[&str] = &["ALTER TABLE segments ADD COLUMN replaced_at BIGINT"];
+
+/// Upgrade steps: `STEPS[i]` moves the catalog from version `i + 1` to `i + 2`.
+const STEPS: &[&[&str]] = &[V2, V3];
+
+/// The swap was refused: an input is no longer active (another compaction replaced it), so nothing changed.
+pub const SWAP_CONFLICT: &str = "compaction inputs changed";
 
 /// The dedup keys of one flush's events, packed by the caller (the catalog doesn't read them).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,26 +162,27 @@ impl Metastore {
                 .execute(&m.pool)
                 .await?;
         }
-        match have.unwrap_or(1) {
-            1 => {
-                let mut tx = m.pool.begin().await?;
-                // Taken first, so a second process opening the same catalog waits, then sees version 2.
-                let moved = sqlx::query("UPDATE state SET schema_version = 2 WHERE id = 1 AND schema_version = 1")
-                    .execute(&mut *tx)
-                    .await?;
-                if moved.rows_affected() == 1 {
-                    for stmt in V2 {
-                        sqlx::query(*stmt).execute(&mut *tx).await?;
-                    }
+        let mut v = have.unwrap_or(1);
+        if v > SCHEMA_VERSION {
+            return Err(StorageError::Metastore(format!(
+                "catalog schema version {v}, this smithling understands {SCHEMA_VERSION}"
+            )));
+        }
+        while v < SCHEMA_VERSION {
+            let mut tx = m.pool.begin().await?;
+            // Taken first, so a second process opening the same catalog waits, then sees the new version.
+            let moved = sqlx::query(m.sql("UPDATE state SET schema_version = ? WHERE id = 1 AND schema_version = ?"))
+                .bind(v + 1)
+                .bind(v)
+                .execute(&mut *tx)
+                .await?;
+            if moved.rows_affected() == 1 {
+                for stmt in STEPS[(v - 1) as usize] {
+                    sqlx::query(*stmt).execute(&mut *tx).await?;
                 }
-                tx.commit().await?;
             }
-            SCHEMA_VERSION => {}
-            v => {
-                return Err(StorageError::Metastore(format!(
-                    "catalog schema version {v}, this smithling understands {SCHEMA_VERSION}"
-                )));
-            }
+            tx.commit().await?;
+            v += 1;
         }
         Ok(m)
     }
@@ -207,12 +219,22 @@ impl Metastore {
     }
 
     pub async fn active_segments(&self) -> Result<Vec<SegmentMeta>, StorageError> {
-        let rows = sqlx::query(
+        Ok(self.segments_in("active").await?.into_iter().map(|(s, _)| s).collect())
+    }
+
+    /// Files compaction replaced and not yet deleted, with when they were replaced (µs).
+    pub async fn replaced_segments(&self) -> Result<Vec<(SegmentMeta, i64)>, StorageError> {
+        self.segments_in("replaced").await
+    }
+
+    async fn segments_in(&self, state: &str) -> Result<Vec<(SegmentMeta, i64)>, StorageError> {
+        let rows = sqlx::query(self.sql(
             "SELECT id, project, core_path, payload_path, min_start_key, max_start_key, min_trace_id, max_trace_id,
                     min_seq, max_seq, row_count, needs_merge_rows, core_bytes, payload_bytes, created_at,
-                    fts_path, fts_bytes
-             FROM segments WHERE state = 'active' ORDER BY min_seq",
-        )
+                    fts_path, fts_bytes, tier, replaced_at
+             FROM segments WHERE state = ? ORDER BY min_seq",
+        ))
+        .bind(state)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
@@ -220,7 +242,7 @@ impl Metastore {
                 let id = |i: usize| -> Result<uuid::Uuid, StorageError> {
                     uuid::Uuid::try_parse(&r.get::<String, _>(i)).map_err(|e| StorageError::Metastore(e.to_string()))
                 };
-                Ok(SegmentMeta {
+                let meta = SegmentMeta {
                     id: r.get(0),
                     project: r.get(1),
                     core_path: r.get(2),
@@ -238,7 +260,9 @@ impl Metastore {
                     created_at: r.get(14),
                     fts_path: r.get(15),
                     fts_bytes: r.get::<Option<i64>, _>(16).unwrap_or(0) as u64,
-                })
+                    tier: r.get::<i64, _>(17) as u8,
+                };
+                Ok((meta, r.get::<Option<i64>, _>(18).unwrap_or(0)))
             })
             .collect()
     }
@@ -337,11 +361,42 @@ impl Metastore {
                 segments.len()
             )));
         }
+        self.insert_segments(&mut tx, segments, stats, "active").await?;
+        // Never moves backwards: a stale or repeated flush must not make replay redo flushed events.
+        let moved = sqlx::query(self.sql("UPDATE state SET flushed_seq = ? WHERE id = 1 AND flushed_seq <= ?"))
+            .bind(flushed_seq as i64)
+            .bind(flushed_seq as i64)
+            .execute(&mut *tx)
+            .await?;
+        if moved.rows_affected() != 1 {
+            return Err(StorageError::Metastore(format!(
+                "flushed_seq would move backwards to {flushed_seq}"
+            )));
+        }
+        self.upsert_dedup(&mut tx, dedup).await?;
+        // Always keeps this flush's row, even when it's older than the window. That was for start rebuilding the
+        // multi-version set, which start no longer does; harmless, kept for now.
+        sqlx::query(self.sql("DELETE FROM dedup_keys WHERE newest_at < ? AND flushed_seq < ?"))
+            .bind(forget_before)
+            .bind(dedup.flushed_seq as i64)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_segments(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+        segments: &[SegmentMeta],
+        stats: &[FieldStat],
+        state: &str,
+    ) -> Result<(), StorageError> {
         let ins_seg = self.sql(
             "INSERT INTO segments (id, project, core_path, payload_path, min_start_key, max_start_key,
                  min_trace_id, max_trace_id, min_seq, max_seq, row_count, needs_merge_rows, core_bytes,
-                 payload_bytes, created_at, fts_path, fts_bytes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 payload_bytes, created_at, fts_path, fts_bytes, tier, state)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         for s in segments {
             sqlx::query(sqlx::AssertSqlSafe(ins_seg.0.clone()))
@@ -362,7 +417,9 @@ impl Metastore {
                 .bind(s.created_at)
                 .bind(s.fts_path.clone())
                 .bind(s.fts_path.as_ref().map(|_| s.fts_bytes as i64))
-                .execute(&mut *tx)
+                .bind(s.tier as i64)
+                .bind(state)
+                .execute(&mut **tx)
                 .await?;
         }
         let ins_stat = self.sql(
@@ -377,28 +434,114 @@ impl Metastore {
                 .bind(f.count as i64)
                 .bind(serde_json::to_string(&f.top_values).expect("serializable"))
                 .bind(f.other_count as i64)
+                .execute(&mut **tx)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Registers a compaction's outputs as `pending` before they're uploaded, so start-up knows them: a crash
+    /// before the swap leaves pending rows whose files it deletes, and every other unknown file stays under the
+    /// "is this the right catalog?" check. Pending files are never served.
+    pub async fn register_pending(&self, outputs: &[SegmentMeta]) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        self.insert_segments(&mut tx, outputs, &[], "pending").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Compaction outputs registered but never swapped in.
+    pub async fn pending_segments(&self) -> Result<Vec<SegmentMeta>, StorageError> {
+        Ok(self.segments_in("pending").await?.into_iter().map(|(s, _)| s).collect())
+    }
+
+    /// Replaces a compaction's inputs with its (pending) outputs, all or nothing. Refused ([`SWAP_CONFLICT`], no
+    /// change) unless every input is still active; files registered meanwhile (flushes) are untouched. A retry
+    /// whose earlier commit landed (a lost reply) finds every output active: `Ok`, no change.
+    pub async fn commit_compaction(
+        &self,
+        inputs: &[String],
+        outputs: &[SegmentMeta],
+        stats: &[FieldStat],
+        replaced_at: i64,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let mut active = 0;
+        for s in outputs {
+            active += sqlx::query(self.sql("SELECT 1 FROM segments WHERE id = ? AND state = 'active'"))
+                .bind(&s.id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some() as usize;
+        }
+        if active == outputs.len() && !outputs.is_empty() {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        let mut replaced = 0;
+        for id in inputs {
+            replaced += sqlx::query(
+                self.sql("UPDATE segments SET state = 'replaced', replaced_at = ? WHERE id = ? AND state = 'active'"),
+            )
+            .bind(replaced_at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+        }
+        if replaced != inputs.len() {
+            tx.rollback().await?;
+            return Err(StorageError::Metastore(format!(
+                "{SWAP_CONFLICT}: {} of {} inputs are no longer active",
+                inputs.len() - replaced,
+                inputs.len()
+            )));
+        }
+        let mut swapped = 0;
+        for s in outputs {
+            swapped += sqlx::query(self.sql("UPDATE segments SET state = 'active' WHERE id = ? AND state = 'pending'"))
+                .bind(&s.id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as usize;
+        }
+        if swapped != outputs.len() {
+            tx.rollback().await?;
+            return Err(StorageError::Metastore(format!(
+                "{} of {} compaction outputs are not pending",
+                outputs.len() - swapped,
+                outputs.len()
+            )));
+        }
+        self.insert_segments(&mut tx, &[], stats, "active").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forgets a pending output whose files are gone (start-up, after a crash before the swap).
+    pub async fn delete_pending(&self, segment_id: &str) -> Result<(), StorageError> {
+        sqlx::query(self.sql("DELETE FROM segments WHERE id = ? AND state = 'pending'"))
+            .bind(segment_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Forgets a replaced file once its objects are deleted (its row and stats, in one transaction). Active files are never
+    /// removed this way.
+    pub async fn delete_replaced(&self, segment_id: &str) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let gone = sqlx::query(self.sql("DELETE FROM segments WHERE id = ? AND state = 'replaced'"))
+            .bind(segment_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if gone == 1 {
+            sqlx::query(self.sql("DELETE FROM field_stats WHERE segment_id = ?"))
+                .bind(segment_id)
                 .execute(&mut *tx)
                 .await?;
         }
-        // Never moves backwards: a stale or repeated flush must not make replay redo flushed events.
-        let moved = sqlx::query(self.sql("UPDATE state SET flushed_seq = ? WHERE id = 1 AND flushed_seq <= ?"))
-            .bind(flushed_seq as i64)
-            .bind(flushed_seq as i64)
-            .execute(&mut *tx)
-            .await?;
-        if moved.rows_affected() != 1 {
-            return Err(StorageError::Metastore(format!(
-                "flushed_seq would move backwards to {flushed_seq}"
-            )));
-        }
-        self.upsert_dedup(&mut tx, dedup).await?;
-        // Always keeps this flush's row, even when it's older than the window. That was for start rebuilding the
-        // multi-version set, which start no longer does; harmless, kept for now.
-        sqlx::query(self.sql("DELETE FROM dedup_keys WHERE newest_at < ? AND flushed_seq < ?"))
-            .bind(forget_before)
-            .bind(dedup.flushed_seq as i64)
-            .execute(&mut *tx)
-            .await?;
         tx.commit().await?;
         Ok(())
     }
